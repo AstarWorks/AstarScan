@@ -16,6 +16,8 @@
   },
   "dependencies": {
     "@astarworks/scan-vue": "workspace:*",
+    "jscanify": "^1.4.2",
+    "jspdf": "^4.2.1",
     "nuxt": "^4.4.2",
     "vue": "^3.5.31",
     "vue-router": "^4.6.0"
