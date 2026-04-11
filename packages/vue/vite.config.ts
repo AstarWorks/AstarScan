@@ -13,8 +13,11 @@ import dts from 'vite-plugin-dts'
  *   `@astarworks/scan-core` (workspace dep, resolved at consumer side).
  *   Neither is bundled — if they were, we'd ship duplicate Vue runtimes
  *   and break reactivity identity across boundaries.
- * - vite-plugin-dts with rollupTypes bundles all .d.ts into a single file.
- *   Internal files and cross-package re-exports are inlined.
+ * - vite-plugin-dts without rollupTypes: emits a per-source-file .d.ts tree.
+ *   rollupTypes would pull in @microsoft/api-extractor → ajv-draft-04 → ajv,
+ *   which breaks Cloudflare Pages' npm install. See packages/core/vite.config.ts
+ *   for the full rationale. Multi-file dts is equivalent from the consumer's
+ *   perspective — `import type { X } from '@astarworks/scan-vue'` still works.
  */
 export default defineConfig({
   plugins: [
@@ -22,7 +25,6 @@ export default defineConfig({
     dts({
       include: ['src/**/*.ts', 'src/**/*.vue'],
       exclude: ['**/*.test.ts', '**/*.spec.ts'],
-      rollupTypes: true,
       tsconfigPath: './tsconfig.json',
     }),
   ],

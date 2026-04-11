@@ -9,8 +9,12 @@ import dts from 'vite-plugin-dts'
  *   don't want to ship two copies of the code.
  * - No minification: Libraries should ship readable code; consumers run
  *   their own minifier, and debugging is easier with unmangled names.
- * - vite-plugin-dts with rollupTypes: Emits a single bundled `dist/index.d.ts`
- *   so consumers get clean type imports without exposing internal modules.
+ * - vite-plugin-dts without rollupTypes: Emits a per-source-file .d.ts tree
+ *   (dist/index.d.ts, dist/types.d.ts, …). rollupTypes pulls in
+ *   @microsoft/api-extractor, which has a fragile peer-dep chain on
+ *   ajv-draft-04 → ajv that breaks in some CI environments (notably
+ *   Cloudflare Pages' npm install). Multi-file dts is fully equivalent
+ *   for consumers — they still `import type { X } from '@astarworks/scan-core'`.
  * - External: currently empty (core has zero runtime dependencies). When
  *   jscanify / jspdf / onnxruntime-web are added, they belong here so they
  *   are NOT bundled into dist/index.js — consumers install them as peers.
@@ -20,7 +24,6 @@ export default defineConfig({
     dts({
       include: ['src/**/*.ts'],
       exclude: ['**/*.test.ts', '**/*.spec.ts'],
-      rollupTypes: true,
       tsconfigPath: './tsconfig.json',
     }),
   ],

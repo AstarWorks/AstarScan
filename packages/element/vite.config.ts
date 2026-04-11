@@ -15,6 +15,10 @@ import dts from 'vite-plugin-dts'
  * - `vue` — peer dep
  * - `@astarworks/scan-core`, `@astarworks/scan-vue` — workspace deps,
  *   consumers either have them already or get them via transitive install
+ *
+ * vite-plugin-dts without rollupTypes: see packages/core/vite.config.ts for
+ * the rationale — rollupTypes pulls in a fragile @microsoft/api-extractor
+ * chain that breaks on Cloudflare Pages.
  */
 export default defineConfig({
   plugins: [
@@ -22,7 +26,6 @@ export default defineConfig({
     dts({
       include: ['src/**/*.ts', 'src/**/*.vue'],
       exclude: ['**/*.test.ts', '**/*.spec.ts'],
-      rollupTypes: true,
       tsconfigPath: './tsconfig.json',
     }),
   ],
