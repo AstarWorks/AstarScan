@@ -1,0 +1,47 @@
+{
+  "name": "astarscan",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Edge document scanner PWA — video-stream mass page extraction to PDF, fully offline, MIT licensed",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/AstarWorks/AstarScan.git"
+  },
+  "workspaces": [
+    "packages/*",
+    "apps/*",
+    "examples/*"
+  ],
+  "scripts": {
+    "build": "bun run build:packages && bun run build:web",
+    "build:packages": "bun run build:core && bun run build:vue && bun run build:element",
+    "build:core": "bun run --cwd packages/core build",
+    "build:vue": "bun run --cwd packages/vue build",
+    "build:element": "bun run --cwd packages/element build",
+    "build:web": "bun run --cwd apps/web build",
+
+    "typecheck": "bun run typecheck:core && bun run typecheck:vue && bun run typecheck:element && bun run typecheck:web",
+    "typecheck:core": "bun run --cwd packages/core typecheck",
+    "typecheck:vue": "bun run --cwd packages/vue typecheck",
+    "typecheck:element": "bun run --cwd packages/element typecheck",
+    "typecheck:web": "bun run --cwd apps/web typecheck",
+
+    "dev:web": "bun run build:packages && bun run --cwd apps/web dev",
+
+    "lint": "bun run --filter='*' lint",
+    "test": "bun run --filter='*' test",
+
+    "clean": "bun run --cwd packages/core clean && bun run --cwd packages/vue clean && bun run --cwd packages/element clean && bun run --cwd apps/web clean",
+    "clean:deep": "bun run clean && rm -rf node_modules packages/*/node_modules apps/*/node_modules",
+
+    "ci": "bun run build && bun run typecheck"
+  },
+  "devDependencies": {
+    "typescript": "^5.6.3"
+  },
+  "engines": {
+    "bun": ">=1.1.0"
+  }
+}

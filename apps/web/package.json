@@ -1,0 +1,27 @@
+{
+  "name": "@astarworks/scan-web",
+  "version": "0.0.0",
+  "private": true,
+  "description": "scan.astarworks.com — the AstarScan PWA landing and scanner UI. Nuxt 4 SPA, ssr: false, deployed as static files to Cloudflare Pages.",
+  "type": "module",
+  "scripts": {
+    "build": "nuxt generate",
+    "dev": "nuxt dev",
+    "preview": "nuxt preview",
+    "postinstall": "nuxt prepare",
+    "typecheck": "tsc --noEmit",
+    "lint": "echo 'TODO: eslint' && exit 0",
+    "test": "echo 'TODO: vitest' && exit 0",
+    "clean": "rm -rf .nuxt .output dist"
+  },
+  "dependencies": {
+    "@astarworks/scan-vue": "workspace:*",
+    "nuxt": "^4.4.2",
+    "vue": "^3.5.31",
+    "vue-router": "^4.6.0"
+  },
+  "devDependencies": {
+    "typescript": "^5.6.3",
+    "vue-tsc": "^3.2.6"
+  }
+}

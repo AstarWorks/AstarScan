@@ -1,0 +1,11 @@
+{
+  // https://nuxt.com/docs/guide/concepts/typescript
+  "extends": "./.nuxt/tsconfig.json",
+  // Disable vue-tsc plugins to work around a vue-router 4.6 / @vue/language-core
+  // 3.x compat bug where the `vue-router/volar/sfc-route-blocks` subpath is
+  // not exported. We don't use <route> blocks in SFCs so this plugin is
+  // irrelevant; explicitly disabling it avoids the load failure.
+  "vueCompilerOptions": {
+    "plugins": []
+  }
+}
