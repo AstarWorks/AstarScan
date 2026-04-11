@@ -46,12 +46,12 @@ const { state, pages, start, exportPdf } = useScanner({ mode: 'video' })
 
 ## Packages
 
-| Package | Purpose | Framework |
-|---------|---------|-----------|
-| `@astarworks/scan-core` | Pipeline, edge detection, PDF assembly | Pure TypeScript |
-| `@astarworks/scan-vue` | Composables + components | Vue 3 (no Nuxt dependency) |
-| `@astarworks/scan-element` | `<astar-scan>` Web Component | Vue 3 + Custom Elements |
-| `apps/web` | scan.astarworks.com PWA | Nuxt 3 SPA |
+| Package                    | Purpose                                | Framework                  |
+| -------------------------- | -------------------------------------- | -------------------------- |
+| `@astarworks/scan-core`    | Pipeline, edge detection, PDF assembly | Pure TypeScript            |
+| `@astarworks/scan-vue`     | Composables + components               | Vue 3 (no Nuxt dependency) |
+| `@astarworks/scan-element` | `<astar-scan>` Web Component           | Vue 3 + Custom Elements    |
+| `apps/web`                 | scan.astarworks.com PWA                | Nuxt 4 SPA                 |
 
 ## Development
 
@@ -76,13 +76,13 @@ privacy policy.
 
 ## Browser support
 
-| Platform | Minimum version |
-|----------|----------------|
-| iOS Safari | 15.0+ |
-| Android Chrome | 100+ |
-| Desktop Chrome / Edge | 100+ |
-| Desktop Firefox | 100+ |
-| Desktop Safari | 15.4+ |
+| Platform              | Minimum version |
+| --------------------- | --------------- |
+| iOS Safari            | 15.0+           |
+| Android Chrome        | 100+            |
+| Desktop Chrome / Edge | 100+            |
+| Desktop Firefox       | 100+            |
+| Desktop Safari        | 15.4+           |
 
 ## License
 

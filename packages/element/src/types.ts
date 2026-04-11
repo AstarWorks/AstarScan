@@ -11,11 +11,7 @@
  * DOM API (`element.maxPages = 100`) can pass numbers directly.
  */
 
-import type {
-  CapturedPage,
-  ScanError,
-  ScanState,
-} from '@astarworks/scan-core'
+import type { CapturedPage, ScanError, ScanState } from '@astarworks/scan-core'
 
 /**
  * Attributes accepted by `<astar-scan>`. All attributes are optional;

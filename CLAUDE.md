@@ -57,20 +57,22 @@ Frame (5-10 FPS)
 
 ## Phase plan
 
-| Phase | Duration | Scope |
-|-------|----------|-------|
-| Week 0 | 1 week | Tech verification spike (real device, jscanify success rate ≥ 70%) |
-| Phase 1a | 3 weeks | Monorepo, core, vue, Nuxt PWA, manual capture, manual corner correction, deploy |
-| Phase 1b | 2 weeks | Video mode (gate: Week 0 passed) |
-| Phase 1c | 2 weeks | Web Component, npm publish, examples |
-| Phase 2 | 6-8 weeks | ONNX ML models (DocAligner), telemetry |
-| Phase 3 | 6-8 weeks | Tauri Mobile native wrappers (optional) |
-| Phase 4 | 3-4 weeks | Astar platform integration |
+| Phase    | Duration  | Scope                                                                           |
+| -------- | --------- | ------------------------------------------------------------------------------- |
+| Week 0   | 1 week    | Tech verification spike (real device, jscanify success rate ≥ 70%)              |
+| Phase 1a | 3 weeks   | Monorepo, core, vue, Nuxt PWA, manual capture, manual corner correction, deploy |
+| Phase 1b | 2 weeks   | Video mode (gate: Week 0 passed)                                                |
+| Phase 1c | 2 weeks   | Web Component, npm publish, examples                                            |
+| Phase 2  | 6-8 weeks | ONNX ML models (DocAligner), telemetry                                          |
+| Phase 3  | 6-8 weeks | Tauri Mobile native wrappers (optional)                                         |
+| Phase 4  | 3-4 weeks | Astar platform integration                                                      |
 
 ## Critical constraints
 
 ### iOS Safari survival kit (WebKit bug #185448)
+
 Must be implemented in `useScanCamera`:
+
 1. Single MediaStream singleton
 2. `visibilitychange` / `pagehide` handlers
 3. `track.onended` listener
@@ -79,12 +81,14 @@ Must be implemented in `useScanCamera`:
 6. Retry `NotReadableError` / `AbortError` once after 500ms
 
 ### Manual corner correction UI (Phase 1 required)
+
 - 4 drag handles (44x44 px tap area)
 - 2x magnifier loupe on handle tap
 - Reject invalid quads (self-intersecting, non-convex, area < 10%)
 - One-handed: all buttons at bottom
 
 ### pHash duplicate detection
+
 - Default threshold: Hamming distance ≤ 8
 - User confirmation UI (never auto-delete)
 - 3-level settings: loose / standard / strict

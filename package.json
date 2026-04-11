@@ -21,25 +21,31 @@
     "build:vue": "bun run --cwd packages/vue build",
     "build:element": "bun run --cwd packages/element build",
     "build:web": "bun run --cwd apps/web build",
-
     "typecheck": "bun run typecheck:core && bun run typecheck:vue && bun run typecheck:element && bun run typecheck:web",
     "typecheck:core": "bun run --cwd packages/core typecheck",
     "typecheck:vue": "bun run --cwd packages/vue typecheck",
     "typecheck:element": "bun run --cwd packages/element typecheck",
     "typecheck:web": "bun run --cwd apps/web typecheck",
-
-    "dev:web": "bun run build:packages && bun run --cwd apps/web dev",
-
-    "lint": "bun run --filter='*' lint",
+    "lint": "eslint .",
+    "lint:fix": "eslint . --fix",
+    "format": "prettier --write .",
+    "format:check": "prettier --check .",
     "test": "bun run --filter='*' test",
-
+    "dev:web": "bun run build:packages && bun run --cwd apps/web dev",
     "clean": "bun run --cwd packages/core clean && bun run --cwd packages/vue clean && bun run --cwd packages/element clean && bun run --cwd apps/web clean",
     "clean:deep": "bun run clean && rm -rf node_modules packages/*/node_modules apps/*/node_modules",
-
-    "ci": "bun run build && bun run typecheck"
+    "ci": "bun run lint && bun run format:check && bun run typecheck && bun run build"
   },
   "devDependencies": {
-    "typescript": "^5.6.3"
+    "@eslint/js": "^9",
+    "eslint": "^9",
+    "eslint-config-prettier": "^9",
+    "eslint-plugin-vue": "^9",
+    "globals": "^15",
+    "prettier": "^3",
+    "typescript": "^5.6.3",
+    "typescript-eslint": "^8",
+    "vue-eslint-parser": "^9"
   },
   "engines": {
     "bun": ">=1.1.0"

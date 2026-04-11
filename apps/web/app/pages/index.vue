@@ -15,7 +15,7 @@ defineProps<{
     <div class="landing__inner">
       <h1 class="landing__title">AstarScan</h1>
       <p class="landing__tagline">
-        スマホを書類の山に向けて、ページをめくるだけ。<br >
+        スマホを書類の山に向けて、ページをめくるだけ。<br />
         ユニークなページが自動でPDFになります。
       </p>
       <p class="landing__status">🚧 Coming soon — Phase 1a in progress</p>
@@ -33,8 +33,12 @@ defineProps<{
   background: linear-gradient(180deg, #0f172a 0%, #1e293b 100%);
   color: #f1f5f9;
   font-family:
-    'Hiragino Sans', 'Hiragino Kaku Gothic ProN', 'Yu Gothic UI',
-    system-ui, -apple-system, sans-serif;
+    'Hiragino Sans',
+    'Hiragino Kaku Gothic ProN',
+    'Yu Gothic UI',
+    system-ui,
+    -apple-system,
+    sans-serif;
 }
 .landing__inner {
   max-width: 36rem;
