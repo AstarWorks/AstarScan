@@ -37,17 +37,8 @@ jobs:
       - name: Build
         run: bun run build
 
-      # Idempotent: if the project already exists, the create fails and we
-      # fall through to the deploy step, which is the happy path after the
-      # very first run. The `|| true` only masks the "already exists" error;
-      # a true auth / quota failure will re-surface in the deploy step.
-      - name: Ensure Cloudflare Pages project exists
-        run: |
-          bunx wrangler@4 pages project create astar-scan --production-branch=main \
-            || echo "Project may already exist — continuing to deploy step"
-
+      # Reads project name, compatibility date, and build output dir from
+      # wrangler.toml. No CLI flags needed — all deploy configuration is
+      # declarative and lives in version control alongside the code.
       - name: Deploy to Cloudflare Pages
-        run: |
-          bunx wrangler@4 pages deploy apps/web/.output/public \
-            --project-name=astar-scan \
-            --branch=main
+        run: bunx wrangler@4 pages deploy

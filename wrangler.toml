@@ -1,0 +1,14 @@
+# Cloudflare Pages configuration (config-as-code).
+# Reference: https://developers.cloudflare.com/pages/functions/wrangler-configuration/
+#
+# AstarScan is a pure static SPA — no server component, no Workers script.
+# `wrangler pages deploy` reads this file to know where the build output
+# lives and what compatibility date to use, so the GitHub Actions workflow
+# no longer needs to pass `--project-name` or other flags by hand.
+#
+# Custom domain (scan.astarworks.com) is configured via the Pages project
+# once, then tracked by Cloudflare automatically across deploys.
+
+name = "astar-scan"
+compatibility_date = "2025-07-15"
+pages_build_output_dir = "apps/web/.output/public"
