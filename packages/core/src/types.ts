@@ -229,8 +229,13 @@ export interface EdgeDetectorBackend {
    * Detect a document quadrilateral in the frame. Resolves to `null` if
    * no confident detection was found (the caller should not treat this as
    * an error — it simply means the next frame should be tried).
+   *
+   * Takes an `HTMLCanvasElement` rather than `ImageData` so callers can
+   * hand the live preview canvas directly without an extra
+   * `getImageData` round-trip, and so backends that wrap OpenCV.js can
+   * `cv.imread(canvas)` natively.
    */
-  detect(frame: ImageData): Promise<Quad | null>
+  detect(frame: HTMLCanvasElement): Promise<Quad | null>
   /**
    * Release any held resources (WASM heap, ONNX session, etc.). The backend
    * becomes unusable after this call.

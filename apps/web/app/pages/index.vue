@@ -1,7 +1,10 @@
 <script setup lang="ts">
 import { onBeforeUnmount, ref } from 'vue'
 import jsPDF from 'jspdf'
-import type Jscanify from 'jscanify'
+
+import type { EdgeDetectorBackend, Quad } from '@astarworks/scan-core'
+import { JscanifyBackend } from '~/services/jscanify-backend'
+import { warpPerspective } from '~/services/perspective-warper'
 
 // --------------------------------------------------------------------------
 // Types
@@ -20,20 +23,14 @@ interface CapturedPage {
 // Constants
 // --------------------------------------------------------------------------
 
-// OpenCV.js is loaded from the official docs mirror. jscanify wraps it,
-// so we need the runtime global `window.cv` to exist before we can
-// instantiate the scanner. ~8MB on first load, then cached by the
-// browser's HTTP cache for subsequent visits.
-const OPENCV_URL = 'https://docs.opencv.org/4.10.0/opencv.js'
-const OPENCV_LOAD_TIMEOUT_MS = 30_000
-
 // Target resolution for the perspective-corrected output. A4-ish aspect.
 const EXTRACT_WIDTH = 1200
 const EXTRACT_HEIGHT = 1600
 
-// Live-preview detection runs every N frames of the display RAF loop.
-// 4 → ~15 FPS detection at a 60 FPS display rate, enough for the
-// highlighted contour to feel responsive without saturating the CPU.
+// Async detection runs every N RAF frames. At 60 FPS display that's
+// ~15 FPS detection — responsive enough for the outline to feel live
+// without saturating the CPU. Detection is fire-and-forget; the loop
+// just renders the most recent known quad until a new one arrives.
 const DETECTION_EVERY_N_FRAMES = 4
 
 // --------------------------------------------------------------------------
@@ -52,62 +49,21 @@ const captured = ref<CapturedPage[]>([])
 // refs would create proxy wrappers around objects that don't tolerate it)
 // --------------------------------------------------------------------------
 
-let scanner: Jscanify | null = null
+let backend: EdgeDetectorBackend | null = null
 let stream: MediaStream | null = null
 let rafId: number | null = null
 let detectionTick = 0
 
-// --------------------------------------------------------------------------
-// OpenCV.js loader — inject a <script> once, then poll `window.cv.imread`
-// --------------------------------------------------------------------------
-
-function waitForOpenCV(): Promise<void> {
-  return new Promise((resolve, reject) => {
-    if (window.cv?.imread) {
-      resolve()
-      return
-    }
-
-    // Avoid double-injecting if the user taps start → error → start again.
-    const existing = document.querySelector<HTMLScriptElement>(
-      'script[data-astar-opencv]',
-    )
-    if (!existing) {
-      const script = document.createElement('script')
-      script.src = OPENCV_URL
-      script.async = true
-      script.dataset.astarOpencv = '1'
-      script.onerror = () =>
-        reject(new Error('OpenCV.js の読み込みに失敗しました'))
-      document.head.appendChild(script)
-    }
-
-    const started = Date.now()
-    const poll = () => {
-      if (window.cv?.imread) {
-        resolve()
-        return
-      }
-      if (Date.now() - started > OPENCV_LOAD_TIMEOUT_MS) {
-        reject(new Error('OpenCV.js の初期化がタイムアウトしました'))
-        return
-      }
-      window.setTimeout(poll, 100)
-    }
-    poll()
-  })
-}
+// Async detection state: RAF draws `lastQuad` on every frame, a throttled
+// tick kicks off `backend.detect()`, and the resolved quad updates
+// `lastQuad` without blocking the loop.
+let lastQuad: Quad | null = null
+let detectionInFlight = false
+let detectionWorkCanvas: HTMLCanvasElement | null = null
 
 // --------------------------------------------------------------------------
-// Lifecycle: load → initialize scanner → request camera → run detection loop
+// Camera lifecycle
 // --------------------------------------------------------------------------
-
-async function initScanner(): Promise<Jscanify> {
-  // Dynamic import so the jscanify bundle is only fetched when the user
-  // actually taps "Start", not on page load.
-  const mod = await import('jscanify')
-  return new mod.default()
-}
 
 async function startCamera(): Promise<void> {
   const mediaStream = await navigator.mediaDevices.getUserMedia({
@@ -131,49 +87,103 @@ async function startCamera(): Promise<void> {
   await video.play()
 }
 
+// --------------------------------------------------------------------------
+// Async detection loop — renders the quad overlay on every frame, kicks
+// off detection every DETECTION_EVERY_N_FRAMES without awaiting.
+// --------------------------------------------------------------------------
+
+function ensureWorkCanvas(video: HTMLVideoElement): HTMLCanvasElement {
+  if (!detectionWorkCanvas) {
+    detectionWorkCanvas = document.createElement('canvas')
+  }
+  if (detectionWorkCanvas.width !== video.videoWidth) {
+    detectionWorkCanvas.width = video.videoWidth
+    detectionWorkCanvas.height = video.videoHeight
+  }
+  const ctx = detectionWorkCanvas.getContext('2d', {
+    willReadFrequently: true,
+  })
+  ctx?.drawImage(video, 0, 0)
+  return detectionWorkCanvas
+}
+
+function drawQuadOverlay(
+  ctx: CanvasRenderingContext2D,
+  quad: Quad,
+  canvasWidth: number,
+): void {
+  ctx.fillStyle = 'rgba(96, 165, 250, 0.18)'
+  ctx.strokeStyle = 'rgba(96, 165, 250, 0.95)'
+  ctx.lineWidth = Math.max(3, Math.round(canvasWidth / 400))
+  ctx.beginPath()
+  ctx.moveTo(quad.tl.x, quad.tl.y)
+  ctx.lineTo(quad.tr.x, quad.tr.y)
+  ctx.lineTo(quad.br.x, quad.br.y)
+  ctx.lineTo(quad.bl.x, quad.bl.y)
+  ctx.closePath()
+  ctx.fill()
+  ctx.stroke()
+}
+
 function startDetectionLoop(): void {
   const video = videoRef.value
   const overlay = overlayRef.value
-  if (!video || !overlay || !scanner) return
-  const ctx = overlay.getContext('2d', { willReadFrequently: true })
+  if (!video || !overlay || !backend) return
+  const ctx = overlay.getContext('2d')
   if (!ctx) return
 
   const loop = () => {
     rafId = requestAnimationFrame(loop)
     if (video.readyState < 2 || video.videoWidth === 0) return
 
+    // Keep the overlay canvas's internal resolution matched to the
+    // video source; CSS scales it to the display size.
     if (overlay.width !== video.videoWidth) {
       overlay.width = video.videoWidth
       overlay.height = video.videoHeight
     }
 
-    // Every frame: draw the raw video for smooth playback.
-    ctx.drawImage(video, 0, 0, overlay.width, overlay.height)
+    ctx.clearRect(0, 0, overlay.width, overlay.height)
+    if (lastQuad) {
+      drawQuadOverlay(ctx, lastQuad, overlay.width)
+    }
 
-    // Throttled detection: replace the canvas with the highlighted
-    // version when jscanify finds a paper contour.
     detectionTick += 1
     if (detectionTick % DETECTION_EVERY_N_FRAMES !== 0) return
+    if (detectionInFlight) return
 
-    try {
-      const highlighted = scanner!.highlightPaper(overlay)
-      ctx.drawImage(highlighted, 0, 0)
-    } catch {
-      // Detection miss — the raw frame drawn above stays visible.
-    }
+    const currentBackend = backend
+    if (!currentBackend) return
+    detectionInFlight = true
+
+    const work = ensureWorkCanvas(video)
+    currentBackend
+      .detect(work)
+      .then((quad) => {
+        lastQuad = quad
+      })
+      .catch(() => {
+        lastQuad = null
+      })
+      .finally(() => {
+        detectionInFlight = false
+      })
   }
   loop()
 }
+
+// --------------------------------------------------------------------------
+// Start / stop orchestration
+// --------------------------------------------------------------------------
 
 async function start(): Promise<void> {
   phase.value = 'loading'
   errorText.value = null
   try {
-    statusText.value = 'OpenCV 読み込み中 (初回のみ、数秒)...'
-    await waitForOpenCV()
-
-    statusText.value = 'スキャナー初期化中...'
-    scanner = await initScanner()
+    statusText.value = 'スキャナー初期化中 (初回のみ、数秒)...'
+    const newBackend = new JscanifyBackend()
+    await newBackend.warmUp()
+    backend = newBackend
 
     statusText.value = 'カメラ起動中...'
     await startCamera()
@@ -193,9 +203,10 @@ async function start(): Promise<void> {
 // Capture / review / export
 // --------------------------------------------------------------------------
 
-function capture(): void {
+async function capture(): Promise<void> {
   const video = videoRef.value
-  if (!video || !scanner || phase.value !== 'ready') return
+  const currentBackend = backend
+  if (!video || !currentBackend || phase.value !== 'ready') return
 
   // Off-screen canvas at full camera resolution — we don't want the
   // preview overlay (which may be scaled) to affect the captured output.
@@ -206,8 +217,22 @@ function capture(): void {
   if (!ctx) return
   ctx.drawImage(video, 0, 0)
 
+  let quad: Quad | null = null
   try {
-    const extracted = scanner.extractPaper(work, EXTRACT_WIDTH, EXTRACT_HEIGHT)
+    quad = await currentBackend.detect(work)
+  } catch {
+    quad = null
+  }
+
+  if (!quad) {
+    showTransientError(
+      '書類を検出できませんでした。画面内に収めてもう一度撮影してください。',
+    )
+    return
+  }
+
+  try {
+    const extracted = warpPerspective(work, quad, EXTRACT_WIDTH, EXTRACT_HEIGHT)
     captured.value = [
       ...captured.value,
       {
@@ -217,9 +242,9 @@ function capture(): void {
         height: extracted.height,
       },
     ]
-  } catch {
+  } catch (err) {
     showTransientError(
-      '書類を検出できませんでした。画面内に収めてもう一度撮影してください。',
+      err instanceof Error ? err.message : '書類の切り出しに失敗しました',
     )
   }
 }
@@ -286,7 +311,10 @@ onBeforeUnmount(() => {
   }
   stream?.getTracks().forEach((t) => t.stop())
   stream = null
-  scanner = null
+  backend?.dispose()
+  backend = null
+  lastQuad = null
+  detectionWorkCanvas = null
 })
 </script>
 
@@ -441,8 +469,8 @@ onBeforeUnmount(() => {
   width: 100%;
   height: 100%;
   object-fit: contain;
-  /* Hidden — the overlay canvas draws the processed frame. */
-  visibility: hidden;
+  /* Visible: the raw camera stream is shown directly for smooth playback;
+     the overlay canvas on top draws only the detected quad. */
 }
 
 .viewport__overlay {
@@ -451,6 +479,8 @@ onBeforeUnmount(() => {
   width: 100%;
   height: 100%;
   object-fit: contain;
+  pointer-events: none;
+  /* Transparent background — only the quad polygon is rendered. */
 }
 
 .splash {
