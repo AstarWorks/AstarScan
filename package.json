@@ -34,7 +34,7 @@
     "dev:web": "bun run build:packages && bun run --cwd apps/web dev",
     "clean": "bun run --cwd packages/core clean && bun run --cwd packages/vue clean && bun run --cwd packages/element clean && bun run --cwd apps/web clean",
     "clean:deep": "bun run clean && rm -rf node_modules packages/*/node_modules apps/*/node_modules",
-    "ci": "bun run lint && bun run format:check && bun run typecheck && bun run build"
+    "ci": "bun run lint && bun run format:check && bun run build && bun run typecheck"
   },
   "devDependencies": {
     "@eslint/js": "^9",
