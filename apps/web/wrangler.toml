@@ -1,0 +1,18 @@
+# Cloudflare Pages configuration (config-as-code).
+# https://developers.cloudflare.com/pages/functions/wrangler-configuration/
+#
+# AstarScan is a pure static SPA — no Workers, no server component.
+# Cloudflare Pages GitHub integration detects pushes to main, reads
+# this file, runs the build command, and publishes pages_build_output_dir.
+#
+# NOTE: This file lives in apps/web/ (not repo root) because Wrangler v3
+# refuses to run from a workspace root (package.json "workspaces" field).
+# Cloudflare Pages "Root directory" must be set to "apps/web" in the
+# dashboard (one-time setting).
+
+name = "astar-scan"
+compatibility_date = "2025-07-15"
+pages_build_output_dir = ".output/public"
+
+[build]
+command = "cd ../.. && bash scripts/download-ocr-models.sh && bash scripts/download-siglip-model.sh && bun run build"
