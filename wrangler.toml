@@ -1,0 +1,8 @@
+# Cloudflare Workers Static Assets configuration.
+# Deploys the Nuxt SPA as static assets via wrangler deploy.
+
+name = "astar-scan"
+compatibility_date = "2025-07-15"
+
+[assets]
+directory = "apps/web/.output/public"
