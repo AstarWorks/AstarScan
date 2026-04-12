@@ -56,10 +56,19 @@ jobs:
       - name: Build
         run: bun run build
 
+      - name: Create Pages project (if not exists)
+        uses: cloudflare/wrangler-action@v3
+        with:
+          apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          accountId: ${{ vars.CLOUDFLARE_ACCOUNT_ID }}
+          packageManager: bun
+          command: pages project create astar-scan --production-branch=main
+        continue-on-error: true
+
       - name: Deploy
         uses: cloudflare/wrangler-action@v3
         with:
           apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           accountId: ${{ vars.CLOUDFLARE_ACCOUNT_ID }}
           packageManager: bun
-          command: pages deploy apps/web/.output/public --project-name=astar-scan
+          command: pages deploy apps/web/.output/public --project-name=astar-scan --commit-dirty=true
