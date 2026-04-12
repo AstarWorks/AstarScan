@@ -7,6 +7,7 @@ import {
   DEFAULT_BLUR_THRESHOLD,
   measureSharpness,
 } from '~/services/blur-detection'
+import { DocAlignerBackend } from '~/services/docaligner-backend'
 import { JscanifyBackend } from '~/services/jscanify-backend'
 import {
   MOTION_RESET_THRESHOLD,
@@ -263,10 +264,21 @@ async function start(): Promise<void> {
   phase.value = 'loading'
   errorText.value = null
   try {
-    statusText.value = 'スキャナー初期化中 (初回のみ、数秒)...'
-    const newBackend = new JscanifyBackend()
-    await newBackend.warmUp()
-    backend = newBackend
+    // Try DocAligner ONNX first (ML-based, 85-92% accuracy), fall back
+    // to JscanifyBackend (classical CV, 60-70%) on load failure.
+    statusText.value = 'AI モデル読み込み中 (初回のみ)...'
+    let selectedBackend: EdgeDetectorBackend
+    try {
+      const docaligner = new DocAlignerBackend('fastvit_t8')
+      await docaligner.warmUp()
+      selectedBackend = docaligner
+    } catch {
+      statusText.value = 'フォールバック: 古典スキャナー初期化中...'
+      const jscanify = new JscanifyBackend()
+      await jscanify.warmUp()
+      selectedBackend = jscanify
+    }
+    backend = selectedBackend
 
     statusText.value = 'カメラ起動中...'
     await startCamera()
