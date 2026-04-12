@@ -12,8 +12,7 @@ build
 .output
 *.tsbuildinfo
 
-# Bun
-bun.lock
+# Bun — bun.lock is committed (CI needs it to detect Bun as package manager)
 
 # Logs
 *.log
