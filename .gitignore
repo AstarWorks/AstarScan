@@ -52,6 +52,10 @@ wrangler.toml.bak
 # Run `scripts/download-ocr-models.sh` to fetch them.
 apps/web/public/models/ocr/*.onnx
 
+# SigLIP vision model (~55MB — downloaded separately for visual dedup)
+# Run `scripts/download-siglip-model.sh` to fetch it.
+apps/web/public/models/siglip-*.onnx
+
 # Temporary
 tmp/
 temp/

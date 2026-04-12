@@ -14,8 +14,16 @@ import {
   MotionDetector,
   STABILITY_THRESHOLD,
 } from '~/services/motion-detection'
+import {
+  extractGrayscale,
+  SsimDedupManager,
+} from '~/services/ssim-dedup'
 import { disposeOcr, initOcr, isOcrReady, runOcr } from '~/services/ocr-service'
 import type { OcrResult } from '~/services/ocr-service'
+import {
+  disposeVisualDedup,
+  runVisualDedup,
+} from '~/services/visual-dedup'
 import { warpPerspective } from '~/services/perspective-warper'
 import {
   clearSession,
@@ -49,6 +57,7 @@ interface CaptureNotification {
   readonly id: number
   readonly dataUrl: string
   readonly pageNumber: number
+  readonly type: 'new' | 'replaced' | 'skipped'
 }
 
 // --------------------------------------------------------------------------
@@ -88,6 +97,13 @@ const errorText = ref<string | null>(null)
 const captured = ref<CapturedPage[]>([])
 const notification = ref<CaptureNotification | null>(null)
 
+// Dedup stats (shown in video-end summary)
+const dedupSkipped = ref(0)
+
+// Visual dedup state
+const dedupRunning = ref(false)
+const dedupProgressText = ref('')
+
 // OCR state
 const ocrLoading = ref(false)
 const ocrProgress = ref<string>('')
@@ -104,6 +120,7 @@ const ocrPanelPage = ref<{
 
 let backend: EdgeDetectorBackend | null = null
 let motionDetector: MotionDetector | null = null
+const ssimDedup = new SsimDedupManager()
 let stream: MediaStream | null = null
 let visibilityCleanup: (() => void) | null = null
 let rafId: number | null = null
@@ -461,14 +478,19 @@ async function startFromFile(): Promise<void> {
     await video.play()
 
     // Stop scanning when the video ends
+    dedupSkipped.value = 0
     video.onended = () => {
       if (rafId !== null) {
         cancelAnimationFrame(rafId)
         rafId = null
       }
       URL.revokeObjectURL(objectUrl)
+      const dupMsg =
+        dedupSkipped.value > 0
+          ? ` (重複 ${dedupSkipped.value} 件除外)`
+          : ''
       showTransientError(
-        `動画の処理が完了しました。${captured.value.length} ページをキャプチャしました。`,
+        `動画の処理が完了しました。${captured.value.length} ページをキャプチャしました${dupMsg}。`,
       )
     }
 
@@ -545,13 +567,59 @@ async function tryCapture(options: { auto: boolean }): Promise<void> {
       return
     }
 
-    // Accept!
+    // Dedup gate + best-frame replacement.
+    // If the newly warped page is structurally identical to an already-
+    // captured page (SSIM > 0.81), compare sharpness: if the new frame
+    // is sharper, replace the existing page; otherwise skip.
+    const newGray = extractGrayscale(extracted)
+    const match = ssimDedup.isDuplicate(newGray)
+    if (match) {
+      const existingIdx = captured.value.findIndex(
+        (p) => p.id === match.pageId,
+      )
+      const existing = captured.value[existingIdx]
+
+      if (existing && sharpness > existing.sharpness) {
+        // Best-frame replacement: swap in the sharper version
+        const dataUrl = extracted.toDataURL('image/jpeg', 0.85)
+        const sourceDataUrl = work.toDataURL('image/jpeg', 0.85)
+        ssimDedup.updatePage(existing.id, newGray)
+        const pages = [...captured.value]
+        pages[existingIdx] = {
+          ...existing,
+          dataUrl,
+          width: extracted.width,
+          height: extracted.height,
+          sharpness,
+          sourceDataUrl,
+          sourceWidth: work.width,
+          sourceHeight: work.height,
+          backendName: currentBackend.name,
+          ocrText: undefined, // image changed — OCR must be re-run
+        }
+        captured.value = pages
+        showCaptureNotification(extracted, 'replaced', existingIdx + 1)
+        void persistSession()
+      } else {
+        // Existing version is equal or better — show brief skip notice
+        showCaptureNotification(extracted, 'skipped', existingIdx + 1)
+      }
+
+      dedupSkipped.value += 1
+      captureCooldown = true
+      stableSinceMs = null
+      return
+    }
+
+    // New page — accept!
+    const pageId = crypto.randomUUID()
     const dataUrl = extracted.toDataURL('image/jpeg', 0.85)
     const sourceDataUrl = work.toDataURL('image/jpeg', 0.85)
+    ssimDedup.addPage(pageId, newGray)
     captured.value = [
       ...captured.value,
       {
-        id: crypto.randomUUID(),
+        id: pageId,
         dataUrl,
         width: extracted.width,
         height: extracted.height,
@@ -571,30 +639,36 @@ async function tryCapture(options: { auto: boolean }): Promise<void> {
       stableSinceMs = null
     }
 
-    showCaptureNotification(extracted)
+    showCaptureNotification(extracted, 'new')
     void persistSession()
   } finally {
     captureInFlight = false
   }
 }
 
-function showCaptureNotification(source: HTMLCanvasElement): void {
+function showCaptureNotification(
+  source: HTMLCanvasElement,
+  type: 'new' | 'replaced' | 'skipped' = 'new',
+  pageNumber?: number,
+): void {
   const id = ++nextNotificationId
   notification.value = {
     id,
     dataUrl: source.toDataURL('image/jpeg', NOTIFICATION_THUMB_QUALITY),
-    pageNumber: captured.value.length,
+    pageNumber: pageNumber ?? captured.value.length,
+    type,
   }
   if (notificationTimeoutId !== null) {
     window.clearTimeout(notificationTimeoutId)
   }
+  // Skipped notifications fade faster — they're informational, not actionable.
+  const duration = type === 'skipped' ? 1500 : NOTIFICATION_DURATION_MS
   notificationTimeoutId = window.setTimeout(() => {
-    // Only clear if this is still the latest notification.
     if (notification.value?.id === id) {
       notification.value = null
     }
     notificationTimeoutId = null
-  }, NOTIFICATION_DURATION_MS)
+  }, duration)
 }
 
 function downloadPageImage(page: CapturedPage, idx: number): void {
@@ -606,6 +680,7 @@ function downloadPageImage(page: CapturedPage, idx: number): void {
 
 function removePage(id: string): void {
   captured.value = captured.value.filter((p) => p.id !== id)
+  ssimDedup.removePage(id)
   void persistSession()
 }
 
@@ -731,6 +806,63 @@ function closeOcrPanel(): void {
   ocrPanelPage.value = null
 }
 
+// --------------------------------------------------------------------------
+// Visual dedup (post-processing)
+// --------------------------------------------------------------------------
+
+/**
+ * Run visual embedding-based dedup on all captured pages. Uses a SigLIP
+ * vision encoder (~55MB, lazy-loaded) to find semantically similar pages
+ * and merge clusters. Keeps the sharpest representative per cluster.
+ */
+async function runDedup(): Promise<void> {
+  if (captured.value.length < 2 || dedupRunning.value) return
+  dedupRunning.value = true
+  dedupProgressText.value = ''
+
+  try {
+    const result = await runVisualDedup(
+      captured.value.map((p) => ({
+        dataUrl: p.dataUrl,
+        sharpness: p.sharpness,
+      })),
+      undefined, // use default threshold
+      (msg) => {
+        dedupProgressText.value = msg
+      },
+    )
+
+    const removed = captured.value.length - result.keepIndices.length
+    if (removed === 0) {
+      showTransientError('重複は検出されませんでした。')
+      return
+    }
+
+    // Keep only the representative pages
+    const keepSet = new Set(result.keepIndices)
+    const newPages = captured.value.filter((_, i) => keepSet.has(i))
+
+    // Rebuild dedup manager with the surviving pages
+    ssimDedup.clear()
+    // (SSIM thumbnails would need to be re-extracted, but since we're
+    // in post-processing mode the dedup manager is secondary. Just
+    // clear it — new captures will build it fresh.)
+
+    captured.value = newPages
+    void persistSession()
+    showTransientError(
+      `重複除去完了: ${removed} 件の重複を除外し、${result.clusterCount} ページに整理しました。`,
+    )
+  } catch (err) {
+    showTransientError(
+      err instanceof Error ? err.message : '重複除去に失敗しました',
+    )
+  } finally {
+    dedupRunning.value = false
+    dedupProgressText.value = ''
+  }
+}
+
 type PdfMode = 'single' | 'split' | 'batch'
 const pdfMode = ref<PdfMode>('single')
 
@@ -787,7 +919,8 @@ function exportPdf(): void {
       }
     }
 
-    // Clear persisted session after successful export
+    // Clear persisted session and dedup state after successful export
+    ssimDedup.clear()
     void clearSession()
   } catch (err) {
     showTransientError(
@@ -861,7 +994,9 @@ onBeforeUnmount(() => {
   backend = null
   motionDetector = null
   lastQuad = null
+  ssimDedup.clear()
   disposeOcr()
+  disposeVisualDedup()
   detectionWorkCanvas = null
 })
 </script>
@@ -913,6 +1048,10 @@ onBeforeUnmount(() => {
           v-if="notification && phase === 'ready'"
           :key="notification.id"
           class="notify"
+          :class="{
+            'notify--replaced': notification.type === 'replaced',
+            'notify--skipped': notification.type === 'skipped',
+          }"
           role="status"
         >
           <img
@@ -921,10 +1060,28 @@ onBeforeUnmount(() => {
             class="notify__thumb"
           />
           <div class="notify__body">
-            <span class="notify__title">✓ キャプチャしました</span>
-            <span class="notify__subtitle"
-              >ページ {{ notification.pageNumber }}</span
-            >
+            <span class="notify__title">
+              <template v-if="notification.type === 'replaced'">
+                ↑ ページ {{ notification.pageNumber }} を更新
+              </template>
+              <template v-else-if="notification.type === 'skipped'">
+                ＝ ページ {{ notification.pageNumber }}
+              </template>
+              <template v-else>
+                ✓ ページ {{ notification.pageNumber }}
+              </template>
+            </span>
+            <span class="notify__subtitle">
+              <template v-if="notification.type === 'replaced'">
+                より鮮明なフレームに差し替えました
+              </template>
+              <template v-else-if="notification.type === 'skipped'">
+                既にキャプチャ済み
+              </template>
+              <template v-else>
+                キャプチャしました
+              </template>
+            </span>
           </div>
         </div>
       </Transition>
@@ -1010,6 +1167,23 @@ onBeforeUnmount(() => {
         >
           動画ファイルから
         </button>
+        <button
+          v-if="captured.length >= 2"
+          class="btn btn--accent"
+          type="button"
+          :disabled="dedupRunning"
+          @click="runDedup"
+        >
+          {{ dedupRunning ? '処理中...' : '重複除去' }}
+        </button>
+        <button
+          v-if="captured.length > 0"
+          class="btn btn--primary"
+          type="button"
+          @click="exportPdf"
+        >
+          PDF 出力 ({{ captured.length }})
+        </button>
       </template>
 
       <template v-else>
@@ -1020,6 +1194,15 @@ onBeforeUnmount(() => {
           @click="tryCapture({ auto: false })"
         >
           手動で撮影
+        </button>
+        <button
+          v-if="captured.length >= 2"
+          class="btn btn--accent"
+          type="button"
+          :disabled="dedupRunning"
+          @click="runDedup"
+        >
+          {{ dedupRunning ? '処理中...' : '重複除去' }}
         </button>
         <select v-model="pdfMode" class="pdf-mode-select">
           <option value="single">1つの PDF</option>
@@ -1043,6 +1226,10 @@ onBeforeUnmount(() => {
 
     <div v-if="ocrLoading" class="toast toast--info" role="status">
       {{ ocrProgress }}
+    </div>
+
+    <div v-if="dedupRunning" class="toast toast--info" role="status">
+      {{ dedupProgressText || '重複除去中...' }}
     </div>
 
     <Transition name="sheet">
@@ -1230,8 +1417,8 @@ onBeforeUnmount(() => {
 }
 
 .notify__thumb {
-  width: 2.75rem;
-  height: 3.5rem;
+  width: 3.5rem;
+  height: 4.5rem;
   object-fit: cover;
   border-radius: 0.375rem;
   border: 1px solid rgba(255, 255, 255, 0.2);
@@ -1271,6 +1458,23 @@ onBeforeUnmount(() => {
 .notify-leave-from {
   transform: translateX(0);
   opacity: 1;
+}
+
+.notify--replaced {
+  border-color: rgba(34, 197, 94, 0.5);
+}
+
+.notify--replaced .notify__title {
+  color: #4ade80;
+}
+
+.notify--skipped {
+  opacity: 0.7;
+  border-color: rgba(148, 163, 184, 0.25);
+}
+
+.notify--skipped .notify__title {
+  color: #94a3b8;
 }
 
 .strip {
@@ -1487,6 +1691,11 @@ onBeforeUnmount(() => {
 .btn--secondary {
   background: rgba(255, 255, 255, 0.08);
   border: 1px solid rgba(255, 255, 255, 0.15);
+}
+
+.btn--accent {
+  background: linear-gradient(135deg, #f59e0b 0%, #ef4444 100%);
+  box-shadow: 0 4px 16px rgba(245, 158, 11, 0.3);
 }
 
 .btn:active:not(:disabled) {
