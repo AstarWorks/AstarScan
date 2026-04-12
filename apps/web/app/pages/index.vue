@@ -3,8 +3,17 @@ import { onBeforeUnmount, ref } from 'vue'
 import jsPDF from 'jspdf'
 
 import type { EdgeDetectorBackend, Quad } from '@astarworks/scan-core'
+import {
+  DEFAULT_BLUR_THRESHOLD,
+  measureSharpness,
+} from '~/services/blur-detection'
 import { JscanifyBackend } from '~/services/jscanify-backend'
 import { warpPerspective } from '~/services/perspective-warper'
+import {
+  DUPLICATE_THRESHOLD,
+  computePHash,
+  findDuplicate,
+} from '~/services/phash'
 
 // --------------------------------------------------------------------------
 // Types
@@ -17,6 +26,16 @@ interface CapturedPage {
   readonly dataUrl: string
   readonly width: number
   readonly height: number
+  /** 64-bit dHash fingerprint for duplicate detection. `0n` on miss. */
+  readonly phash: bigint
+  /**
+   * `true` if this page is a likely duplicate of an earlier page in the
+   * same session. We never auto-delete — the user sees a red badge on
+   * the thumbnail and decides what to do with it.
+   */
+  readonly duplicate: boolean
+  /** Laplacian variance — used for the debug overlay and acceptance gate. */
+  readonly sharpness: number
 }
 
 // --------------------------------------------------------------------------
@@ -231,22 +250,52 @@ async function capture(): Promise<void> {
     return
   }
 
+  let extracted: HTMLCanvasElement
   try {
-    const extracted = warpPerspective(work, quad, EXTRACT_WIDTH, EXTRACT_HEIGHT)
-    captured.value = [
-      ...captured.value,
-      {
-        id: crypto.randomUUID(),
-        dataUrl: extracted.toDataURL('image/jpeg', 0.85),
-        width: extracted.width,
-        height: extracted.height,
-      },
-    ]
+    extracted = warpPerspective(work, quad, EXTRACT_WIDTH, EXTRACT_HEIGHT)
   } catch (err) {
     showTransientError(
       err instanceof Error ? err.message : '書類の切り出しに失敗しました',
     )
+    return
   }
+
+  // Quality gate: Laplacian variance. Blurry frames never reach the PDF.
+  const sharpness = measureSharpness(extracted)
+  if (sharpness < DEFAULT_BLUR_THRESHOLD) {
+    showTransientError(
+      `ピンボレが検出されました (${Math.round(sharpness)})。端末を固定してもう一度撮影してください。`,
+    )
+    return
+  }
+
+  // Duplicate check: compare the perceptual hash against every existing
+  // page in the session. This is advisory only — we never auto-delete.
+  // If a match is found we flag the new page and warn the user, who can
+  // delete either copy via the thumbnail × button.
+  const phash = computePHash(extracted)
+  const existingHashes = captured.value.map((p) => p.phash)
+  const dup = findDuplicate(phash, existingHashes, DUPLICATE_THRESHOLD)
+  if (dup) {
+    showTransientError(
+      `ページ ${dup.index + 1} と似た書類が撮影されました (類似度 ${
+        64 - dup.distance
+      }/64)。重複の場合はサムネイルから削除してください。`,
+    )
+  }
+
+  captured.value = [
+    ...captured.value,
+    {
+      id: crypto.randomUUID(),
+      dataUrl: extracted.toDataURL('image/jpeg', 0.85),
+      width: extracted.width,
+      height: extracted.height,
+      phash,
+      duplicate: dup !== null,
+      sharpness,
+    },
+  ]
 }
 
 function removePage(id: string): void {
@@ -359,9 +408,20 @@ onBeforeUnmount(() => {
     </section>
 
     <div v-if="captured.length > 0" class="strip">
-      <div v-for="(page, idx) in captured" :key="page.id" class="strip__thumb">
+      <div
+        v-for="(page, idx) in captured"
+        :key="page.id"
+        class="strip__thumb"
+        :class="{ 'strip__thumb--duplicate': page.duplicate }"
+      >
         <img :src="page.dataUrl" :alt="`ページ ${idx + 1}`" />
         <span class="strip__num">{{ idx + 1 }}</span>
+        <span
+          v-if="page.duplicate"
+          class="strip__badge"
+          title="似たページが既にあります"
+          >重複?</span
+        >
         <button
           class="strip__remove"
           type="button"
@@ -581,11 +641,31 @@ onBeforeUnmount(() => {
   background: #1e293b;
 }
 
+.strip__thumb--duplicate {
+  border-color: rgba(251, 191, 36, 0.9);
+  box-shadow: 0 0 0 1px rgba(251, 191, 36, 0.4);
+}
+
 .strip__thumb img {
   display: block;
   width: 100%;
   height: 100%;
   object-fit: cover;
+}
+
+.strip__badge {
+  position: absolute;
+  bottom: 0.125rem;
+  left: 0.125rem;
+  right: 0.125rem;
+  padding: 0.0625rem 0.25rem;
+  background: rgba(251, 191, 36, 0.95);
+  color: #422006;
+  border-radius: 0.1875rem;
+  font-size: 0.5625rem;
+  font-weight: 700;
+  text-align: center;
+  white-space: nowrap;
 }
 
 .strip__num {
