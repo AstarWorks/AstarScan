@@ -15,4 +15,4 @@ compatibility_date = "2025-07-15"
 pages_build_output_dir = ".output/public"
 
 [build]
-command = "cd ../.. && bash scripts/download-ocr-models.sh && bash scripts/download-siglip-model.sh && bun run build"
+command = "(cd ../.. && bash scripts/download-ocr-models.sh && bash scripts/download-siglip-model.sh && bun run build)"
