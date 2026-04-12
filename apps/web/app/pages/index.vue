@@ -833,6 +833,21 @@ function previewNext(): void {
   }
 }
 
+function previewOcrAndClose(): void {
+  if (previewPageIndex.value !== null) {
+    startOcr(previewPageIndex.value)
+  }
+  closePreview()
+}
+
+function previewDeleteAndClose(): void {
+  if (previewPageIndex.value !== null) {
+    const page = captured.value[previewPageIndex.value]
+    if (page) removePage(page.id)
+  }
+  closePreview()
+}
+
 // --------------------------------------------------------------------------
 // Visual dedup (post-processing)
 // --------------------------------------------------------------------------
@@ -1353,20 +1368,14 @@ onBeforeUnmount(() => {
             <button
               class="btn btn--secondary"
               type="button"
-              @click="
-                startOcr(previewPageIndex)
-                closePreview()
-              "
+              @click="previewOcrAndClose"
             >
               OCR
             </button>
             <button
               class="btn btn--secondary"
               type="button"
-              @click="
-                removePage(captured[previewPageIndex]!.id)
-                closePreview()
-              "
+              @click="previewDeleteAndClose"
             >
               削除
             </button>
