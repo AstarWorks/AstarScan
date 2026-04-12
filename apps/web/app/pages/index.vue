@@ -14,6 +14,8 @@ import {
   MotionDetector,
   STABILITY_THRESHOLD,
 } from '~/services/motion-detection'
+import { disposeOcr, initOcr, isOcrReady, runOcr } from '~/services/ocr-service'
+import type { OcrResult } from '~/services/ocr-service'
 import { warpPerspective } from '~/services/perspective-warper'
 
 // --------------------------------------------------------------------------
@@ -28,6 +30,7 @@ interface CapturedPage {
   readonly width: number
   readonly height: number
   readonly sharpness: number
+  ocrText?: string
 }
 
 interface CaptureNotification {
@@ -72,6 +75,15 @@ const statusText = ref<string>('')
 const errorText = ref<string | null>(null)
 const captured = ref<CapturedPage[]>([])
 const notification = ref<CaptureNotification | null>(null)
+
+// OCR state
+const ocrLoading = ref(false)
+const ocrProgress = ref<string>('')
+const ocrPanelPage = ref<{
+  pageIndex: number
+  result: OcrResult | null
+  loading: boolean
+} | null>(null)
 
 // --------------------------------------------------------------------------
 // Non-reactive handles (these don't need Vue reactivity, and making them
@@ -406,6 +418,54 @@ function removePage(id: string): void {
   captured.value = captured.value.filter((p) => p.id !== id)
 }
 
+// --------------------------------------------------------------------------
+// OCR
+// --------------------------------------------------------------------------
+
+async function startOcr(pageIndex: number): Promise<void> {
+  const page = captured.value[pageIndex]
+  if (!page) return
+
+  // Show panel immediately in loading state
+  ocrPanelPage.value = { pageIndex, result: null, loading: true }
+
+  try {
+    // Initialize OCR engine on first use (downloads ~146MB of models)
+    if (!isOcrReady()) {
+      ocrLoading.value = true
+      ocrProgress.value = 'OCR モデル準備中...'
+      await initOcr((p) => {
+        ocrProgress.value = `${p.stage} (${Math.round(p.percent)}%)`
+      })
+      ocrLoading.value = false
+      ocrProgress.value = ''
+    }
+
+    // Run OCR on the page
+    const result = await runOcr(page.dataUrl)
+
+    // Write back text to the CapturedPage
+    const pages = [...captured.value]
+    const target = pages[pageIndex]
+    if (target) {
+      pages[pageIndex] = { ...target, ocrText: result.text }
+      captured.value = pages
+    }
+
+    ocrPanelPage.value = { pageIndex, result, loading: false }
+  } catch (err) {
+    ocrPanelPage.value = null
+    showTransientError(
+      err instanceof Error ? err.message : 'OCR の実行に失敗しました',
+    )
+    ocrLoading.value = false
+  }
+}
+
+function closeOcrPanel(): void {
+  ocrPanelPage.value = null
+}
+
 function exportPdf(): void {
   if (captured.value.length === 0) return
   try {
@@ -472,6 +532,7 @@ onBeforeUnmount(() => {
   backend = null
   motionDetector = null
   lastQuad = null
+  disposeOcr()
   detectionWorkCanvas = null
 })
 </script>
@@ -538,9 +599,16 @@ onBeforeUnmount(() => {
     </section>
 
     <div v-if="captured.length > 0" class="strip">
-      <div v-for="(page, idx) in captured" :key="page.id" class="strip__thumb">
+      <div
+        v-for="(page, idx) in captured"
+        :key="page.id"
+        class="strip__thumb"
+        :class="{ 'strip__thumb--ocr': page.ocrText }"
+        @click="startOcr(idx)"
+      >
         <img :src="page.dataUrl" :alt="`ページ ${idx + 1}`" />
         <span class="strip__num">{{ idx + 1 }}</span>
+        <span v-if="page.ocrText" class="strip__ocr-badge">OCR</span>
         <button
           class="strip__remove"
           type="button"
@@ -585,6 +653,26 @@ onBeforeUnmount(() => {
     <div v-if="errorText && phase === 'ready'" class="toast" role="alert">
       {{ errorText }}
     </div>
+
+    <div v-if="ocrLoading" class="toast toast--info" role="status">
+      {{ ocrProgress }}
+    </div>
+
+    <Transition name="sheet">
+      <div
+        v-if="ocrPanelPage !== null"
+        class="sheet-backdrop"
+        @click.self="closeOcrPanel"
+      >
+        <OcrResultPanel
+          :result="ocrPanelPage.result"
+          :page-image-url="captured[ocrPanelPage.pageIndex]?.dataUrl ?? ''"
+          :page-number="ocrPanelPage.pageIndex + 1"
+          :loading="ocrPanelPage.loading"
+          @close="closeOcrPanel"
+        />
+      </div>
+    </Transition>
   </main>
 </template>
 
@@ -857,6 +945,55 @@ onBeforeUnmount(() => {
 
 .strip__remove:active {
   background: rgb(220, 38, 38);
+}
+
+.strip__thumb--ocr {
+  border-color: rgba(96, 165, 250, 0.6);
+}
+
+.strip__ocr-badge {
+  position: absolute;
+  bottom: 0.125rem;
+  left: 0.125rem;
+  right: 0.125rem;
+  padding: 0.0625rem 0;
+  background: rgba(96, 165, 250, 0.9);
+  color: #fff;
+  border-radius: 0.1875rem;
+  font-size: 0.5rem;
+  font-weight: 700;
+  text-align: center;
+}
+
+.toast--info {
+  background: rgba(15, 23, 42, 0.95);
+  color: #93c5fd;
+}
+
+.sheet-backdrop {
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.6);
+  display: flex;
+  align-items: flex-end;
+  z-index: 30;
+}
+
+.sheet-enter-active,
+.sheet-leave-active {
+  transition: opacity 0.25s ease;
+}
+.sheet-enter-active > *,
+.sheet-leave-active > * {
+  transition: transform 0.3s cubic-bezier(0.2, 0.9, 0.3, 1.2);
+}
+.sheet-enter-from,
+.sheet-leave-to {
+  opacity: 0;
+}
+.sheet-enter-from > *,
+.sheet-leave-to > * {
+  transform: translateY(100%);
 }
 
 .controls {
