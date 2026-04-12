@@ -2,17 +2,13 @@
 # https://developers.cloudflare.com/pages/functions/wrangler-configuration/
 #
 # AstarScan is a pure static SPA — no Workers, no server component.
-# Deployment: Cloudflare Pages GitHub integration (native).
+# Deploy: Cloudflare Pages GitHub integration (native).
 #
-# Monorepo compatibility:
-# - "." in package.json workspaces → bypasses workspace root detection
-# - [build] cwd = "apps/web" → scopes framework detection to Nuxt only
-#   (without this, autoconfig finds Vite×3 + Nuxt and fails)
+# NOTE: Pages wrangler.toml does NOT support [build] — that is Workers-only.
+# Build command is set once in the Pages dashboard:
+#   bash scripts/cf-pages-build.sh
+# The build logic itself lives in that script (config-as-code).
 
 name = "astar-scan"
 compatibility_date = "2025-07-15"
 pages_build_output_dir = "apps/web/.output/public"
-
-[build]
-command = "bash ../../scripts/cf-pages-build.sh"
-cwd = "apps/web"
