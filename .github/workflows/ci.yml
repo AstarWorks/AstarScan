@@ -14,12 +14,15 @@ concurrency:
 
 permissions:
   contents: read
+  deployments: write
 
 jobs:
   gate:
     name: Build + Typecheck
     runs-on: ubuntu-latest
     timeout-minutes: 10
+    outputs:
+      should-deploy: ${{ github.ref == 'refs/heads/main' && github.event_name == 'push' }}
 
     steps:
       - name: Checkout
@@ -38,3 +41,37 @@ jobs:
 
       - name: Build + typecheck (bun run ci)
         run: bun run ci
+
+  deploy:
+    name: Deploy to Cloudflare Pages
+    needs: gate
+    if: github.ref == 'refs/heads/main' && github.event_name == 'push'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Bun
+        uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: latest
+
+      - name: Install dependencies
+        run: bun install
+
+      - name: Download models
+        run: |
+          bash scripts/download-ocr-models.sh
+          bash scripts/download-siglip-model.sh
+
+      - name: Build
+        run: bun run build
+
+      - name: Deploy
+        uses: cloudflare/wrangler-action@v3
+        with:
+          apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          accountId: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          command: pages deploy apps/web/.output/public --project-name=astar-scan
