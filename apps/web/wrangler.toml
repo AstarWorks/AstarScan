@@ -1,0 +1,13 @@
+# Cloudflare Pages configuration.
+# https://developers.cloudflare.com/pages/functions/wrangler-configuration/
+#
+# Root directory is set to "apps/web" in the Pages dashboard (one-time).
+# This scopes framework detection to Nuxt only and places wrangler.toml
+# in the correct working directory for the build system.
+
+name = "astar-scan"
+compatibility_date = "2025-07-15"
+pages_build_output_dir = ".output/public"
+
+[build]
+command = "bash ../../scripts/cf-pages-build.sh"

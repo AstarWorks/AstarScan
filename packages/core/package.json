@@ -34,8 +34,8 @@
     "LICENSE"
   ],
   "scripts": {
-    "build": "vite build --config vite.lib.config.ts",
-    "build:watch": "vite build --config vite.lib.config.ts --watch",
+    "build": "vite build",
+    "build:watch": "vite build --watch",
     "typecheck": "tsc --noEmit",
     "test": "echo 'TODO: vitest' && exit 0",
     "lint": "echo 'TODO: eslint' && exit 0",
