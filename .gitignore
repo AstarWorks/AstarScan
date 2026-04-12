@@ -56,6 +56,10 @@ apps/web/public/models/ocr/*.onnx
 # Run `scripts/download-siglip-model.sh` to fetch it.
 apps/web/public/models/siglip-*.onnx
 
+# Test videos (too large for git)
+*.mp4
+*.mov
+
 # Temporary
 tmp/
 temp/
