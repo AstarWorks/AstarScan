@@ -10,6 +10,14 @@ export default defineNuxtConfig({
 
   devtools: { enabled: true },
 
+  // Vite configuration for ONNX Runtime Web + Web Workers (NDLOCR-Lite).
+  vite: {
+    worker: { format: 'es' as const },
+    optimizeDeps: {
+      exclude: ['onnxruntime-web', 'onnxruntime-web/wasm'],
+    },
+  },
+
   // Static output for Cloudflare Pages. `nuxt generate` produces
   // pure HTML/JS/CSS into `.output/public/` — no Nitro runtime, no
   // Workers, no Functions. Deploy with:

@@ -101,6 +101,21 @@ export default [
   },
 
   // ------------------------------------------------------------------
+  // Vendored third-party code — relax rules that conflict with the
+  // original codebase's style. We don't want to maintain hundreds of
+  // micro-patches in code we didn't write.
+  // ------------------------------------------------------------------
+  {
+    files: ['**/lib/ndlocr/**/*.ts'],
+    rules: {
+      '@typescript-eslint/ban-ts-comment': 'off',
+      '@typescript-eslint/no-unused-vars': 'off',
+      '@typescript-eslint/no-explicit-any': 'off',
+      'prefer-const': 'off',
+    },
+  },
+
+  // ------------------------------------------------------------------
   // Node globals for config files + vite.config.ts
   // ------------------------------------------------------------------
   {

@@ -48,6 +48,10 @@ playwright/.cache/
 .wrangler/
 wrangler.toml.bak
 
+# OCR models (147MB total — too large for git, downloaded separately)
+# Run `scripts/download-ocr-models.sh` to fetch them.
+apps/web/public/models/ocr/*.onnx
+
 # Temporary
 tmp/
 temp/
