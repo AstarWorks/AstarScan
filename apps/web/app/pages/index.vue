@@ -36,6 +36,10 @@ interface CapturedPage {
   readonly width: number
   readonly height: number
   readonly sharpness: number
+  /** Full camera frame before perspective correction (for re-detection). */
+  readonly sourceDataUrl?: string
+  readonly sourceWidth?: number
+  readonly sourceHeight?: number
   ocrText?: string
 }
 
@@ -460,6 +464,7 @@ async function tryCapture(options: { auto: boolean }): Promise<void> {
 
     // Accept!
     const dataUrl = extracted.toDataURL('image/jpeg', 0.85)
+    const sourceDataUrl = work.toDataURL('image/jpeg', 0.85)
     captured.value = [
       ...captured.value,
       {
@@ -468,6 +473,9 @@ async function tryCapture(options: { auto: boolean }): Promise<void> {
         width: extracted.width,
         height: extracted.height,
         sharpness,
+        sourceDataUrl,
+        sourceWidth: work.width,
+        sourceHeight: work.height,
       },
     ]
 
@@ -508,6 +516,80 @@ function showCaptureNotification(source: HTMLCanvasElement): void {
 function removePage(id: string): void {
   captured.value = captured.value.filter((p) => p.id !== id)
   void persistSession()
+}
+
+function movePageUp(idx: number): void {
+  if (idx <= 0) return
+  const pages = [...captured.value]
+  const temp = pages[idx - 1]!
+  pages[idx - 1] = pages[idx]!
+  pages[idx] = temp
+  captured.value = pages
+  void persistSession()
+}
+
+function movePageDown(idx: number): void {
+  if (idx >= captured.value.length - 1) return
+  const pages = [...captured.value]
+  const temp = pages[idx + 1]!
+  pages[idx + 1] = pages[idx]!
+  pages[idx] = temp
+  captured.value = pages
+  void persistSession()
+}
+
+/**
+ * Re-detect corners on the source frame and re-warp. This is the
+ * simplified version of "manual 4-corner correction" — the user gets
+ * a fresh detection attempt rather than dragging handles. Useful when
+ * auto-capture grabbed a slightly off quad.
+ */
+async function redetectPage(idx: number): Promise<void> {
+  const page = captured.value[idx]
+  if (!page?.sourceDataUrl || !backend) return
+
+  try {
+    // Reconstruct canvas from the saved source frame
+    const img = await new Promise<HTMLImageElement>((resolve, reject) => {
+      const el = new Image()
+      el.onload = () => resolve(el)
+      el.onerror = () => reject(new Error('Failed to load source frame'))
+      el.src = page.sourceDataUrl!
+    })
+    const canvas = document.createElement('canvas')
+    canvas.width = img.width
+    canvas.height = img.height
+    canvas.getContext('2d')?.drawImage(img, 0, 0)
+
+    const quad = await backend.detect(canvas)
+    if (!quad) {
+      showTransientError('再検出できませんでした。')
+      return
+    }
+
+    const extracted = warpPerspective(
+      canvas,
+      quad,
+      EXTRACT_WIDTH,
+      EXTRACT_HEIGHT,
+    )
+    const sharpness = measureSharpness(extracted)
+
+    const pages = [...captured.value]
+    pages[idx] = {
+      ...page,
+      dataUrl: extracted.toDataURL('image/jpeg', 0.85),
+      width: extracted.width,
+      height: extracted.height,
+      sharpness,
+      ocrText: undefined, // OCR needs to be re-run after re-warp
+    }
+    captured.value = pages
+    void persistSession()
+    showTransientError('再検出しました。')
+  } catch {
+    showTransientError('再検出に失敗しました。')
+  }
 }
 
 // --------------------------------------------------------------------------
@@ -558,39 +640,62 @@ function closeOcrPanel(): void {
   ocrPanelPage.value = null
 }
 
+type PdfMode = 'single' | 'split' | 'batch'
+const pdfMode = ref<PdfMode>('single')
+
+function buildPdf(pages: CapturedPage[]): jsPDF {
+  const pdf = new jsPDF({ unit: 'mm', format: 'a4', orientation: 'portrait' })
+  const mmWidth = pdf.internal.pageSize.getWidth()
+  const mmHeight = pdf.internal.pageSize.getHeight()
+
+  pages.forEach((page, i) => {
+    if (i > 0) pdf.addPage()
+    const imgAspect = page.width / page.height
+    const pageAspect = mmWidth / mmHeight
+    let w: number
+    let h: number
+    if (imgAspect > pageAspect) {
+      w = mmWidth
+      h = mmWidth / imgAspect
+    } else {
+      h = mmHeight
+      w = mmHeight * imgAspect
+    }
+    const x = (mmWidth - w) / 2
+    const y = (mmHeight - h) / 2
+    pdf.addImage(page.dataUrl, 'JPEG', x, y, w, h)
+  })
+  return pdf
+}
+
 function exportPdf(): void {
   if (captured.value.length === 0) return
   try {
-    const pdf = new jsPDF({
-      unit: 'mm',
-      format: 'a4',
-      orientation: 'portrait',
-    })
-    const mmWidth = pdf.internal.pageSize.getWidth()
-    const mmHeight = pdf.internal.pageSize.getHeight()
-
-    captured.value.forEach((page, i) => {
-      if (i > 0) pdf.addPage()
-      const imgAspect = page.width / page.height
-      const pageAspect = mmWidth / mmHeight
-
-      let w: number
-      let h: number
-      if (imgAspect > pageAspect) {
-        w = mmWidth
-        h = mmWidth / imgAspect
-      } else {
-        h = mmHeight
-        w = mmHeight * imgAspect
-      }
-
-      const x = (mmWidth - w) / 2
-      const y = (mmHeight - h) / 2
-      pdf.addImage(page.dataUrl, 'JPEG', x, y, w, h)
-    })
-
     const ts = new Date().toISOString().slice(0, 19).replace(/[:T]/g, '-')
-    pdf.save(`astarscan-${ts}.pdf`)
+    const mode = pdfMode.value
+
+    if (mode === 'single') {
+      const pdf = buildPdf(captured.value)
+      pdf.save(`astarscan-${ts}.pdf`)
+    } else if (mode === 'split') {
+      // Each page as a separate PDF download
+      captured.value.forEach((page, i) => {
+        const pdf = buildPdf([page])
+        pdf.save(`astarscan-${ts}-p${String(i + 1).padStart(3, '0')}.pdf`)
+      })
+    } else if (mode === 'batch') {
+      // Group into batches of 10
+      const batchSize = 10
+      for (let start = 0; start < captured.value.length; start += batchSize) {
+        const batch = captured.value.slice(start, start + batchSize)
+        const batchNum = Math.floor(start / batchSize) + 1
+        const pdf = buildPdf(batch)
+        pdf.save(
+          `astarscan-${ts}-batch${String(batchNum).padStart(2, '0')}.pdf`,
+        )
+      }
+    }
+
     // Clear persisted session after successful export
     void clearSession()
   } catch (err) {
@@ -740,16 +845,48 @@ onBeforeUnmount(() => {
         :key="page.id"
         class="strip__thumb"
         :class="{ 'strip__thumb--ocr': page.ocrText }"
-        @click="startOcr(idx)"
       >
-        <img :src="page.dataUrl" :alt="`ページ ${idx + 1}`" />
+        <img
+          :src="page.dataUrl"
+          :alt="`ページ ${idx + 1}`"
+          @click="startOcr(idx)"
+        />
         <span class="strip__num">{{ idx + 1 }}</span>
         <span v-if="page.ocrText" class="strip__ocr-badge">OCR</span>
+        <div class="strip__actions">
+          <button
+            v-if="idx > 0"
+            class="strip__btn"
+            type="button"
+            :aria-label="`ページ ${idx + 1} を前に`"
+            @click.stop="movePageUp(idx)"
+          >
+            &lt;
+          </button>
+          <button
+            v-if="page.sourceDataUrl"
+            class="strip__btn strip__btn--re"
+            type="button"
+            :aria-label="`ページ ${idx + 1} を再検出`"
+            @click.stop="redetectPage(idx)"
+          >
+            R
+          </button>
+          <button
+            v-if="idx < captured.length - 1"
+            class="strip__btn"
+            type="button"
+            :aria-label="`ページ ${idx + 1} を後に`"
+            @click.stop="movePageDown(idx)"
+          >
+            &gt;
+          </button>
+        </div>
         <button
           class="strip__remove"
           type="button"
           :aria-label="`ページ ${idx + 1} を削除`"
-          @click="removePage(page.id)"
+          @click.stop="removePage(page.id)"
         >
           ×
         </button>
@@ -775,6 +912,11 @@ onBeforeUnmount(() => {
         >
           手動で撮影
         </button>
+        <select v-model="pdfMode" class="pdf-mode-select">
+          <option value="single">1つの PDF</option>
+          <option value="split">ページ別 PDF</option>
+          <option value="batch">10枚ずつ</option>
+        </select>
         <button
           class="btn btn--primary"
           type="button"
@@ -1087,6 +1229,53 @@ onBeforeUnmount(() => {
 
 .strip__remove:active {
   background: rgb(220, 38, 38);
+}
+
+.strip__actions {
+  position: absolute;
+  bottom: 0;
+  left: 0;
+  right: 0;
+  display: flex;
+  justify-content: center;
+  gap: 1px;
+  opacity: 0;
+  transition: opacity 0.15s ease;
+}
+
+.strip__thumb:hover .strip__actions,
+.strip__thumb:focus-within .strip__actions {
+  opacity: 1;
+}
+
+.strip__btn {
+  padding: 0.125rem 0.25rem;
+  border: none;
+  background: rgba(0, 0, 0, 0.7);
+  color: #e2e8f0;
+  font-size: 0.5rem;
+  font-weight: 700;
+  cursor: pointer;
+  font-family: inherit;
+}
+
+.strip__btn--re {
+  background: rgba(96, 165, 250, 0.8);
+}
+
+.strip__btn:active {
+  background: rgba(255, 255, 255, 0.3);
+}
+
+.pdf-mode-select {
+  padding: 0.5rem 0.375rem;
+  border-radius: 0.5rem;
+  border: 1px solid rgba(255, 255, 255, 0.15);
+  background: rgba(255, 255, 255, 0.06);
+  color: #e2e8f0;
+  font-size: 0.75rem;
+  font-family: inherit;
+  flex: 0 0 auto;
 }
 
 .strip__thumb--ocr {
