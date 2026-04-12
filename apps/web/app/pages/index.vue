@@ -597,6 +597,13 @@ function showCaptureNotification(source: HTMLCanvasElement): void {
   }, NOTIFICATION_DURATION_MS)
 }
 
+function downloadPageImage(page: CapturedPage, idx: number): void {
+  const a = document.createElement('a')
+  a.href = page.dataUrl
+  a.download = `astarscan-page-${String(idx + 1).padStart(3, '0')}.jpg`
+  a.click()
+}
+
 function removePage(id: string): void {
   captured.value = captured.value.filter((p) => p.id !== id)
   void persistSession()
@@ -951,6 +958,14 @@ onBeforeUnmount(() => {
             @click.stop="movePageUp(idx)"
           >
             &lt;
+          </button>
+          <button
+            class="strip__btn strip__btn--dl"
+            type="button"
+            :aria-label="`ページ ${idx + 1} を画像で保存`"
+            @click.stop="downloadPageImage(page, idx)"
+          >
+            DL
           </button>
           <button
             v-if="page.sourceDataUrl"
@@ -1355,6 +1370,10 @@ onBeforeUnmount(() => {
 
 .strip__btn--re {
   background: rgba(96, 165, 250, 0.8);
+}
+
+.strip__btn--dl {
+  background: rgba(34, 197, 94, 0.8);
 }
 
 .strip__btn:active {
