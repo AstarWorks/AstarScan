@@ -8,12 +8,12 @@ import {
   measureSharpness,
 } from '~/services/blur-detection'
 import { JscanifyBackend } from '~/services/jscanify-backend'
-import { warpPerspective } from '~/services/perspective-warper'
 import {
-  DUPLICATE_THRESHOLD,
-  computePHash,
-  findDuplicate,
-} from '~/services/phash'
+  MOTION_RESET_THRESHOLD,
+  MotionDetector,
+  STABILITY_THRESHOLD,
+} from '~/services/motion-detection'
+import { warpPerspective } from '~/services/perspective-warper'
 
 // --------------------------------------------------------------------------
 // Types
@@ -26,16 +26,13 @@ interface CapturedPage {
   readonly dataUrl: string
   readonly width: number
   readonly height: number
-  /** 64-bit dHash fingerprint for duplicate detection. `0n` on miss. */
-  readonly phash: bigint
-  /**
-   * `true` if this page is a likely duplicate of an earlier page in the
-   * same session. We never auto-delete — the user sees a red badge on
-   * the thumbnail and decides what to do with it.
-   */
-  readonly duplicate: boolean
-  /** Laplacian variance — used for the debug overlay and acceptance gate. */
   readonly sharpness: number
+}
+
+interface CaptureNotification {
+  readonly id: number
+  readonly dataUrl: string
+  readonly pageNumber: number
 }
 
 // --------------------------------------------------------------------------
@@ -46,11 +43,22 @@ interface CapturedPage {
 const EXTRACT_WIDTH = 1200
 const EXTRACT_HEIGHT = 1600
 
+// Thumbnail used inside the capture-notification toast.
+const NOTIFICATION_THUMB_QUALITY = 0.6
+
 // Async detection runs every N RAF frames. At 60 FPS display that's
 // ~15 FPS detection — responsive enough for the outline to feel live
 // without saturating the CPU. Detection is fire-and-forget; the loop
 // just renders the most recent known quad until a new one arrives.
 const DETECTION_EVERY_N_FRAMES = 4
+
+// How long the scene must stay stable before auto-capture fires.
+// Tuned so the user can show a page, wait half a second while the
+// outline locks on, and have it captured without a button tap.
+const STABLE_DURATION_MS = 500
+
+// Auto-capture notification display time (ms).
+const NOTIFICATION_DURATION_MS = 2500
 
 // --------------------------------------------------------------------------
 // Reactive state
@@ -62,6 +70,7 @@ const phase = ref<Phase>('idle')
 const statusText = ref<string>('')
 const errorText = ref<string | null>(null)
 const captured = ref<CapturedPage[]>([])
+const notification = ref<CaptureNotification | null>(null)
 
 // --------------------------------------------------------------------------
 // Non-reactive handles (these don't need Vue reactivity, and making them
@@ -69,6 +78,7 @@ const captured = ref<CapturedPage[]>([])
 // --------------------------------------------------------------------------
 
 let backend: EdgeDetectorBackend | null = null
+let motionDetector: MotionDetector | null = null
 let stream: MediaStream | null = null
 let rafId: number | null = null
 let detectionTick = 0
@@ -79,6 +89,13 @@ let detectionTick = 0
 let lastQuad: Quad | null = null
 let detectionInFlight = false
 let detectionWorkCanvas: HTMLCanvasElement | null = null
+
+// Auto-capture state machine (see `startDetectionLoop`).
+let stableSinceMs: number | null = null
+let captureInFlight = false
+let captureCooldown = false
+let nextNotificationId = 0
+let notificationTimeoutId: number | null = null
 
 // --------------------------------------------------------------------------
 // Camera lifecycle
@@ -107,8 +124,8 @@ async function startCamera(): Promise<void> {
 }
 
 // --------------------------------------------------------------------------
-// Async detection loop — renders the quad overlay on every frame, kicks
-// off detection every DETECTION_EVERY_N_FRAMES without awaiting.
+// Async detection loop — draws quad overlay, samples motion, kicks off
+// async detect(), triggers auto-capture when the scene is stable+sharp.
 // --------------------------------------------------------------------------
 
 function ensureWorkCanvas(video: HTMLVideoElement): HTMLCanvasElement {
@@ -130,9 +147,17 @@ function drawQuadOverlay(
   ctx: CanvasRenderingContext2D,
   quad: Quad,
   canvasWidth: number,
+  stable: boolean,
 ): void {
-  ctx.fillStyle = 'rgba(96, 165, 250, 0.18)'
-  ctx.strokeStyle = 'rgba(96, 165, 250, 0.95)'
+  // Yellow when we're actively holding the scene steady and arming a
+  // capture; blue when idle-tracking. Gives the user visual feedback
+  // that auto-capture is about to fire.
+  const stroke = stable
+    ? 'rgba(251, 191, 36, 0.98)'
+    : 'rgba(96, 165, 250, 0.95)'
+  const fill = stable ? 'rgba(251, 191, 36, 0.22)' : 'rgba(96, 165, 250, 0.18)'
+  ctx.fillStyle = fill
+  ctx.strokeStyle = stroke
   ctx.lineWidth = Math.max(3, Math.round(canvasWidth / 400))
   ctx.beginPath()
   ctx.moveTo(quad.tl.x, quad.tl.y)
@@ -151,6 +176,14 @@ function startDetectionLoop(): void {
   const ctx = overlay.getContext('2d')
   if (!ctx) return
 
+  if (!motionDetector) {
+    motionDetector = new MotionDetector()
+  } else {
+    motionDetector.reset()
+  }
+  stableSinceMs = null
+  captureCooldown = false
+
   const loop = () => {
     rafId = requestAnimationFrame(loop)
     if (video.readyState < 2 || video.videoWidth === 0) return
@@ -162,31 +195,62 @@ function startDetectionLoop(): void {
       overlay.height = video.videoHeight
     }
 
+    // -- Motion tracking (hysteresis) -------------------------------
+    const motionAmount =
+      motionDetector?.sample(video) ?? Number.POSITIVE_INFINITY
+    const now = performance.now()
+
+    if (motionAmount >= MOTION_RESET_THRESHOLD) {
+      // Definite motion: reset both the stable timer and any post-
+      // capture cooldown, so the next stable period can auto-capture.
+      stableSinceMs = null
+      captureCooldown = false
+    } else if (motionAmount < STABILITY_THRESHOLD) {
+      // Below the lower threshold: arm or continue the stable timer.
+      if (stableSinceMs === null) stableSinceMs = now
+    }
+    // The band between STABILITY and MOTION_RESET is deliberately a
+    // no-op zone — it prevents tiny jitter from flipping the state.
+
+    // -- Overlay paint ---------------------------------------------
     ctx.clearRect(0, 0, overlay.width, overlay.height)
     if (lastQuad) {
-      drawQuadOverlay(ctx, lastQuad, overlay.width)
+      const stableReady =
+        stableSinceMs !== null && now - stableSinceMs >= STABLE_DURATION_MS
+      drawQuadOverlay(ctx, lastQuad, overlay.width, stableReady)
     }
 
+    // -- Throttled async detection ---------------------------------
     detectionTick += 1
-    if (detectionTick % DETECTION_EVERY_N_FRAMES !== 0) return
-    if (detectionInFlight) return
+    if (detectionTick % DETECTION_EVERY_N_FRAMES === 0 && !detectionInFlight) {
+      const currentBackend = backend
+      if (currentBackend) {
+        detectionInFlight = true
+        const work = ensureWorkCanvas(video)
+        currentBackend
+          .detect(work)
+          .then((quad) => {
+            lastQuad = quad
+          })
+          .catch(() => {
+            lastQuad = null
+          })
+          .finally(() => {
+            detectionInFlight = false
+          })
+      }
+    }
 
-    const currentBackend = backend
-    if (!currentBackend) return
-    detectionInFlight = true
-
-    const work = ensureWorkCanvas(video)
-    currentBackend
-      .detect(work)
-      .then((quad) => {
-        lastQuad = quad
-      })
-      .catch(() => {
-        lastQuad = null
-      })
-      .finally(() => {
-        detectionInFlight = false
-      })
+    // -- Auto-capture trigger --------------------------------------
+    if (
+      !captureCooldown &&
+      !captureInFlight &&
+      lastQuad !== null &&
+      stableSinceMs !== null &&
+      now - stableSinceMs >= STABLE_DURATION_MS
+    ) {
+      void tryCapture({ auto: true })
+    }
   }
   loop()
 }
@@ -222,80 +286,108 @@ async function start(): Promise<void> {
 // Capture / review / export
 // --------------------------------------------------------------------------
 
-async function capture(): Promise<void> {
+async function tryCapture(options: { auto: boolean }): Promise<void> {
   const video = videoRef.value
   const currentBackend = backend
   if (!video || !currentBackend || phase.value !== 'ready') return
+  if (captureInFlight) return
+  captureInFlight = true
 
-  // Off-screen canvas at full camera resolution — we don't want the
-  // preview overlay (which may be scaled) to affect the captured output.
-  const work = document.createElement('canvas')
-  work.width = video.videoWidth
-  work.height = video.videoHeight
-  const ctx = work.getContext('2d')
-  if (!ctx) return
-  ctx.drawImage(video, 0, 0)
-
-  let quad: Quad | null = null
   try {
-    quad = await currentBackend.detect(work)
-  } catch {
-    quad = null
-  }
+    // Off-screen canvas at full camera resolution — we don't want the
+    // preview overlay (which may be scaled) to affect the captured output.
+    const work = document.createElement('canvas')
+    work.width = video.videoWidth
+    work.height = video.videoHeight
+    const ctx = work.getContext('2d')
+    if (!ctx) return
+    ctx.drawImage(video, 0, 0)
 
-  if (!quad) {
-    showTransientError(
-      '書類を検出できませんでした。画面内に収めてもう一度撮影してください。',
-    )
-    return
-  }
+    let quad: Quad | null = null
+    try {
+      quad = await currentBackend.detect(work)
+    } catch {
+      quad = null
+    }
 
-  let extracted: HTMLCanvasElement
-  try {
-    extracted = warpPerspective(work, quad, EXTRACT_WIDTH, EXTRACT_HEIGHT)
-  } catch (err) {
-    showTransientError(
-      err instanceof Error ? err.message : '書類の切り出しに失敗しました',
-    )
-    return
-  }
+    if (!quad) {
+      if (!options.auto) {
+        showTransientError(
+          '書類を検出できませんでした。画面内に収めてもう一度撮影してください。',
+        )
+      }
+      return
+    }
 
-  // Quality gate: Laplacian variance. Blurry frames never reach the PDF.
-  const sharpness = measureSharpness(extracted)
-  if (sharpness < DEFAULT_BLUR_THRESHOLD) {
-    showTransientError(
-      `ピンボレが検出されました (${Math.round(sharpness)})。端末を固定してもう一度撮影してください。`,
-    )
-    return
-  }
+    let extracted: HTMLCanvasElement
+    try {
+      extracted = warpPerspective(work, quad, EXTRACT_WIDTH, EXTRACT_HEIGHT)
+    } catch (err) {
+      if (!options.auto) {
+        showTransientError(
+          err instanceof Error ? err.message : '書類の切り出しに失敗しました',
+        )
+      }
+      return
+    }
 
-  // Duplicate check: compare the perceptual hash against every existing
-  // page in the session. This is advisory only — we never auto-delete.
-  // If a match is found we flag the new page and warn the user, who can
-  // delete either copy via the thumbnail × button.
-  const phash = computePHash(extracted)
-  const existingHashes = captured.value.map((p) => p.phash)
-  const dup = findDuplicate(phash, existingHashes, DUPLICATE_THRESHOLD)
-  if (dup) {
-    showTransientError(
-      `ページ ${dup.index + 1} と似た書類が撮影されました (類似度 ${
-        64 - dup.distance
-      }/64)。重複の場合はサムネイルから削除してください。`,
-    )
-  }
+    // Quality gate: Laplacian variance. Blurry frames never reach the PDF.
+    const sharpness = measureSharpness(extracted)
+    if (sharpness < DEFAULT_BLUR_THRESHOLD) {
+      if (!options.auto) {
+        showTransientError(
+          `ピンボケが検出されました (${Math.round(sharpness)})。端末を固定してもう一度撮影してください。`,
+        )
+      }
+      // For auto-capture, silently skip and wait for a better frame.
+      // Don't arm the cooldown — we want to retry.
+      return
+    }
 
-  captured.value = [
-    ...captured.value,
-    {
-      id: crypto.randomUUID(),
-      dataUrl: extracted.toDataURL('image/jpeg', 0.85),
-      width: extracted.width,
-      height: extracted.height,
-      phash,
-      duplicate: dup !== null,
-      sharpness,
-    },
-  ]
+    // Accept!
+    const dataUrl = extracted.toDataURL('image/jpeg', 0.85)
+    captured.value = [
+      ...captured.value,
+      {
+        id: crypto.randomUUID(),
+        dataUrl,
+        width: extracted.width,
+        height: extracted.height,
+        sharpness,
+      },
+    ]
+
+    if (options.auto) {
+      // Lock out further auto-captures until motion is detected. This
+      // is what prevents the same stable page from being captured 10
+      // times while the user holds the camera still.
+      captureCooldown = true
+      stableSinceMs = null
+    }
+
+    showCaptureNotification(extracted)
+  } finally {
+    captureInFlight = false
+  }
+}
+
+function showCaptureNotification(source: HTMLCanvasElement): void {
+  const id = ++nextNotificationId
+  notification.value = {
+    id,
+    dataUrl: source.toDataURL('image/jpeg', NOTIFICATION_THUMB_QUALITY),
+    pageNumber: captured.value.length,
+  }
+  if (notificationTimeoutId !== null) {
+    window.clearTimeout(notificationTimeoutId)
+  }
+  notificationTimeoutId = window.setTimeout(() => {
+    // Only clear if this is still the latest notification.
+    if (notification.value?.id === id) {
+      notification.value = null
+    }
+    notificationTimeoutId = null
+  }, NOTIFICATION_DURATION_MS)
 }
 
 function removePage(id: string): void {
@@ -358,10 +450,15 @@ onBeforeUnmount(() => {
     cancelAnimationFrame(rafId)
     rafId = null
   }
+  if (notificationTimeoutId !== null) {
+    window.clearTimeout(notificationTimeoutId)
+    notificationTimeoutId = null
+  }
   stream?.getTracks().forEach((t) => t.stop())
   stream = null
   backend?.dispose()
   backend = null
+  motionDetector = null
   lastQuad = null
   detectionWorkCanvas = null
 })
@@ -389,8 +486,8 @@ onBeforeUnmount(() => {
       <div v-if="phase === 'idle'" class="splash">
         <h2 class="splash__title">書類の山をスマホで電子化</h2>
         <p class="splash__tagline">
-          スマホを書類に向けて撮影するだけ。<br />
-          ページごとに検出・補正して PDF にまとめます。
+          スマホを書類に向けるだけ。<br />
+          安定したページを自動で検出し、PDF にまとめます。
         </p>
         <p class="splash__privacy">
           全ての処理はこの端末内で完結し、画像や PDF
@@ -405,23 +502,33 @@ onBeforeUnmount(() => {
       <div v-else-if="phase === 'error'" class="splash splash--error">
         <p class="splash__error">{{ errorText }}</p>
       </div>
+
+      <Transition name="notify">
+        <div
+          v-if="notification && phase === 'ready'"
+          :key="notification.id"
+          class="notify"
+          role="status"
+        >
+          <img
+            :src="notification.dataUrl"
+            :alt="`ページ ${notification.pageNumber}`"
+            class="notify__thumb"
+          />
+          <div class="notify__body">
+            <span class="notify__title">✓ キャプチャしました</span>
+            <span class="notify__subtitle"
+              >ページ {{ notification.pageNumber }}</span
+            >
+          </div>
+        </div>
+      </Transition>
     </section>
 
     <div v-if="captured.length > 0" class="strip">
-      <div
-        v-for="(page, idx) in captured"
-        :key="page.id"
-        class="strip__thumb"
-        :class="{ 'strip__thumb--duplicate': page.duplicate }"
-      >
+      <div v-for="(page, idx) in captured" :key="page.id" class="strip__thumb">
         <img :src="page.dataUrl" :alt="`ページ ${idx + 1}`" />
         <span class="strip__num">{{ idx + 1 }}</span>
-        <span
-          v-if="page.duplicate"
-          class="strip__badge"
-          title="似たページが既にあります"
-          >重複?</span
-        >
         <button
           class="strip__remove"
           type="button"
@@ -445,15 +552,15 @@ onBeforeUnmount(() => {
 
       <template v-else>
         <button
-          class="btn btn--primary"
+          class="btn btn--secondary"
           type="button"
           :disabled="phase !== 'ready'"
-          @click="capture"
+          @click="tryCapture({ auto: false })"
         >
-          撮影
+          手動で撮影
         </button>
         <button
-          class="btn btn--secondary"
+          class="btn btn--primary"
           type="button"
           :disabled="captured.length === 0"
           @click="exportPdf"
@@ -529,8 +636,6 @@ onBeforeUnmount(() => {
   width: 100%;
   height: 100%;
   object-fit: contain;
-  /* Visible: the raw camera stream is shown directly for smooth playback;
-     the overlay canvas on top draws only the detected quad. */
 }
 
 .viewport__overlay {
@@ -540,7 +645,6 @@ onBeforeUnmount(() => {
   height: 100%;
   object-fit: contain;
   pointer-events: none;
-  /* Transparent background — only the quad polygon is rendered. */
 }
 
 .splash {
@@ -614,6 +718,68 @@ onBeforeUnmount(() => {
   }
 }
 
+.notify {
+  position: absolute;
+  top: 1rem;
+  right: 1rem;
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  padding: 0.625rem 0.875rem 0.625rem 0.625rem;
+  background: rgba(15, 23, 42, 0.92);
+  border: 1px solid rgba(96, 165, 250, 0.4);
+  border-radius: 0.75rem;
+  box-shadow: 0 10px 30px rgba(0, 0, 0, 0.5);
+  backdrop-filter: blur(12px);
+  -webkit-backdrop-filter: blur(12px);
+  max-width: calc(100% - 2rem);
+  z-index: 15;
+}
+
+.notify__thumb {
+  width: 2.75rem;
+  height: 3.5rem;
+  object-fit: cover;
+  border-radius: 0.375rem;
+  border: 1px solid rgba(255, 255, 255, 0.2);
+  flex-shrink: 0;
+}
+
+.notify__body {
+  display: flex;
+  flex-direction: column;
+  gap: 0.125rem;
+  min-width: 0;
+}
+
+.notify__title {
+  font-size: 0.8125rem;
+  font-weight: 700;
+  color: #86efac;
+}
+
+.notify__subtitle {
+  font-size: 0.6875rem;
+  color: #94a3b8;
+}
+
+.notify-enter-active,
+.notify-leave-active {
+  transition:
+    transform 0.3s cubic-bezier(0.2, 0.9, 0.3, 1.2),
+    opacity 0.25s ease;
+}
+.notify-enter-from,
+.notify-leave-to {
+  transform: translateX(calc(100% + 2rem));
+  opacity: 0;
+}
+.notify-enter-to,
+.notify-leave-from {
+  transform: translateX(0);
+  opacity: 1;
+}
+
 .strip {
   display: flex;
   gap: 0.5rem;
@@ -641,31 +807,11 @@ onBeforeUnmount(() => {
   background: #1e293b;
 }
 
-.strip__thumb--duplicate {
-  border-color: rgba(251, 191, 36, 0.9);
-  box-shadow: 0 0 0 1px rgba(251, 191, 36, 0.4);
-}
-
 .strip__thumb img {
   display: block;
   width: 100%;
   height: 100%;
   object-fit: cover;
-}
-
-.strip__badge {
-  position: absolute;
-  bottom: 0.125rem;
-  left: 0.125rem;
-  right: 0.125rem;
-  padding: 0.0625rem 0.25rem;
-  background: rgba(251, 191, 36, 0.95);
-  color: #422006;
-  border-radius: 0.1875rem;
-  font-size: 0.5625rem;
-  font-weight: 700;
-  text-align: center;
-  white-space: nowrap;
 }
 
 .strip__num {
