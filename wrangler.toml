@@ -1,0 +1,12 @@
+# Cloudflare Pages configuration.
+# Build command is configured in Pages dashboard (one-time):
+#   bash scripts/cf-pages-build.sh
+#
+# The [build] section is intentionally omitted — Wrangler v3 triggers
+# workspace detection when it processes [build] from a monorepo root,
+# which is incompatible with Bun workspaces. Omitting it lets the
+# Cloudflare Pages platform handle the build natively.
+
+name = "astar-scan"
+compatibility_date = "2025-07-15"
+pages_build_output_dir = "apps/web/.output/public"
