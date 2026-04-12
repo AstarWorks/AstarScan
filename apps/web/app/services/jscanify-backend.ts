@@ -13,13 +13,9 @@
  * allocated and freed inside this file — nothing OpenCV-typed crosses the
  * public surface.
  *
- * `warpPerspective()` is also exported from this file (rather than from
- * its own module) because it, too, needs to call into jscanify's
- * `extractPaper` with a pre-computed corner list. Keeping the jscanify
- * dependency import localized to exactly one source file makes the
- * "swap the backend" contract mechanically verifiable via grep.
- * `services/perspective-warper.ts` re-exports `warpPerspective` under a
- * backend-agnostic name for callers.
+ * `perspective-warper.ts` has been rewritten to use OpenCV.js directly
+ * (no jscanify dependency), so this file now only exports the
+ * `JscanifyBackend` class — no warp function.
  */
 
 import type { EdgeDetectorBackend, Quad } from '@astarworks/scan-core'
@@ -38,15 +34,6 @@ type JscanifyInstance = InstanceType<typeof JscanifyCtor>
 const MAX_FRAME_FRACTION = 0.98
 const MIN_FRAME_FRACTION = 0.05
 
-/**
- * Module-level shared scanner instance. Initialized by the first
- * `JscanifyBackend.warmUp()` call, reused by subsequent backends AND by
- * the standalone `warpPerspective()` export. Held at module scope so
- * `warpPerspective` can run without needing a backend reference threaded
- * through every call site.
- */
-let sharedScanner: JscanifyInstance | null = null
-
 export class JscanifyBackend implements EdgeDetectorBackend {
   readonly name = 'jscanify'
 
@@ -60,13 +47,10 @@ export class JscanifyBackend implements EdgeDetectorBackend {
   async warmUp(): Promise<void> {
     if (this.#ready && this.#scanner) return
     await loadOpenCV()
-    if (!sharedScanner) {
-      // Dynamic import so the jscanify bundle is only fetched once the
-      // user actually tries to scan, not on every page load.
-      const mod = await import('jscanify')
-      sharedScanner = new mod.default()
-    }
-    this.#scanner = sharedScanner
+    // Dynamic import so the jscanify bundle is only fetched once the
+    // user actually tries to scan, not on every page load.
+    const mod = await import('jscanify')
+    this.#scanner = new mod.default()
     this.#ready = true
   }
 
@@ -103,42 +87,9 @@ export class JscanifyBackend implements EdgeDetectorBackend {
   }
 
   dispose(): void {
-    // Deliberately leave `sharedScanner` alive across dispose() — warping
-    // and future backend instances may still need it within the same page
-    // session. It's garbage-collected when the page unloads.
     this.#scanner = null
     this.#ready = false
   }
-}
-
-/**
- * Perspective-warp a source canvas to the requested output dimensions
- * using a pre-computed `Quad`. This is the "manual correction" path —
- * the caller has a Quad (either from `backend.detect()` or from a user-
- * edited corner UI) and wants the corrected output without re-running
- * detection.
- *
- * Exported from this file so the jscanify dependency stays localized;
- * `services/perspective-warper.ts` re-exports under the public name.
- */
-export function warpPerspective(
-  source: HTMLCanvasElement,
-  quad: Quad,
-  width: number,
-  height: number,
-): HTMLCanvasElement {
-  if (!sharedScanner) {
-    throw new Error(
-      'warpPerspective called before JscanifyBackend.warmUp() — ' +
-        'initialize the backend first',
-    )
-  }
-  return sharedScanner.extractPaper(
-    source,
-    width,
-    height,
-    quadToCornerPoints(quad),
-  )
 }
 
 function safeDelete(mat: OpenCvMat | null): void {
@@ -158,15 +109,6 @@ function cornerPointsToQuad(corners: JscanifyCornerPoints): Quad {
     tr: { x: corners.topRightCorner.x, y: corners.topRightCorner.y },
     br: { x: corners.bottomRightCorner.x, y: corners.bottomRightCorner.y },
     bl: { x: corners.bottomLeftCorner.x, y: corners.bottomLeftCorner.y },
-  }
-}
-
-function quadToCornerPoints(quad: Quad): JscanifyCornerPoints {
-  return {
-    topLeftCorner: { x: quad.tl.x, y: quad.tl.y },
-    topRightCorner: { x: quad.tr.x, y: quad.tr.y },
-    bottomRightCorner: { x: quad.br.x, y: quad.br.y },
-    bottomLeftCorner: { x: quad.bl.x, y: quad.bl.y },
   }
 }
 
