@@ -14,16 +14,10 @@ import {
   MotionDetector,
   STABILITY_THRESHOLD,
 } from '~/services/motion-detection'
-import {
-  extractGrayscale,
-  SsimDedupManager,
-} from '~/services/ssim-dedup'
+import { extractGrayscale, SsimDedupManager } from '~/services/ssim-dedup'
 import { disposeOcr, initOcr, isOcrReady, runOcr } from '~/services/ocr-service'
 import type { OcrResult } from '~/services/ocr-service'
-import {
-  disposeVisualDedup,
-  runVisualDedup,
-} from '~/services/visual-dedup'
+import { disposeVisualDedup, runVisualDedup } from '~/services/visual-dedup'
 import { warpPerspective } from '~/services/perspective-warper'
 import {
   clearSession,
@@ -582,9 +576,7 @@ async function tryCapture(options: { auto: boolean }): Promise<void> {
     const newGray = extractGrayscale(extracted)
     const match = ssimDedup.isDuplicate(newGray)
     if (match) {
-      const existingIdx = captured.value.findIndex(
-        (p) => p.id === match.pageId,
-      )
+      const existingIdx = captured.value.findIndex((p) => p.id === match.pageId)
       const existing = captured.value[existingIdx]
 
       if (existing && sharpness > existing.sharpness) {
@@ -1142,9 +1134,7 @@ onBeforeUnmount(() => {
               <template v-else-if="notification.type === 'skipped'">
                 既にキャプチャ済み
               </template>
-              <template v-else>
-                キャプチャしました
-              </template>
+              <template v-else> キャプチャしました </template>
             </span>
           </div>
         </div>
@@ -1354,21 +1344,29 @@ onBeforeUnmount(() => {
             <button
               class="btn btn--secondary"
               type="button"
-              @click="downloadPageImage(captured[previewPageIndex]!, previewPageIndex)"
+              @click="
+                downloadPageImage(captured[previewPageIndex]!, previewPageIndex)
+              "
             >
               DL
             </button>
             <button
               class="btn btn--secondary"
               type="button"
-              @click="startOcr(previewPageIndex); closePreview()"
+              @click="
+                startOcr(previewPageIndex)
+                closePreview()
+              "
             >
               OCR
             </button>
             <button
               class="btn btn--secondary"
               type="button"
-              @click="removePage(captured[previewPageIndex]!.id); closePreview()"
+              @click="
+                removePage(captured[previewPageIndex]!.id)
+                closePreview()
+              "
             >
               削除
             </button>

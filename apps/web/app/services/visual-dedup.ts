@@ -275,7 +275,10 @@ export async function runVisualDedup(
   // Build cosine distance matrix
   onProgress?.('類似度を計算中...')
   const n = embeddings.length
-  const dist: Float64Array[] = Array.from({ length: n }, () => new Float64Array(n))
+  const dist: Float64Array[] = Array.from(
+    { length: n },
+    () => new Float64Array(n),
+  )
   for (let i = 0; i < n; i++) {
     for (let j = i + 1; j < n; j++) {
       const d = cosineDistance(embeddings[i]!, embeddings[j]!)
