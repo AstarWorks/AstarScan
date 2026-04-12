@@ -10,6 +10,7 @@
     "url": "https://github.com/AstarWorks/AstarScan.git"
   },
   "workspaces": [
+    ".",
     "packages/*",
     "apps/*",
     "examples/*"

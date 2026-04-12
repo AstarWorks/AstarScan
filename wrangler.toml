@@ -1,12 +1,16 @@
-# Cloudflare Pages configuration.
-# Build command is configured in Pages dashboard (one-time):
-#   bash scripts/cf-pages-build.sh
+# Cloudflare Pages configuration (config-as-code).
+# https://developers.cloudflare.com/pages/functions/wrangler-configuration/
 #
-# The [build] section is intentionally omitted — Wrangler v3 triggers
-# workspace detection when it processes [build] from a monorepo root,
-# which is incompatible with Bun workspaces. Omitting it lets the
-# Cloudflare Pages platform handle the build natively.
+# AstarScan is a pure static SPA — no Workers, no server component.
+# Deployment: Cloudflare Pages GitHub integration (native).
+#
+# Monorepo compatibility: package.json "workspaces" includes "." so the
+# root is recognized as a workspace package, bypassing Wrangler v3's
+# autoconfig workspace detection (framework-detection.ts).
 
 name = "astar-scan"
 compatibility_date = "2025-07-15"
 pages_build_output_dir = "apps/web/.output/public"
+
+[build]
+command = "bash scripts/cf-pages-build.sh"
