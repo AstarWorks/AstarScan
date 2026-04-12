@@ -1,0 +1,16 @@
+# Cloudflare Pages custom headers
+# https://developers.cloudflare.com/pages/configuration/headers/
+
+# ONNX models: immutable cache (versioned filenames), cross-origin for
+# onnxruntime-web fetch in Web Workers
+/models/*
+  Cache-Control: public, max-age=31536000, immutable
+  Cross-Origin-Resource-Policy: cross-origin
+
+# OpenCV.js WASM: same caching strategy
+/*.wasm
+  Cache-Control: public, max-age=31536000, immutable
+
+# Config files (charset YAML)
+/config/*
+  Cache-Control: public, max-age=86400

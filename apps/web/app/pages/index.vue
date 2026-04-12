@@ -40,6 +40,8 @@ interface CapturedPage {
   readonly sourceDataUrl?: string
   readonly sourceWidth?: number
   readonly sourceHeight?: number
+  /** Name of the backend that detected this page ("docaligner" or "jscanify"). */
+  readonly backendName?: string
   ocrText?: string
 }
 
@@ -400,6 +402,87 @@ async function start(): Promise<void> {
   }
 }
 
+/**
+ * Start scanning from a video file (MP4, MOV, etc.) instead of the live
+ * camera. The existing auto-capture pipeline (motion detection → stability →
+ * DocAligner → blur check → warp) runs on the video's frames exactly as
+ * it would on a camera stream. When the video ends, scanning stops.
+ *
+ * This enables: (1) testing detection accuracy from a desktop without a
+ * camera, (2) batch-processing a pre-recorded "page flip" video.
+ */
+async function startFromFile(): Promise<void> {
+  // Prompt the user to select a video file
+  const file = await new Promise<File | null>((resolve) => {
+    const input = document.createElement('input')
+    input.type = 'file'
+    input.accept = 'video/*,.mp4,.mov,.webm,.avi'
+    input.onchange = () => resolve(input.files?.[0] ?? null)
+    // If the user cancels the dialog, resolve with null
+    input.oncancel = () => resolve(null)
+    input.click()
+  })
+  if (!file) return
+
+  phase.value = 'loading'
+  errorText.value = null
+  try {
+    // Initialize backend (same as camera mode)
+    statusText.value = 'AI モデル読み込み中 (初回のみ)...'
+    let selectedBackend: EdgeDetectorBackend
+    try {
+      const docaligner = new DocAlignerBackend('fastvit_t8')
+      await docaligner.warmUp()
+      selectedBackend = docaligner
+    } catch {
+      statusText.value = 'フォールバック: 古典スキャナー初期化中...'
+      const jscanify = new JscanifyBackend()
+      await jscanify.warmUp()
+      selectedBackend = jscanify
+    }
+    backend = selectedBackend
+
+    // Set up the video element with the file
+    statusText.value = '動画を読み込み中...'
+    const video = videoRef.value
+    if (!video) throw new Error('ビデオ要素の取得に失敗しました')
+
+    const objectUrl = URL.createObjectURL(file)
+    video.src = objectUrl
+    video.muted = true
+    video.playsInline = true
+
+    // Wait for the video to be ready
+    await new Promise<void>((resolve, reject) => {
+      video.onloadeddata = () => resolve()
+      video.onerror = () => reject(new Error('動画の読み込みに失敗しました'))
+    })
+
+    await video.play()
+
+    // Stop scanning when the video ends
+    video.onended = () => {
+      if (rafId !== null) {
+        cancelAnimationFrame(rafId)
+        rafId = null
+      }
+      URL.revokeObjectURL(objectUrl)
+      showTransientError(
+        `動画の処理が完了しました。${captured.value.length} ページをキャプチャしました。`,
+      )
+    }
+
+    statusText.value = ''
+    phase.value = 'ready'
+    startDetectionLoop()
+  } catch (err) {
+    phase.value = 'error'
+    errorText.value =
+      err instanceof Error ? err.message : '動画の読み込みに失敗しました'
+    statusText.value = ''
+  }
+}
+
 // --------------------------------------------------------------------------
 // Capture / review / export
 // --------------------------------------------------------------------------
@@ -476,6 +559,7 @@ async function tryCapture(options: { auto: boolean }): Promise<void> {
         sourceDataUrl,
         sourceWidth: work.width,
         sourceHeight: work.height,
+        backendName: currentBackend.name,
       },
     ]
 
@@ -852,6 +936,11 @@ onBeforeUnmount(() => {
           @click="startOcr(idx)"
         />
         <span class="strip__num">{{ idx + 1 }}</span>
+        <span class="strip__debug"
+          >{{ (page.backendName ?? '?').slice(0, 3) }}:{{
+            Math.round(page.sharpness)
+          }}</span
+        >
         <span v-if="page.ocrText" class="strip__ocr-badge">OCR</span>
         <div class="strip__actions">
           <button
@@ -894,14 +983,19 @@ onBeforeUnmount(() => {
     </div>
 
     <footer class="controls">
-      <button
-        v-if="phase === 'idle' || phase === 'error'"
-        class="btn btn--primary btn--full"
-        type="button"
-        @click="start"
-      >
-        {{ phase === 'idle' ? 'スキャンを開始' : '再試行' }}
-      </button>
+      <template v-if="phase === 'idle' || phase === 'error'">
+        <button class="btn btn--primary" type="button" @click="start">
+          {{ phase === 'idle' ? 'カメラで撮影' : '再試行' }}
+        </button>
+        <button
+          v-if="phase === 'idle'"
+          class="btn btn--secondary"
+          type="button"
+          @click="startFromFile"
+        >
+          動画ファイルから
+        </button>
+      </template>
 
       <template v-else>
         <button
@@ -1276,6 +1370,15 @@ onBeforeUnmount(() => {
   font-size: 0.75rem;
   font-family: inherit;
   flex: 0 0 auto;
+}
+
+.strip__debug {
+  position: absolute;
+  top: 0.125rem;
+  right: 1.375rem;
+  font-size: 0.4375rem;
+  color: rgba(255, 255, 255, 0.5);
+  font-family: monospace;
 }
 
 .strip__thumb--ocr {
