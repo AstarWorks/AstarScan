@@ -302,9 +302,7 @@ export class ReadingOrderProcessor {
     if (x0 >= x1 || y0 >= y1) return
 
     const { xHist, yHist } = this.calcHist(table, x0, y0, x1, y1)
-    // eslint-disable-next-line prefer-const
     let [xBeg, xEnd, xVal] = this.calcMinSpan(xHist)
-    // eslint-disable-next-line prefer-const
     let [yBeg, yEnd, yVal] = this.calcMinSpan(yHist)
     xBeg += x0
     xEnd += x0

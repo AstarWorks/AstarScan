@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { onBeforeUnmount, ref } from 'vue'
+import { onBeforeUnmount, onMounted, ref } from 'vue'
 import jsPDF from 'jspdf'
 
 import type { EdgeDetectorBackend, Quad } from '@astarworks/scan-core'
@@ -17,6 +17,12 @@ import {
 import { disposeOcr, initOcr, isOcrReady, runOcr } from '~/services/ocr-service'
 import type { OcrResult } from '~/services/ocr-service'
 import { warpPerspective } from '~/services/perspective-warper'
+import {
+  clearSession,
+  loadSession,
+  saveSession,
+} from '~/services/session-store'
+import type { StoredPage } from '~/services/session-store'
 
 // --------------------------------------------------------------------------
 // Types
@@ -93,6 +99,7 @@ const ocrPanelPage = ref<{
 let backend: EdgeDetectorBackend | null = null
 let motionDetector: MotionDetector | null = null
 let stream: MediaStream | null = null
+let visibilityCleanup: (() => void) | null = null
 let rafId: number | null = null
 let detectionTick = 0
 
@@ -111,18 +118,65 @@ let nextNotificationId = 0
 let notificationTimeoutId: number | null = null
 
 // --------------------------------------------------------------------------
-// Camera lifecycle
+// Camera lifecycle — iOS Safari survival kit (WebKit bug #185448)
+//
+// 1. Single MediaStream: only one getUserMedia call per session
+// 2. visibilitychange handler: detect background→foreground transitions
+// 3. track.onended listener: detect surprise camera loss
+// 4. Error retry: NotReadableError / AbortError → retry once after 500ms
+// 5. Safari version check: warn on iOS < 15
 // --------------------------------------------------------------------------
 
+function isIOSSafari(): boolean {
+  const ua = navigator.userAgent
+  return (
+    /iPhone|iPad|iPod/.test(ua) && /WebKit/.test(ua) && !/CriOS|FxiOS/.test(ua)
+  )
+}
+
 async function startCamera(): Promise<void> {
-  const mediaStream = await navigator.mediaDevices.getUserMedia({
-    video: {
-      facingMode: { ideal: 'environment' },
-      width: { ideal: 1920 },
-      height: { ideal: 1080 },
-    },
-    audio: false,
-  })
+  // iOS Safari version check
+  if (isIOSSafari()) {
+    const match = navigator.userAgent.match(/OS (\d+)_/)
+    const iosVersion = match ? parseInt(match[1] ?? '0', 10) : 0
+    if (iosVersion > 0 && iosVersion < 15) {
+      throw new Error(
+        `iOS ${iosVersion} は対応していません。iOS 15 以上にアップデートしてください。`,
+      )
+    }
+  }
+
+  let mediaStream: MediaStream
+  try {
+    mediaStream = await navigator.mediaDevices.getUserMedia({
+      video: {
+        facingMode: { ideal: 'environment' },
+        width: { ideal: 1920 },
+        height: { ideal: 1080 },
+      },
+      audio: false,
+    })
+  } catch (err) {
+    // iOS Safari retry: NotReadableError / AbortError can be transient
+    // in standalone (home screen) mode — retry once after 500ms.
+    if (
+      err instanceof DOMException &&
+      (err.name === 'NotReadableError' || err.name === 'AbortError')
+    ) {
+      await new Promise((r) => setTimeout(r, 500))
+      mediaStream = await navigator.mediaDevices.getUserMedia({
+        video: {
+          facingMode: { ideal: 'environment' },
+          width: { ideal: 1920 },
+          height: { ideal: 1080 },
+        },
+        audio: false,
+      })
+    } else {
+      throw err
+    }
+  }
+
   stream = mediaStream
 
   const video = videoRef.value
@@ -134,6 +188,42 @@ async function startCamera(): Promise<void> {
 
   video.srcObject = mediaStream
   await video.play()
+
+  // Track ended listener: detect surprise camera loss (iOS Safari
+  // standalone mode, tab switch, or another app grabbing the camera)
+  const videoTrack = mediaStream.getVideoTracks()[0]
+  if (videoTrack) {
+    videoTrack.onended = () => {
+      showTransientError(
+        'カメラが切断されました。再度「スキャンを開始」をタップしてください。',
+      )
+      phase.value = 'error'
+      errorText.value =
+        'カメラが切断されました。再度「スキャンを開始」をタップしてください。'
+    }
+  }
+
+  // Visibility change handler: if the page goes background and comes
+  // back, the MediaStream may be dead on iOS Safari. Check and warn.
+  const onVisibilityChange = () => {
+    if (document.visibilityState === 'visible' && stream) {
+      const tracks = stream.getVideoTracks()
+      const allEnded =
+        tracks.length === 0 || tracks.every((t) => t.readyState === 'ended')
+      if (allEnded) {
+        showTransientError(
+          'バックグラウンドから復帰後、カメラが停止しました。再開してください。',
+        )
+        phase.value = 'error'
+        errorText.value =
+          'バックグラウンドから復帰後、カメラが停止しました。再開してください。'
+      }
+    }
+  }
+  document.addEventListener('visibilitychange', onVisibilityChange)
+  // Store cleanup ref so onBeforeUnmount can remove it
+  visibilityCleanup = () =>
+    document.removeEventListener('visibilitychange', onVisibilityChange)
 }
 
 // --------------------------------------------------------------------------
@@ -390,6 +480,7 @@ async function tryCapture(options: { auto: boolean }): Promise<void> {
     }
 
     showCaptureNotification(extracted)
+    void persistSession()
   } finally {
     captureInFlight = false
   }
@@ -416,6 +507,7 @@ function showCaptureNotification(source: HTMLCanvasElement): void {
 
 function removePage(id: string): void {
   captured.value = captured.value.filter((p) => p.id !== id)
+  void persistSession()
 }
 
 // --------------------------------------------------------------------------
@@ -499,11 +591,46 @@ function exportPdf(): void {
 
     const ts = new Date().toISOString().slice(0, 19).replace(/[:T]/g, '-')
     pdf.save(`astarscan-${ts}.pdf`)
+    // Clear persisted session after successful export
+    void clearSession()
   } catch (err) {
     showTransientError(
       err instanceof Error ? err.message : 'PDF の生成に失敗しました',
     )
   }
+}
+
+// --------------------------------------------------------------------------
+// Session persistence
+// --------------------------------------------------------------------------
+
+function persistSession(): Promise<void> {
+  const pages: StoredPage[] = captured.value.map((p) => ({
+    id: p.id,
+    dataUrl: p.dataUrl,
+    width: p.width,
+    height: p.height,
+    sharpness: p.sharpness,
+    ocrText: p.ocrText,
+    capturedAt: Date.now(),
+  }))
+  return saveSession(pages).catch(() => {
+    // IndexedDB write failure is non-fatal — the session just won't
+    // survive a refresh. Don't bother the user about it.
+  })
+}
+
+async function restoreSession(): Promise<void> {
+  const session = await loadSession()
+  if (!session || session.pages.length === 0) return
+  captured.value = session.pages.map((p) => ({
+    id: p.id,
+    dataUrl: p.dataUrl,
+    width: p.width,
+    height: p.height,
+    sharpness: p.sharpness,
+    ocrText: p.ocrText,
+  }))
 }
 
 function showTransientError(msg: string): void {
@@ -514,8 +641,12 @@ function showTransientError(msg: string): void {
 }
 
 // --------------------------------------------------------------------------
-// Teardown
+// Lifecycle
 // --------------------------------------------------------------------------
+
+onMounted(() => {
+  void restoreSession()
+})
 
 onBeforeUnmount(() => {
   if (rafId !== null) {
@@ -526,6 +657,8 @@ onBeforeUnmount(() => {
     window.clearTimeout(notificationTimeoutId)
     notificationTimeoutId = null
   }
+  visibilityCleanup?.()
+  visibilityCleanup = null
   stream?.getTracks().forEach((t) => t.stop())
   stream = null
   backend?.dispose()
@@ -565,6 +698,9 @@ onBeforeUnmount(() => {
         <p class="splash__privacy">
           全ての処理はこの端末内で完結し、画像や PDF
           は外部サーバーに送信されません。
+          <NuxtLink to="/privacy" class="splash__privacy-link"
+            >プライバシーポリシー</NuxtLink
+          >
         </p>
       </div>
 
@@ -784,6 +920,12 @@ onBeforeUnmount(() => {
   color: #64748b;
   max-width: 20rem;
   line-height: 1.6;
+}
+
+.splash__privacy-link {
+  color: #94a3b8;
+  text-decoration: underline;
+  text-underline-offset: 2px;
 }
 
 .splash--error {
