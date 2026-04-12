@@ -4,13 +4,15 @@
 # AstarScan is a pure static SPA — no Workers, no server component.
 # Deployment: Cloudflare Pages GitHub integration (native).
 #
-# Monorepo compatibility: package.json "workspaces" includes "." so the
-# root is recognized as a workspace package, bypassing Wrangler v3's
-# autoconfig workspace detection (framework-detection.ts).
+# Monorepo compatibility:
+# - "." in package.json workspaces → bypasses workspace root detection
+# - [build] cwd = "apps/web" → scopes framework detection to Nuxt only
+#   (without this, autoconfig finds Vite×3 + Nuxt and fails)
 
 name = "astar-scan"
 compatibility_date = "2025-07-15"
 pages_build_output_dir = "apps/web/.output/public"
 
 [build]
-command = "bash scripts/cf-pages-build.sh"
+command = "bash ../../scripts/cf-pages-build.sh"
+cwd = "apps/web"
