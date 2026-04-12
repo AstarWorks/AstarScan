@@ -104,6 +104,9 @@ const dedupSkipped = ref(0)
 const dedupRunning = ref(false)
 const dedupProgressText = ref('')
 
+// Page preview state
+const previewPageIndex = ref<number | null>(null)
+
 // OCR state
 const ocrLoading = ref(false)
 const ocrProgress = ref<string>('')
@@ -477,7 +480,7 @@ async function startFromFile(): Promise<void> {
 
     await video.play()
 
-    // Stop scanning when the video ends
+    // Stop scanning when the video ends, then run visual dedup
     dedupSkipped.value = 0
     video.onended = () => {
       if (rafId !== null) {
@@ -485,13 +488,18 @@ async function startFromFile(): Promise<void> {
         rafId = null
       }
       URL.revokeObjectURL(objectUrl)
-      const dupMsg =
-        dedupSkipped.value > 0
-          ? ` (重複 ${dedupSkipped.value} 件除外)`
-          : ''
-      showTransientError(
-        `動画の処理が完了しました。${captured.value.length} ページをキャプチャしました${dupMsg}。`,
-      )
+
+      // Auto-run visual dedup if we captured enough pages to make it
+      // worthwhile. SSIM catches obvious duplicates in real-time, but
+      // borderline cases (slightly different perspective of the same
+      // page) slip through — SigLIP embedding clustering catches them.
+      if (captured.value.length >= 2) {
+        void autoVisualDedup()
+      } else {
+        showTransientError(
+          `動画の処理が完了しました。${captured.value.length} ページをキャプチャしました。`,
+        )
+      }
     }
 
     statusText.value = ''
@@ -807,6 +815,33 @@ function closeOcrPanel(): void {
 }
 
 // --------------------------------------------------------------------------
+// Page preview (fullscreen)
+// --------------------------------------------------------------------------
+
+function openPreview(idx: number): void {
+  previewPageIndex.value = idx
+}
+
+function closePreview(): void {
+  previewPageIndex.value = null
+}
+
+function previewPrev(): void {
+  if (previewPageIndex.value !== null && previewPageIndex.value > 0) {
+    previewPageIndex.value -= 1
+  }
+}
+
+function previewNext(): void {
+  if (
+    previewPageIndex.value !== null &&
+    previewPageIndex.value < captured.value.length - 1
+  ) {
+    previewPageIndex.value += 1
+  }
+}
+
+// --------------------------------------------------------------------------
 // Visual dedup (post-processing)
 // --------------------------------------------------------------------------
 
@@ -860,6 +895,35 @@ async function runDedup(): Promise<void> {
   } finally {
     dedupRunning.value = false
     dedupProgressText.value = ''
+  }
+}
+
+/**
+ * Auto-triggered after video file processing ends. Shows progress inline
+ * and reports final results. Falls back gracefully if the SigLIP model
+ * can't be loaded (network error, OOM, etc.) — the SSIM-deduped results
+ * are still usable.
+ */
+async function autoVisualDedup(): Promise<void> {
+  const beforeCount = captured.value.length
+  const ssimSkipped = dedupSkipped.value
+
+  showTransientError(
+    `${beforeCount} ページをキャプチャ (SSIM で ${ssimSkipped} 件除外)。最終重複除去中...`,
+  )
+
+  try {
+    await runDedup()
+    const afterCount = captured.value.length
+    const totalRemoved = beforeCount - afterCount + ssimSkipped
+    showTransientError(
+      `完了: ${afterCount} ユニークページ (合計 ${totalRemoved} 件の重複を除外)`,
+    )
+  } catch {
+    // SigLIP failed — SSIM results are still fine
+    showTransientError(
+      `${beforeCount} ページをキャプチャしました (SSIM で ${ssimSkipped} 件除外)。`,
+    )
   }
 }
 
@@ -1097,7 +1161,7 @@ onBeforeUnmount(() => {
         <img
           :src="page.dataUrl"
           :alt="`ページ ${idx + 1}`"
-          @click="startOcr(idx)"
+          @click="openPreview(idx)"
         />
         <span class="strip__num">{{ idx + 1 }}</span>
         <span class="strip__debug"
@@ -1245,6 +1309,79 @@ onBeforeUnmount(() => {
           :loading="ocrPanelPage.loading"
           @close="closeOcrPanel"
         />
+      </div>
+    </Transition>
+
+    <!-- Fullscreen page preview -->
+    <Transition name="sheet">
+      <div
+        v-if="previewPageIndex !== null && captured[previewPageIndex]"
+        class="preview-backdrop"
+        @click.self="closePreview"
+      >
+        <div class="preview">
+          <div class="preview__header">
+            <span class="preview__title">
+              ページ {{ previewPageIndex + 1 }} / {{ captured.length }}
+            </span>
+            <button
+              class="preview__close"
+              type="button"
+              aria-label="閉じる"
+              @click="closePreview"
+            >
+              ×
+            </button>
+          </div>
+
+          <div class="preview__image-wrap">
+            <img
+              :src="captured[previewPageIndex]!.dataUrl"
+              :alt="`ページ ${previewPageIndex + 1}`"
+              class="preview__image"
+            />
+          </div>
+
+          <div class="preview__footer">
+            <button
+              class="btn btn--secondary"
+              type="button"
+              :disabled="previewPageIndex <= 0"
+              @click="previewPrev"
+            >
+              ← 前
+            </button>
+            <button
+              class="btn btn--secondary"
+              type="button"
+              @click="downloadPageImage(captured[previewPageIndex]!, previewPageIndex)"
+            >
+              DL
+            </button>
+            <button
+              class="btn btn--secondary"
+              type="button"
+              @click="startOcr(previewPageIndex); closePreview()"
+            >
+              OCR
+            </button>
+            <button
+              class="btn btn--secondary"
+              type="button"
+              @click="removePage(captured[previewPageIndex]!.id); closePreview()"
+            >
+              削除
+            </button>
+            <button
+              class="btn btn--secondary"
+              type="button"
+              :disabled="previewPageIndex >= captured.length - 1"
+              @click="previewNext"
+            >
+              次 →
+            </button>
+          </div>
+        </div>
       </div>
     </Transition>
   </main>
@@ -1651,6 +1788,84 @@ onBeforeUnmount(() => {
 .sheet-enter-from > *,
 .sheet-leave-to > * {
   transform: translateY(100%);
+}
+
+.preview-backdrop {
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.92);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 30;
+}
+
+.preview {
+  display: flex;
+  flex-direction: column;
+  width: 100%;
+  height: 100%;
+  max-width: 100vw;
+  max-height: 100dvh;
+}
+
+.preview__header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 0.75rem 1rem;
+  padding-top: calc(0.75rem + env(safe-area-inset-top));
+  flex-shrink: 0;
+}
+
+.preview__title {
+  font-size: 0.875rem;
+  font-weight: 600;
+  color: #e2e8f0;
+}
+
+.preview__close {
+  width: 2.5rem;
+  height: 2.5rem;
+  border: none;
+  background: rgba(255, 255, 255, 0.1);
+  color: #e2e8f0;
+  font-size: 1.25rem;
+  border-radius: 50%;
+  cursor: pointer;
+}
+
+.preview__image-wrap {
+  flex: 1;
+  overflow: auto;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0.5rem;
+  -webkit-overflow-scrolling: touch;
+}
+
+.preview__image {
+  max-width: 100%;
+  max-height: 100%;
+  object-fit: contain;
+  border-radius: 0.375rem;
+  box-shadow: 0 4px 24px rgba(0, 0, 0, 0.4);
+}
+
+.preview__footer {
+  display: flex;
+  gap: 0.5rem;
+  padding: 0.75rem 1rem;
+  padding-bottom: calc(0.75rem + env(safe-area-inset-bottom));
+  justify-content: center;
+  flex-shrink: 0;
+}
+
+.preview__footer .btn {
+  font-size: 0.75rem;
+  padding: 0.5rem 0.75rem;
+  min-width: auto;
 }
 
 .controls {
