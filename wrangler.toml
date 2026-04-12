@@ -1,0 +1,7 @@
+# Cloudflare Pages — output directory (config-as-code).
+# Build command is set in the dashboard: bash scripts/cf-pages-build.sh
+# Root directory: / (default)
+
+name = "astar-scan"
+compatibility_date = "2025-07-15"
+pages_build_output_dir = "apps/web/.output/public"
