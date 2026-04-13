@@ -134,6 +134,8 @@ let detectionWorkCanvas: HTMLCanvasElement | null = null
 let stableSinceMs: number | null = null
 let captureInFlight = false
 let captureCooldown = false
+let cooldownStartMs: number | null = null
+const COOLDOWN_TIMEOUT_MS = 3000 // auto-reset cooldown after 3s (video file mode)
 let nextNotificationId = 0
 let notificationTimeoutId: number | null = null
 
@@ -328,12 +330,24 @@ function startDetectionLoop(): void {
       // capture cooldown, so the next stable period can auto-capture.
       stableSinceMs = null
       captureCooldown = false
+      cooldownStartMs = null
     } else if (motionAmount < STABILITY_THRESHOLD) {
       // Below the lower threshold: arm or continue the stable timer.
       if (stableSinceMs === null) stableSinceMs = now
     }
     // The band between STABILITY and MOTION_RESET is deliberately a
     // no-op zone — it prevents tiny jitter from flipping the state.
+    // However, for video files with gradual page transitions, the
+    // cooldown can get stuck. Auto-reset after COOLDOWN_TIMEOUT_MS.
+    if (captureCooldown) {
+      if (!cooldownStartMs) cooldownStartMs = now
+      if (now - cooldownStartMs > COOLDOWN_TIMEOUT_MS) {
+        captureCooldown = false
+        cooldownStartMs = null
+      }
+    } else {
+      cooldownStartMs = null
+    }
 
     // -- Overlay paint ---------------------------------------------
     ctx.clearRect(0, 0, overlay.width, overlay.height)
@@ -462,13 +476,17 @@ async function startFromFile(): Promise<void> {
     if (!video) throw new Error('ビデオ要素の取得に失敗しました')
 
     const objectUrl = URL.createObjectURL(file)
-    video.src = objectUrl
+    // Clear any prior camera session state, then set attributes
+    // BEFORE src to satisfy browser autoplay policy (must be muted).
+    video.srcObject = null
     video.muted = true
     video.playsInline = true
+    video.src = objectUrl
+    video.load()
 
-    // Wait for the video to be ready
+    // Wait for video dimensions + first frame to be ready
     await new Promise<void>((resolve, reject) => {
-      video.onloadeddata = () => resolve()
+      video.oncanplay = () => resolve()
       video.onerror = () => reject(new Error('動画の読み込みに失敗しました'))
     })
 
