@@ -54,23 +54,43 @@ export async function initClassifier(
     // Dynamic import to code-split Transformers.js
     const { pipeline, env } = await import('@huggingface/transformers')
 
-    // Configure for browser: use WebGPU if available, fallback to WASM
+    // Configure for browser
     env.backends.onnx.wasm.proxy = true
 
-    pipelineFn = pipeline
-    pipe = await pipeline('image-text-to-text', MODEL_ID, {
-      dtype: 'q4',
-      device: 'webgpu',
-    })
+    // Per-module dtype for smallest download (~189MB total):
+    // embed_tokens at fp16, vision+decoder at q4f16
+    const dtype = {
+      embed_tokens: 'fp16',
+      vision_encoder: 'q4f16',
+      decoder_model_merged: 'q4f16',
+    }
 
-    onProgress?.('VLM モデル準備完了')
+    // Detect WebGPU safely (Android Chrome may crash on shader-f16)
+    let device: 'webgpu' | 'wasm' = 'wasm'
+    if (typeof navigator !== 'undefined' && 'gpu' in navigator) {
+      try {
+        const adapter = await navigator.gpu?.requestAdapter()
+        if (adapter) device = 'webgpu'
+      } catch {
+        // WebGPU not available
+      }
+    }
+
+    pipelineFn = pipeline
+    pipe = await pipeline('image-text-to-text', MODEL_ID, { dtype, device })
+
+    onProgress?.(`VLM モデル準備完了 (${device})`)
   } catch (err) {
-    // WebGPU might not be available — try WASM fallback
+    // Fallback to WASM if WebGPU failed
     if (pipelineFn) {
       try {
-        onProgress?.('WebGPU 非対応 — WASM で再試行中...')
+        onProgress?.('フォールバック: WASM で再試行中...')
         pipe = await pipelineFn('image-text-to-text', MODEL_ID, {
-          dtype: 'q4',
+          dtype: {
+            embed_tokens: 'fp16',
+            vision_encoder: 'q4f16',
+            decoder_model_merged: 'q4f16',
+          },
           device: 'wasm',
         })
         onProgress?.('VLM モデル準備完了 (WASM)')

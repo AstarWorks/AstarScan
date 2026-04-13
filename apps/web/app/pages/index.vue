@@ -14,10 +14,7 @@ import { extractGrayscale, SsimDedupManager } from '~/services/ssim-dedup'
 import { disposeOcr, initOcr, isOcrReady, runOcr } from '~/services/ocr-service'
 import type { OcrResult } from '~/services/ocr-service'
 import { disposeVisualDedup, runVisualDedup } from '~/services/visual-dedup'
-import {
-  classifyBatch,
-  disposeClassifier,
-} from '~/services/smolvlm-backend'
+import { classifyBatch, disposeClassifier } from '~/services/smolvlm-backend'
 import { warpPerspective } from '~/services/perspective-warper'
 import {
   clearSession,
