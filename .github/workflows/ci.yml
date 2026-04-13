@@ -48,10 +48,9 @@ jobs:
 
       - run: bun install
 
-      - name: Download models
-        run: |
-          bash scripts/download-ocr-models.sh
-          bash scripts/download-siglip-model.sh
+      # ONNX models (52-147MB each) exceed Workers' 25MB asset limit.
+      # They are loaded at runtime from external CDN (HuggingFace/GitHub),
+      # not bundled in the deploy.
 
       - name: Build
         run: bun run build
