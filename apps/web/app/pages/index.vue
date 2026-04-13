@@ -20,6 +20,13 @@ import {
   saveSession,
 } from '~/services/session-store'
 import type { StoredPage } from '~/services/session-store'
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from '~/components/ui/select'
 
 // --------------------------------------------------------------------------
 // Types
@@ -1104,11 +1111,16 @@ onBeforeUnmount(() => {
         >
           {{ dedupRunning ? '処理中...' : '重複除去' }}
         </button>
-        <select v-model="pdfMode" class="pdf-mode-select">
-          <option value="single">1つの PDF</option>
-          <option value="split">ページ別 PDF</option>
-          <option value="batch">10枚ずつ</option>
-        </select>
+        <Select v-model="pdfMode">
+          <SelectTrigger class="w-[130px] h-10 text-sm">
+            <SelectValue />
+          </SelectTrigger>
+          <SelectContent>
+            <SelectItem value="single">1つの PDF</SelectItem>
+            <SelectItem value="split">ページ別 PDF</SelectItem>
+            <SelectItem value="batch">10枚ずつ</SelectItem>
+          </SelectContent>
+        </Select>
         <button
           class="btn btn--primary"
           type="button"
@@ -1547,17 +1559,6 @@ onBeforeUnmount(() => {
 
 .strip__btn:active {
   background: rgba(0, 31, 66, 0.9);
-}
-
-.pdf-mode-select {
-  padding: 0.5rem 0.375rem;
-  border-radius: 0.5rem;
-  border: 1px solid rgba(0, 0, 0, 0.12);
-  background: #ffffff;
-  color: #1e293b;
-  font-size: 0.8125rem;
-  font-family: inherit;
-  flex: 0 0 auto;
 }
 
 .strip__debug {

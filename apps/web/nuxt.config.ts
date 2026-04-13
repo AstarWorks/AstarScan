@@ -1,36 +1,46 @@
+import tailwindcss from '@tailwindcss/vite'
+
 // https://nuxt.com/docs/api/configuration/nuxt-config
 export default defineNuxtConfig({
   compatibilityDate: '2025-07-15',
 
-  // SPA mode — no server-side rendering.
-  // AstarScan is an edge-first PWA with 100% client-side processing;
-  // there is no server component to render against, and SSR would
-  // just slow down the initial load for no benefit.
   ssr: false,
 
   devtools: { enabled: true },
 
   devServer: { port: 3005 },
 
-  // Vite configuration for ONNX Runtime Web + Web Workers (NDLOCR-Lite).
+  modules: ['shadcn-nuxt'],
+
+  shadcn: {
+    prefix: '',
+    componentDir: '~/components/ui',
+  },
+
+  css: ['~/assets/css/main.css'],
+
   vite: {
+    plugins: [tailwindcss()],
     worker: { format: 'es' as const },
     optimizeDeps: {
       exclude: ['onnxruntime-web', 'onnxruntime-web/wasm'],
     },
   },
 
-  // Static output for Cloudflare Pages. `nuxt generate` produces
-  // pure HTML/JS/CSS into `.output/public/` — no Nitro runtime, no
-  // Workers, no Functions. Deploy with:
-  //   npx wrangler pages deploy .output/public --project-name=astar-scan
+  postcss: {
+    plugins: {
+      '@tailwindcss/postcss': {},
+      autoprefixer: {},
+    },
+  },
+
   nitro: {
     preset: 'static',
   },
 
   typescript: {
     strict: true,
-    typeCheck: false, // run via `bun run --cwd apps/web typecheck`
+    typeCheck: false,
   },
 
   app: {
