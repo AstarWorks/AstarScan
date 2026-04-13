@@ -17,6 +17,7 @@
   "dependencies": {
     "@astarworks/scan-core": "workspace:*",
     "@astarworks/scan-vue": "workspace:*",
+    "@huggingface/transformers": "^4.0.1",
     "@tailwindcss/vite": "^4",
     "class-variance-authority": "^0.7.1",
     "clsx": "^2.1.1",

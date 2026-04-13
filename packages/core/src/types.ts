@@ -244,6 +244,39 @@ export interface EdgeDetectorBackend {
 }
 
 // ---------------------------------------------------------------------------
+// Document classifier backend (VLM-based quality + classification filter)
+// ---------------------------------------------------------------------------
+
+/**
+ * Result of a VLM document classification check.
+ */
+export interface DocumentClassifierResult {
+  /** Whether the image is a clear, fully-visible document page. */
+  readonly isDocument: boolean
+  /** Confidence score in [0, 1]. */
+  readonly confidence: number
+  /** Rejection reason when `isDocument` is false. */
+  readonly reason?: 'hand_occlusion' | 'not_document' | 'partial' | 'blurry'
+}
+
+/**
+ * A backend that uses a vision-language model to classify whether a
+ * captured frame is a valid document page. Used as the final filter
+ * in the capture pipeline, after all cheaper heuristic gates.
+ *
+ * Implementations:
+ * - SmolVlmBackend (browser, Transformers.js + WebGPU, ~175MB)
+ * - GemmaE2bBackend (future: native, llama.cpp, 1.3GB)
+ */
+export interface DocumentClassifierBackend {
+  readonly name: string
+  readonly ready: boolean
+  warmUp(onProgress?: (progress: number) => void): Promise<void>
+  classify(frame: HTMLCanvasElement): Promise<DocumentClassifierResult>
+  dispose(): void
+}
+
+// ---------------------------------------------------------------------------
 // Pipeline construction options
 // ---------------------------------------------------------------------------
 

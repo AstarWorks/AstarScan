@@ -14,6 +14,10 @@ import { extractGrayscale, SsimDedupManager } from '~/services/ssim-dedup'
 import { disposeOcr, initOcr, isOcrReady, runOcr } from '~/services/ocr-service'
 import type { OcrResult } from '~/services/ocr-service'
 import { disposeVisualDedup, runVisualDedup } from '~/services/visual-dedup'
+import {
+  classifyBatch,
+  disposeClassifier,
+} from '~/services/smolvlm-backend'
 import { warpPerspective } from '~/services/perspective-warper'
 import {
   clearSession,
@@ -788,6 +792,56 @@ async function runDedup(): Promise<void> {
   }
 }
 
+// VLM filter state
+const vlmRunning = ref(false)
+const vlmProgressText = ref('')
+
+/**
+ * Run VLM-based document classification on all captured pages.
+ * Removes non-document frames (desk, hand occlusion, etc.).
+ * Uses SmolVLM-256M (~175MB, lazy-loaded).
+ */
+async function runVlmFilter(): Promise<void> {
+  if (captured.value.length === 0 || vlmRunning.value) return
+  vlmRunning.value = true
+  vlmProgressText.value = ''
+
+  try {
+    const results = await classifyBatch(
+      captured.value.map((p) => ({ dataUrl: p.dataUrl })),
+      (msg) => {
+        vlmProgressText.value = msg
+      },
+    )
+
+    const removed: number[] = []
+    results.forEach((r, i) => {
+      if (!r.isDocument) removed.push(i)
+    })
+
+    if (removed.length === 0) {
+      showTransientError('全てのページが書類として認識されました。')
+      return
+    }
+
+    const removeSet = new Set(removed)
+    const kept = captured.value.filter((_, i) => !removeSet.has(i))
+    ssimDedup.clear()
+    captured.value = kept
+    void persistSession()
+    showTransientError(
+      `書類判定完了: ${removed.length} 件の非書類フレームを除外しました。`,
+    )
+  } catch (err) {
+    showTransientError(
+      err instanceof Error ? err.message : '書類判定に失敗しました',
+    )
+  } finally {
+    vlmRunning.value = false
+    vlmProgressText.value = ''
+  }
+}
+
 type PdfMode = 'single' | 'split' | 'batch'
 const pdfMode = ref<PdfMode>('single')
 
@@ -922,6 +976,7 @@ onBeforeUnmount(() => {
   ssimDedup.clear()
   disposeOcr()
   disposeVisualDedup()
+  disposeClassifier()
 })
 </script>
 
@@ -1091,6 +1146,15 @@ onBeforeUnmount(() => {
           {{ dedupRunning ? '処理中...' : '重複除去' }}
         </button>
         <button
+          v-if="captured.length >= 1"
+          class="btn btn--secondary"
+          type="button"
+          :disabled="vlmRunning"
+          @click="runVlmFilter"
+        >
+          {{ vlmRunning ? '判定中...' : 'AI 書類判定' }}
+        </button>
+        <button
           v-if="captured.length > 0"
           class="btn btn--primary"
           type="button"
@@ -1117,6 +1181,15 @@ onBeforeUnmount(() => {
           @click="runDedup"
         >
           {{ dedupRunning ? '処理中...' : '重複除去' }}
+        </button>
+        <button
+          v-if="captured.length >= 1"
+          class="btn btn--secondary"
+          type="button"
+          :disabled="vlmRunning"
+          @click="runVlmFilter"
+        >
+          {{ vlmRunning ? '判定中...' : 'AI 書類判定' }}
         </button>
         <Select v-model="pdfMode">
           <SelectTrigger class="w-[130px] h-10 text-sm">
@@ -1149,6 +1222,10 @@ onBeforeUnmount(() => {
 
     <div v-if="dedupRunning" class="toast toast--info" role="status">
       {{ dedupProgressText || '重複除去中...' }}
+    </div>
+
+    <div v-if="vlmRunning" class="toast toast--info" role="status">
+      {{ vlmProgressText || 'AI 書類判定中...' }}
     </div>
 
     <Transition name="sheet">

@@ -32,6 +32,8 @@ export type {
   QualityScoreResult,
   PageChangeDetectorBackend,
   PageChangeState,
+  DocumentClassifierBackend,
+  DocumentClassifierResult,
   // Pipeline
   ScanPipeline,
   ScanPipelineOptions,
