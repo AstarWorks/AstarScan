@@ -506,8 +506,11 @@ async function startFromFile(): Promise<void> {
       statusText.value = `${ssimCount} 候補を SigLIP で最終重複除去中...`
       try {
         await runDedup()
-      } catch {
-        // SigLIP failed — SSIM results are still usable
+      } catch (dedupErr) {
+        console.error('[scan] SigLIP dedup failed:', dedupErr)
+        showTransientError(
+          `SigLIP 重複除去失敗: ${dedupErr instanceof Error ? dedupErr.message : String(dedupErr)}`,
+        )
       }
     }
 

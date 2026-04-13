@@ -22,11 +22,12 @@ import { loadOrtSession, canvasToTensor, ort } from './ort-model-loader'
 // ---------------------------------------------------------------------------
 
 /**
- * SigLIP base patch16 224 — vision encoder only, q4f16 quantized.
+ * SigLIP base patch16 224 — vision encoder only, int8 quantized.
  * Source: Xenova/siglip-base-patch16-224 on HuggingFace.
- * Embedding dim: 768, input: 224×224, ~55MB.
+ * Embedding dim: 768, input: 224×224, ~90MB.
+ * Note: q4f16 variant fails to load (ort version mismatch). int8 is stable.
  */
-const MODEL_URL = '/models/siglip-vision-q4f16.onnx'
+const MODEL_URL = '/models/siglip-vision-int8.onnx'
 const INPUT_SIZE = 224
 const EMBEDDING_DIM = 768
 
