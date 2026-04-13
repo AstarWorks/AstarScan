@@ -10,6 +10,8 @@ export default defineNuxtConfig({
 
   devtools: { enabled: true },
 
+  devServer: { port: 3005 },
+
   // Vite configuration for ONNX Runtime Web + Web Workers (NDLOCR-Lite).
   vite: {
     worker: { format: 'es' as const },
@@ -49,7 +51,7 @@ export default defineNuxtConfig({
           content:
             'スマホで大量の紙書類を PDF に — 動画ストリーミングでユニークなページを自動抽出する完全オフラインのエッジスキャナー。',
         },
-        { name: 'theme-color', content: '#0f172a' },
+        { name: 'theme-color', content: '#001f42' },
       ],
       link: [{ rel: 'icon', type: 'image/svg+xml', href: '/favicon.svg' }],
     },
