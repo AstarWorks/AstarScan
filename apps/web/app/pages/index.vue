@@ -481,15 +481,16 @@ async function startFromFile(): Promise<void> {
     video.srcObject = null
     video.muted = true
     video.playsInline = true
-    video.src = objectUrl
-    video.load()
 
-    // Wait for video dimensions + first frame to be ready
-    await new Promise<void>((resolve, reject) => {
+    // Set event handlers BEFORE assigning src/load to avoid race conditions
+    const ready = new Promise<void>((resolve, reject) => {
       video.oncanplay = () => resolve()
       video.onerror = () => reject(new Error('動画の読み込みに失敗しました'))
     })
 
+    video.src = objectUrl
+    video.load()
+    await ready
     await video.play()
 
     // Stop scanning when the video ends, then run visual dedup
@@ -1100,13 +1101,7 @@ onBeforeUnmount(() => {
     </header>
 
     <section class="viewport">
-      <video
-        ref="videoRef"
-        class="viewport__video"
-        playsinline
-        muted
-        autoplay
-      />
+      <video ref="videoRef" class="viewport__video" playsinline muted />
       <canvas ref="overlayRef" class="viewport__overlay" />
 
       <div v-if="phase === 'idle'" class="splash">
