@@ -9,11 +9,6 @@ import {
 } from '~/services/blur-detection'
 import { DocAlignerBackend } from '~/services/docaligner-backend'
 import { JscanifyBackend } from '~/services/jscanify-backend'
-import {
-  MOTION_RESET_THRESHOLD,
-  MotionDetector,
-  STABILITY_THRESHOLD,
-} from '~/services/motion-detection'
 import { extractGrayscale, SsimDedupManager } from '~/services/ssim-dedup'
 import { disposeOcr, initOcr, isOcrReady, runOcr } from '~/services/ocr-service'
 import type { OcrResult } from '~/services/ocr-service'
@@ -62,22 +57,16 @@ interface CaptureNotification {
 const EXTRACT_WIDTH = 1200
 const EXTRACT_HEIGHT = 1600
 
-// Thumbnail used inside the capture-notification toast.
 const NOTIFICATION_THUMB_QUALITY = 0.6
-
-// Async detection runs every N RAF frames. At 60 FPS display that's
-// ~15 FPS detection — responsive enough for the outline to feel live
-// without saturating the CPU. Detection is fire-and-forget; the loop
-// just renders the most recent known quad until a new one arrives.
-const DETECTION_EVERY_N_FRAMES = 4
-
-// How long the scene must stay stable before auto-capture fires.
-// Tuned so the user can show a page, wait half a second while the
-// outline locks on, and have it captured without a button tap.
-const STABLE_DURATION_MS = 500
-
-// Auto-capture notification display time (ms).
 const NOTIFICATION_DURATION_MS = 2500
+
+// Capture interval: sample one frame per second. Calibrated on eval set:
+// SSIM 0.70 at 1s sampling = 11/11 on 43s test video with 11 pages.
+const CAPTURE_INTERVAL_MS = 1000
+
+// Overlay detection runs every N RAF frames (~15 FPS at 60 FPS display).
+// This is for UX feedback only — capture decisions are made by the timer.
+const OVERLAY_DETECT_EVERY_N = 4
 
 // --------------------------------------------------------------------------
 // Reactive state
@@ -90,9 +79,6 @@ const statusText = ref<string>('')
 const errorText = ref<string | null>(null)
 const captured = ref<CapturedPage[]>([])
 const notification = ref<CaptureNotification | null>(null)
-
-// Dedup stats (shown in video-end summary)
-const dedupSkipped = ref(0)
 
 // Visual dedup state
 const dedupRunning = ref(false)
@@ -111,31 +97,19 @@ const ocrPanelPage = ref<{
 } | null>(null)
 
 // --------------------------------------------------------------------------
-// Non-reactive handles (these don't need Vue reactivity, and making them
-// refs would create proxy wrappers around objects that don't tolerate it)
+// Non-reactive handles
 // --------------------------------------------------------------------------
 
-let backend: EdgeDetectorBackend | null = null
-let motionDetector: MotionDetector | null = null
+let edgeBackend: EdgeDetectorBackend | null = null
 const ssimDedup = new SsimDedupManager()
 let stream: MediaStream | null = null
 let visibilityCleanup: (() => void) | null = null
 let rafId: number | null = null
-let detectionTick = 0
-
-// Async detection state: RAF draws `lastQuad` on every frame, a throttled
-// tick kicks off `backend.detect()`, and the resolved quad updates
-// `lastQuad` without blocking the loop.
+let captureTimerId: ReturnType<typeof setInterval> | null = null
+let overlayTick = 0
 let lastQuad: Quad | null = null
 let detectionInFlight = false
-let detectionWorkCanvas: HTMLCanvasElement | null = null
-
-// Auto-capture state machine (see `startDetectionLoop`).
-let stableSinceMs: number | null = null
-let captureInFlight = false
-let captureCooldown = false
-let cooldownStartMs: number | null = null
-const COOLDOWN_TIMEOUT_MS = 3000 // auto-reset cooldown after 3s (video file mode)
+let processingFrame = false
 let nextNotificationId = 0
 let notificationTimeoutId: number | null = null
 
@@ -249,40 +223,100 @@ async function startCamera(): Promise<void> {
 }
 
 // --------------------------------------------------------------------------
-// Async detection loop — draws quad overlay, samples motion, kicks off
-// async detect(), triggers auto-capture when the scene is stable+sharp.
+// Unified capture pipeline — shared by camera and video file modes.
+// Same logic: edge detect → warp → blur check → SSIM dedup → accept.
 // --------------------------------------------------------------------------
 
-function ensureWorkCanvas(video: HTMLVideoElement): HTMLCanvasElement {
-  if (!detectionWorkCanvas) {
-    detectionWorkCanvas = document.createElement('canvas')
+/**
+ * Capture a single frame from the video, run edge detection + warp,
+ * blur check, and SSIM dedup. Shared by camera and video file modes.
+ */
+async function processFrame(video: HTMLVideoElement): Promise<void> {
+  if (processingFrame || video.readyState < 2 || video.videoWidth === 0) return
+  processingFrame = true
+
+  try {
+    const work = document.createElement('canvas')
+    work.width = video.videoWidth
+    work.height = video.videoHeight
+    const ctx = work.getContext('2d')
+    if (!ctx) return
+    ctx.drawImage(video, 0, 0)
+
+    // 1. Edge detect + perspective warp (or full-frame fallback)
+    let output: HTMLCanvasElement = work
+    let backendName = 'raw'
+    if (edgeBackend) {
+      try {
+        const quad = await edgeBackend.detect(work)
+        if (quad) {
+          output = warpPerspective(work, quad, EXTRACT_WIDTH, EXTRACT_HEIGHT)
+          backendName = edgeBackend.name
+        }
+      } catch {
+        // Detection failed — use raw frame
+      }
+    }
+
+    // 2. Blur check
+    const sharpness = measureSharpness(output)
+    if (sharpness < DEFAULT_BLUR_THRESHOLD) return
+
+    // 3. SSIM dedup + best-frame replacement
+    const gray = extractGrayscale(output)
+    const match = ssimDedup.isDuplicate(gray)
+    if (match) {
+      const existingIdx = captured.value.findIndex((p) => p.id === match.pageId)
+      const existing = captured.value[existingIdx]
+      if (existing && sharpness > existing.sharpness) {
+        ssimDedup.updatePage(existing.id, gray)
+        const dataUrl = output.toDataURL('image/jpeg', 0.85)
+        const pages = [...captured.value]
+        pages[existingIdx] = {
+          ...existing,
+          dataUrl,
+          width: output.width,
+          height: output.height,
+          sharpness,
+          backendName,
+          ocrText: undefined,
+        }
+        captured.value = pages
+        showCaptureNotification(output, 'replaced', existingIdx + 1)
+        void persistSession()
+      }
+      return
+    }
+
+    // 4. Accept new page
+    const pageId = crypto.randomUUID()
+    const dataUrl = output.toDataURL('image/jpeg', 0.85)
+    ssimDedup.addPage(pageId, gray)
+    captured.value = [
+      ...captured.value,
+      {
+        id: pageId,
+        dataUrl,
+        width: output.width,
+        height: output.height,
+        sharpness,
+        backendName,
+      },
+    ]
+    showCaptureNotification(output, 'new')
+    void persistSession()
+  } finally {
+    processingFrame = false
   }
-  if (detectionWorkCanvas.width !== video.videoWidth) {
-    detectionWorkCanvas.width = video.videoWidth
-    detectionWorkCanvas.height = video.videoHeight
-  }
-  const ctx = detectionWorkCanvas.getContext('2d', {
-    willReadFrequently: true,
-  })
-  ctx?.drawImage(video, 0, 0)
-  return detectionWorkCanvas
 }
 
 function drawQuadOverlay(
   ctx: CanvasRenderingContext2D,
   quad: Quad,
   canvasWidth: number,
-  stable: boolean,
 ): void {
-  // Yellow when we're actively holding the scene steady and arming a
-  // capture; blue when idle-tracking. Gives the user visual feedback
-  // that auto-capture is about to fire.
-  const stroke = stable
-    ? 'rgba(251, 191, 36, 0.98)'
-    : 'rgba(96, 165, 250, 0.95)'
-  const fill = stable ? 'rgba(251, 191, 36, 0.22)' : 'rgba(96, 165, 250, 0.18)'
-  ctx.fillStyle = fill
-  ctx.strokeStyle = stroke
+  ctx.fillStyle = 'rgba(0, 132, 255, 0.15)'
+  ctx.strokeStyle = 'rgba(0, 132, 255, 0.8)'
   ctx.lineWidth = Math.max(3, Math.round(canvasWidth / 400))
   ctx.beginPath()
   ctx.moveTo(quad.tl.x, quad.tl.y)
@@ -294,86 +328,47 @@ function drawQuadOverlay(
   ctx.stroke()
 }
 
-function startDetectionLoop(): void {
+/**
+ * Overlay-only RAF loop for camera mode: draws detected quad on the
+ * canvas for UX feedback. Capture decisions are NOT made here — they
+ * happen in the 1s interval timer via processFrame().
+ */
+function startOverlayLoop(): void {
   const video = videoRef.value
   const overlay = overlayRef.value
-  if (!video || !overlay || !backend) return
+  if (!video || !overlay) return
   const ctx = overlay.getContext('2d')
   if (!ctx) return
-
-  if (!motionDetector) {
-    motionDetector = new MotionDetector()
-  } else {
-    motionDetector.reset()
-  }
-  stableSinceMs = null
-  captureCooldown = false
 
   const loop = () => {
     rafId = requestAnimationFrame(loop)
     if (video.readyState < 2 || video.videoWidth === 0) return
 
-    // Keep the overlay canvas's internal resolution matched to the
-    // video source; CSS scales it to the display size.
     if (overlay.width !== video.videoWidth) {
       overlay.width = video.videoWidth
       overlay.height = video.videoHeight
     }
 
-    // -- Motion tracking (hysteresis) -------------------------------
-    const motionAmount =
-      motionDetector?.sample(video) ?? Number.POSITIVE_INFINITY
-    const now = performance.now()
-
-    if (motionAmount >= MOTION_RESET_THRESHOLD) {
-      // Definite motion: reset both the stable timer and any post-
-      // capture cooldown, so the next stable period can auto-capture.
-      stableSinceMs = null
-      captureCooldown = false
-      cooldownStartMs = null
-    } else if (motionAmount < STABILITY_THRESHOLD) {
-      // Below the lower threshold: arm or continue the stable timer.
-      if (stableSinceMs === null) stableSinceMs = now
-    }
-    // The band between STABILITY and MOTION_RESET is deliberately a
-    // no-op zone — it prevents tiny jitter from flipping the state.
-    // However, for video files with gradual page transitions, the
-    // cooldown can get stuck. Auto-reset after COOLDOWN_TIMEOUT_MS.
-    if (captureCooldown) {
-      if (!cooldownStartMs) cooldownStartMs = now
-      if (now - cooldownStartMs > COOLDOWN_TIMEOUT_MS) {
-        captureCooldown = false
-        cooldownStartMs = null
-      }
-    } else {
-      cooldownStartMs = null
-    }
-
-    // -- Overlay paint ---------------------------------------------
     ctx.clearRect(0, 0, overlay.width, overlay.height)
     if (lastQuad) {
-      const stableReady =
-        stableSinceMs !== null && now - stableSinceMs >= STABLE_DURATION_MS
-      drawQuadOverlay(ctx, lastQuad, overlay.width, stableReady)
+      drawQuadOverlay(ctx, lastQuad, overlay.width)
     }
 
-    // -- Throttled async detection ---------------------------------
-    detectionTick += 1
-    if (detectionTick % DETECTION_EVERY_N_FRAMES === 0 && !detectionInFlight) {
-      const currentBackend = backend
-      if (currentBackend) {
+    // Throttled detection for overlay display only
+    overlayTick += 1
+    if (overlayTick % OVERLAY_DETECT_EVERY_N === 0 && !detectionInFlight) {
+      if (edgeBackend) {
         detectionInFlight = true
-        const work = ensureWorkCanvas(video)
-        currentBackend
+        const work = document.createElement('canvas')
+        work.width = video.videoWidth
+        work.height = video.videoHeight
+        work.getContext('2d')?.drawImage(video, 0, 0)
+        edgeBackend
           .detect(work)
           .then((quad) => {
             lastQuad = quad
-            if (detectionTick % 60 === 0) {
-              console.log(`[scan] detect result: ${quad ? 'QUAD' : 'null'}`)
-            }
           })
-          .catch((err) => {
-            console.error('[scan] detect error:', err)
+          .catch(() => {
             lastQuad = null
           })
           .finally(() => {
@@ -381,66 +376,64 @@ function startDetectionLoop(): void {
           })
       }
     }
-
-    // -- Auto-capture trigger --------------------------------------
-    // DEBUG: log state every 60 frames (~1s)
-    if (detectionTick % 60 === 0) {
-      const stableMs =
-        stableSinceMs !== null ? Math.round(now - stableSinceMs) : -1
-      console.log(
-        `[scan] motion=${motionAmount.toFixed(1)} stable=${stableMs}ms quad=${!!lastQuad} cooldown=${captureCooldown} inflight=${captureInFlight} pages=${captured.value.length}`,
-      )
-    }
-
-    const stableEnough =
-      stableSinceMs !== null && now - stableSinceMs >= STABLE_DURATION_MS
-    // Fallback: if no quad detected but scene is stable for 2s,
-    // capture the full frame (document fills the entire frame).
-    const fullFrameFallback =
-      stableSinceMs !== null && now - stableSinceMs >= 2000 && lastQuad === null
-
-    if (
-      !captureCooldown &&
-      !captureInFlight &&
-      stableEnough &&
-      (lastQuad !== null || fullFrameFallback)
-    ) {
-      void tryCapture({ auto: true, fullFrame: fullFrameFallback })
-    }
   }
   loop()
+}
+
+/**
+ * Start capture timer: processFrame() runs every CAPTURE_INTERVAL_MS.
+ * Used by both camera and video-playback modes.
+ */
+function startCaptureTimer(): void {
+  const video = videoRef.value
+  if (!video) return
+  captureTimerId = setInterval(() => {
+    void processFrame(video)
+  }, CAPTURE_INTERVAL_MS)
+}
+
+function stopCaptureTimer(): void {
+  if (captureTimerId !== null) {
+    clearInterval(captureTimerId)
+    captureTimerId = null
+  }
 }
 
 // --------------------------------------------------------------------------
 // Start / stop orchestration
 // --------------------------------------------------------------------------
 
+async function initEdgeBackend(): Promise<void> {
+  statusText.value = 'AI モデル読み込み中 (初回のみ)...'
+  try {
+    const docaligner = new DocAlignerBackend('fastvit_t8')
+    await docaligner.warmUp()
+    edgeBackend = docaligner
+  } catch {
+    try {
+      statusText.value = 'フォールバック: 古典スキャナー初期化中...'
+      const jscanify = new JscanifyBackend()
+      await jscanify.warmUp()
+      edgeBackend = jscanify
+    } catch {
+      edgeBackend = null
+    }
+  }
+}
+
 async function start(): Promise<void> {
   phase.value = 'loading'
   errorText.value = null
   try {
-    // Try DocAligner ONNX first (ML-based, 85-92% accuracy), fall back
-    // to JscanifyBackend (classical CV, 60-70%) on load failure.
-    statusText.value = 'AI モデル読み込み中 (初回のみ)...'
-    let selectedBackend: EdgeDetectorBackend
-    try {
-      const docaligner = new DocAlignerBackend('fastvit_t8')
-      await docaligner.warmUp()
-      selectedBackend = docaligner
-    } catch {
-      statusText.value = 'フォールバック: 古典スキャナー初期化中...'
-      const jscanify = new JscanifyBackend()
-      await jscanify.warmUp()
-      selectedBackend = jscanify
-    }
-    backend = selectedBackend
+    await initEdgeBackend()
 
     statusText.value = 'カメラ起動中...'
     await startCamera()
 
     statusText.value = ''
     phase.value = 'ready'
-    startDetectionLoop()
+    startOverlayLoop()
+    startCaptureTimer()
   } catch (err) {
     phase.value = 'error'
     errorText.value =
@@ -448,18 +441,6 @@ async function start(): Promise<void> {
     statusText.value = ''
   }
 }
-
-/**
- * Batch-process a video file: sample frames at 1s intervals, blur-check,
- * SSIM-deduplicate, and collect unique pages. Unlike camera mode (which
- * uses real-time motion detection + stability timer), video file mode
- * processes ALL frames in a single pass — much more reliable for
- * pre-recorded page-flip videos.
- *
- * Pipeline: sample → blur check → SSIM dedup (threshold 0.70) → accept
- * Calibrated on eval set: SSIM 0.70 at 1s sampling = 11/11 on test video.
- */
-const VIDEO_SSIM_THRESHOLD = 0.7
 
 async function startFromFile(): Promise<void> {
   const file = await new Promise<File | null>((resolve) => {
@@ -475,22 +456,7 @@ async function startFromFile(): Promise<void> {
   phase.value = 'loading'
   errorText.value = null
   try {
-    // Initialize edge detection backend for perspective correction
-    statusText.value = 'AI モデル読み込み中...'
-    let edgeBackend: EdgeDetectorBackend | null = null
-    try {
-      const docaligner = new DocAlignerBackend('fastvit_t8')
-      await docaligner.warmUp()
-      edgeBackend = docaligner
-    } catch {
-      try {
-        const jscanify = new JscanifyBackend()
-        await jscanify.warmUp()
-        edgeBackend = jscanify
-      } catch {
-        edgeBackend = null // proceed without edge detection
-      }
-    }
+    await initEdgeBackend()
 
     const video = videoRef.value
     if (!video) throw new Error('ビデオ要素の取得に失敗しました')
@@ -509,101 +475,20 @@ async function startFromFile(): Promise<void> {
     await ready
 
     const duration = video.duration
-    const sampleInterval = 1.0 // sample every 1 second
-    const totalSamples = Math.floor(duration / sampleInterval)
+    const totalSamples = Math.floor(duration / (CAPTURE_INTERVAL_MS / 1000))
 
     statusText.value = `${totalSamples} フレームを解析中...`
     phase.value = 'ready'
 
-    // Batch: seek to each sample point, capture frame, SSIM dedup
-    const work = document.createElement('canvas')
-    const dedup = new SsimDedupManager()
-    let acceptedCount = 0
-
+    // Batch: seek to each sample point, run processFrame
     for (let i = 0; i <= totalSamples; i++) {
-      const seekTime = i * sampleInterval
-      // Seek and wait for frame
+      const seekTime = i * (CAPTURE_INTERVAL_MS / 1000)
       await new Promise<void>((resolve) => {
         video.onseeked = () => resolve()
         video.currentTime = seekTime
       })
-
-      // Draw current frame to work canvas
-      if (video.videoWidth === 0) continue
-      work.width = video.videoWidth
-      work.height = video.videoHeight
-      const ctx = work.getContext('2d')
-      if (!ctx) continue
-      ctx.drawImage(video, 0, 0)
-
-      // Try edge detection + perspective warp for cleaner output
-      let outputCanvas: HTMLCanvasElement = work
-      let usedBackend = 'raw'
-      if (edgeBackend) {
-        try {
-          const quad = await edgeBackend.detect(work)
-          if (quad) {
-            outputCanvas = warpPerspective(
-              work,
-              quad,
-              EXTRACT_WIDTH,
-              EXTRACT_HEIGHT,
-            )
-            usedBackend = edgeBackend.name
-          }
-        } catch {
-          // Edge detection failed — use raw frame
-        }
-      }
-
-      // Blur check on the (possibly warped) output
-      const sharpness = measureSharpness(outputCanvas)
-      if (sharpness < DEFAULT_BLUR_THRESHOLD) continue
-
-      // SSIM dedup with video-specific threshold (0.70)
-      const gray = extractGrayscale(outputCanvas)
-      const match = dedup.isDuplicate(gray, VIDEO_SSIM_THRESHOLD)
-
-      if (match) {
-        // Best-frame replacement: keep sharper version
-        const existingIdx = captured.value.findIndex(
-          (p) => p.id === match.pageId,
-        )
-        const existing = captured.value[existingIdx]
-        if (existing && sharpness > existing.sharpness) {
-          dedup.updatePage(existing.id, gray)
-          const dataUrl = outputCanvas.toDataURL('image/jpeg', 0.85)
-          const pages = [...captured.value]
-          pages[existingIdx] = {
-            ...existing,
-            dataUrl,
-            width: outputCanvas.width,
-            height: outputCanvas.height,
-            sharpness,
-            ocrText: undefined,
-          }
-          captured.value = pages
-        }
-        continue
-      }
-
-      // New unique page
-      const pageId = crypto.randomUUID()
-      const dataUrl = outputCanvas.toDataURL('image/jpeg', 0.85)
-      dedup.addPage(pageId, gray)
-      captured.value = [
-        ...captured.value,
-        {
-          id: pageId,
-          dataUrl,
-          width: outputCanvas.width,
-          height: outputCanvas.height,
-          sharpness,
-          backendName: usedBackend,
-        },
-      ]
-      acceptedCount++
-      statusText.value = `解析中... ${i + 1}/${totalSamples} (${acceptedCount} ページ検出)`
+      await processFrame(video)
+      statusText.value = `解析中... ${i + 1}/${totalSamples} (${captured.value.length} ページ検出)`
     }
 
     URL.revokeObjectURL(objectUrl)
@@ -621,157 +506,13 @@ async function startFromFile(): Promise<void> {
 }
 
 // --------------------------------------------------------------------------
-// Capture / review / export
+// Manual capture (button tap in camera mode)
 // --------------------------------------------------------------------------
 
-async function tryCapture(options: {
-  auto: boolean
-  fullFrame?: boolean
-}): Promise<void> {
+async function manualCapture(): Promise<void> {
   const video = videoRef.value
-  const currentBackend = backend
-  if (!video || !currentBackend || phase.value !== 'ready') return
-  if (captureInFlight) return
-  captureInFlight = true
-
-  try {
-    // Off-screen canvas at full camera resolution — we don't want the
-    // preview overlay (which may be scaled) to affect the captured output.
-    const work = document.createElement('canvas')
-    work.width = video.videoWidth
-    work.height = video.videoHeight
-    const ctx = work.getContext('2d')
-    if (!ctx) return
-    ctx.drawImage(video, 0, 0)
-
-    let extracted: HTMLCanvasElement
-
-    if (options.fullFrame) {
-      // Full-frame fallback: document fills the entire frame,
-      // no edge detection possible. Use the frame as-is.
-      extracted = document.createElement('canvas')
-      extracted.width = EXTRACT_WIDTH
-      extracted.height = EXTRACT_HEIGHT
-      const ectx = extracted.getContext('2d')
-      if (!ectx) return
-      ectx.drawImage(work, 0, 0, EXTRACT_WIDTH, EXTRACT_HEIGHT)
-    } else {
-      let quad: Quad | null = null
-      try {
-        quad = await currentBackend.detect(work)
-      } catch {
-        quad = null
-      }
-
-      if (!quad) {
-        if (!options.auto) {
-          showTransientError(
-            '書類を検出できませんでした。画面内に収めてもう一度撮影してください。',
-          )
-        }
-        return
-      }
-
-      try {
-        extracted = warpPerspective(work, quad, EXTRACT_WIDTH, EXTRACT_HEIGHT)
-      } catch (err) {
-        if (!options.auto) {
-          showTransientError(
-            err instanceof Error ? err.message : '書類の切り出しに失敗しました',
-          )
-        }
-        return
-      }
-    }
-
-    // Quality gate: Laplacian variance. Blurry frames never reach the PDF.
-    const sharpness = measureSharpness(extracted)
-    if (sharpness < DEFAULT_BLUR_THRESHOLD) {
-      if (!options.auto) {
-        showTransientError(
-          `ピンボケが検出されました (${Math.round(sharpness)})。端末を固定してもう一度撮影してください。`,
-        )
-      }
-      // For auto-capture, silently skip and wait for a better frame.
-      // Don't arm the cooldown — we want to retry.
-      return
-    }
-
-    // Dedup gate + best-frame replacement.
-    // If the newly warped page is structurally identical to an already-
-    // captured page (SSIM > 0.81), compare sharpness: if the new frame
-    // is sharper, replace the existing page; otherwise skip.
-    const newGray = extractGrayscale(extracted)
-    const match = ssimDedup.isDuplicate(newGray)
-    if (match) {
-      const existingIdx = captured.value.findIndex((p) => p.id === match.pageId)
-      const existing = captured.value[existingIdx]
-
-      if (existing && sharpness > existing.sharpness) {
-        // Best-frame replacement: swap in the sharper version
-        const dataUrl = extracted.toDataURL('image/jpeg', 0.85)
-        const sourceDataUrl = work.toDataURL('image/jpeg', 0.85)
-        ssimDedup.updatePage(existing.id, newGray)
-        const pages = [...captured.value]
-        pages[existingIdx] = {
-          ...existing,
-          dataUrl,
-          width: extracted.width,
-          height: extracted.height,
-          sharpness,
-          sourceDataUrl,
-          sourceWidth: work.width,
-          sourceHeight: work.height,
-          backendName: currentBackend.name,
-          ocrText: undefined, // image changed — OCR must be re-run
-        }
-        captured.value = pages
-        showCaptureNotification(extracted, 'replaced', existingIdx + 1)
-        void persistSession()
-      } else {
-        // Existing version is equal or better — show brief skip notice
-        showCaptureNotification(extracted, 'skipped', existingIdx + 1)
-      }
-
-      dedupSkipped.value += 1
-      captureCooldown = true
-      stableSinceMs = null
-      return
-    }
-
-    // New page — accept!
-    const pageId = crypto.randomUUID()
-    const dataUrl = extracted.toDataURL('image/jpeg', 0.85)
-    const sourceDataUrl = work.toDataURL('image/jpeg', 0.85)
-    ssimDedup.addPage(pageId, newGray)
-    captured.value = [
-      ...captured.value,
-      {
-        id: pageId,
-        dataUrl,
-        width: extracted.width,
-        height: extracted.height,
-        sharpness,
-        sourceDataUrl,
-        sourceWidth: work.width,
-        sourceHeight: work.height,
-        backendName: currentBackend.name,
-      },
-    ]
-
-    if (options.auto) {
-      // Lock out further auto-captures until motion is detected. This
-      // is what prevents the same stable page from being captured 10
-      // times while the user holds the camera still.
-      captureCooldown = true
-      stableSinceMs = null
-    }
-
-    showCaptureNotification(extracted, 'new')
-    void persistSession()
-  } finally {
-    captureInFlight = false
-  }
+  if (!video) return
+  await processFrame(video)
 }
 
 function showCaptureNotification(
@@ -840,7 +581,7 @@ function movePageDown(idx: number): void {
  */
 async function redetectPage(idx: number): Promise<void> {
   const page = captured.value[idx]
-  if (!page?.sourceDataUrl || !backend) return
+  if (!page?.sourceDataUrl || !edgeBackend) return
 
   try {
     // Reconstruct canvas from the saved source frame
@@ -855,7 +596,7 @@ async function redetectPage(idx: number): Promise<void> {
     canvas.height = img.height
     canvas.getContext('2d')?.drawImage(img, 0, 0)
 
-    const quad = await backend.detect(canvas)
+    const quad = await edgeBackend.detect(canvas)
     if (!quad) {
       showTransientError('再検出できませんでした。')
       return
@@ -1148,6 +889,7 @@ onMounted(() => {
 })
 
 onBeforeUnmount(() => {
+  stopCaptureTimer()
   if (rafId !== null) {
     cancelAnimationFrame(rafId)
     rafId = null
@@ -1160,14 +902,12 @@ onBeforeUnmount(() => {
   visibilityCleanup = null
   stream?.getTracks().forEach((t) => t.stop())
   stream = null
-  backend?.dispose()
-  backend = null
-  motionDetector = null
+  edgeBackend?.dispose()
+  edgeBackend = null
   lastQuad = null
   ssimDedup.clear()
   disposeOcr()
   disposeVisualDedup()
-  detectionWorkCanvas = null
 })
 </script>
 
@@ -1351,7 +1091,7 @@ onBeforeUnmount(() => {
           class="btn btn--secondary"
           type="button"
           :disabled="phase !== 'ready'"
-          @click="tryCapture({ auto: false })"
+          @click="manualCapture"
         >
           手動で撮影
         </button>

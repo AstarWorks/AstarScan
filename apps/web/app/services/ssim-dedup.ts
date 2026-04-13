@@ -20,9 +20,9 @@
  *  high enough to distinguish different document pages. */
 const THUMB_SIZE = 128
 
-/** SSIM above this means "same page". 0.81 = 1 - 0.19 (matches the
- *  Python pipeline's SSIM_THRESHOLD = 0.19 distance). */
-export const SSIM_DUPLICATE_THRESHOLD = 0.81
+/** SSIM above this means "same page". Calibrated on eval set:
+ *  0.70 at 1s sampling = 11/11 on test video (43s, 11 pages). */
+export const SSIM_DUPLICATE_THRESHOLD = 0.7
 
 // SSIM constants (Wang et al., 2004)
 const C1 = 6.5025 // (0.01 * 255)²
