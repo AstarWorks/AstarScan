@@ -489,7 +489,6 @@ async function startFromFile(): Promise<void> {
     })
 
     video.src = objectUrl
-    video.load()
     await ready
     await video.play()
 
@@ -1464,6 +1463,7 @@ onBeforeUnmount(() => {
   width: 100%;
   height: 100%;
   object-fit: contain;
+  z-index: 1;
 }
 
 .viewport__overlay {
@@ -1471,8 +1471,9 @@ onBeforeUnmount(() => {
   inset: 0;
   width: 100%;
   height: 100%;
-  object-fit: contain;
   pointer-events: none;
+  z-index: 2;
+  background: transparent;
 }
 
 .splash {
