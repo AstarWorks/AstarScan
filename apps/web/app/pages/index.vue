@@ -368,8 +368,12 @@ function startDetectionLoop(): void {
           .detect(work)
           .then((quad) => {
             lastQuad = quad
+            if (detectionTick % 60 === 0) {
+              console.log(`[scan] detect result: ${quad ? 'QUAD' : 'null'}`)
+            }
           })
-          .catch(() => {
+          .catch((err) => {
+            console.error('[scan] detect error:', err)
             lastQuad = null
           })
           .finally(() => {
@@ -379,14 +383,29 @@ function startDetectionLoop(): void {
     }
 
     // -- Auto-capture trigger --------------------------------------
+    // DEBUG: log state every 60 frames (~1s)
+    if (detectionTick % 60 === 0) {
+      const stableMs =
+        stableSinceMs !== null ? Math.round(now - stableSinceMs) : -1
+      console.log(
+        `[scan] motion=${motionAmount.toFixed(1)} stable=${stableMs}ms quad=${!!lastQuad} cooldown=${captureCooldown} inflight=${captureInFlight} pages=${captured.value.length}`,
+      )
+    }
+
+    const stableEnough =
+      stableSinceMs !== null && now - stableSinceMs >= STABLE_DURATION_MS
+    // Fallback: if no quad detected but scene is stable for 2s,
+    // capture the full frame (document fills the entire frame).
+    const fullFrameFallback =
+      stableSinceMs !== null && now - stableSinceMs >= 2000 && lastQuad === null
+
     if (
       !captureCooldown &&
       !captureInFlight &&
-      lastQuad !== null &&
-      stableSinceMs !== null &&
-      now - stableSinceMs >= STABLE_DURATION_MS
+      stableEnough &&
+      (lastQuad !== null || fullFrameFallback)
     ) {
-      void tryCapture({ auto: true })
+      void tryCapture({ auto: true, fullFrame: fullFrameFallback })
     }
   }
   loop()
@@ -469,6 +488,7 @@ async function startFromFile(): Promise<void> {
       selectedBackend = jscanify
     }
     backend = selectedBackend
+    console.log(`[scan] Backend: ${selectedBackend.name}`)
 
     // Set up the video element with the file
     statusText.value = '動画を読み込み中...'
@@ -529,7 +549,10 @@ async function startFromFile(): Promise<void> {
 // Capture / review / export
 // --------------------------------------------------------------------------
 
-async function tryCapture(options: { auto: boolean }): Promise<void> {
+async function tryCapture(options: {
+  auto: boolean
+  fullFrame?: boolean
+}): Promise<void> {
   const video = videoRef.value
   const currentBackend = backend
   if (!video || !currentBackend || phase.value !== 'ready') return
@@ -546,32 +569,44 @@ async function tryCapture(options: { auto: boolean }): Promise<void> {
     if (!ctx) return
     ctx.drawImage(video, 0, 0)
 
-    let quad: Quad | null = null
-    try {
-      quad = await currentBackend.detect(work)
-    } catch {
-      quad = null
-    }
-
-    if (!quad) {
-      if (!options.auto) {
-        showTransientError(
-          '書類を検出できませんでした。画面内に収めてもう一度撮影してください。',
-        )
-      }
-      return
-    }
-
     let extracted: HTMLCanvasElement
-    try {
-      extracted = warpPerspective(work, quad, EXTRACT_WIDTH, EXTRACT_HEIGHT)
-    } catch (err) {
-      if (!options.auto) {
-        showTransientError(
-          err instanceof Error ? err.message : '書類の切り出しに失敗しました',
-        )
+
+    if (options.fullFrame) {
+      // Full-frame fallback: document fills the entire frame,
+      // no edge detection possible. Use the frame as-is.
+      extracted = document.createElement('canvas')
+      extracted.width = EXTRACT_WIDTH
+      extracted.height = EXTRACT_HEIGHT
+      const ectx = extracted.getContext('2d')
+      if (!ectx) return
+      ectx.drawImage(work, 0, 0, EXTRACT_WIDTH, EXTRACT_HEIGHT)
+    } else {
+      let quad: Quad | null = null
+      try {
+        quad = await currentBackend.detect(work)
+      } catch {
+        quad = null
       }
-      return
+
+      if (!quad) {
+        if (!options.auto) {
+          showTransientError(
+            '書類を検出できませんでした。画面内に収めてもう一度撮影してください。',
+          )
+        }
+        return
+      }
+
+      try {
+        extracted = warpPerspective(work, quad, EXTRACT_WIDTH, EXTRACT_HEIGHT)
+      } catch (err) {
+        if (!options.auto) {
+          showTransientError(
+            err instanceof Error ? err.message : '書類の切り出しに失敗しました',
+          )
+        }
+        return
+      }
     }
 
     // Quality gate: Laplacian variance. Blurry frames never reach the PDF.
