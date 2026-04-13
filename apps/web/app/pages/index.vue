@@ -3,12 +3,8 @@ import { onBeforeUnmount, onMounted, ref } from 'vue'
 import jsPDF from 'jspdf'
 
 import type { EdgeDetectorBackend, Quad } from '@astarworks/scan-core'
-import {
-  DEFAULT_BLUR_THRESHOLD,
-  measureSharpness,
-} from '~/services/blur-detection'
+import { measureSharpness } from '~/services/blur-detection'
 import { DocAlignerBackend } from '~/services/docaligner-backend'
-import { measureEdgeDensity } from '~/services/edge-density'
 import { JscanifyBackend } from '~/services/jscanify-backend'
 import { extractGrayscale, SsimDedupManager } from '~/services/ssim-dedup'
 import { disposeOcr, initOcr, isOcrReady, runOcr } from '~/services/ocr-service'
@@ -267,17 +263,11 @@ async function processFrame(video: HTMLVideoElement): Promise<void> {
       }
     }
 
-    // 2. Blur check
+    // 2. Sharpness (for best-frame selection, NOT as a gate — filtering
+    // kills valid pages in video mode. SigLIP handles non-document rejection.)
     const sharpness = measureSharpness(output)
-    if (sharpness < DEFAULT_BLUR_THRESHOLD) return
 
-    // 3. Edge density filter — reject desk/hand/background frames.
-    // Documents have high edge density (text, lines), desk surfaces don't.
-    // Threshold 0.03 calibrated on Python eval pipeline.
-    const edgeDensity = measureEdgeDensity(output)
-    if (edgeDensity < 0.03) return
-
-    // 4. SSIM dedup + best-frame replacement
+    // 3. SSIM dedup + best-frame replacement
     const gray = extractGrayscale(output)
     const match = ssimDedup.isDuplicate(gray)
     if (match) {
@@ -507,6 +497,20 @@ async function startFromFile(): Promise<void> {
     }
 
     URL.revokeObjectURL(objectUrl)
+
+    // Auto-run SigLIP visual dedup as second pass.
+    // SSIM 0.70 gives rough candidates; SigLIP clusters semantically
+    // similar pages and keeps the sharpest representative.
+    const ssimCount = captured.value.length
+    if (ssimCount >= 2) {
+      statusText.value = `${ssimCount} 候補を SigLIP で最終重複除去中...`
+      try {
+        await runDedup()
+      } catch {
+        // SigLIP failed — SSIM results are still usable
+      }
+    }
+
     statusText.value = ''
     void persistSession()
     showTransientError(
