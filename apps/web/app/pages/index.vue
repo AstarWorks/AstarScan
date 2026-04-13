@@ -8,6 +8,7 @@ import {
   measureSharpness,
 } from '~/services/blur-detection'
 import { DocAlignerBackend } from '~/services/docaligner-backend'
+import { measureEdgeDensity } from '~/services/edge-density'
 import { JscanifyBackend } from '~/services/jscanify-backend'
 import { extractGrayscale, SsimDedupManager } from '~/services/ssim-dedup'
 import { disposeOcr, initOcr, isOcrReady, runOcr } from '~/services/ocr-service'
@@ -269,7 +270,13 @@ async function processFrame(video: HTMLVideoElement): Promise<void> {
     const sharpness = measureSharpness(output)
     if (sharpness < DEFAULT_BLUR_THRESHOLD) return
 
-    // 3. SSIM dedup + best-frame replacement
+    // 3. Edge density filter — reject desk/hand/background frames.
+    // Documents have high edge density (text, lines), desk surfaces don't.
+    // Threshold 0.03 calibrated on Python eval pipeline.
+    const edgeDensity = measureEdgeDensity(output)
+    if (edgeDensity < 0.03) return
+
+    // 4. SSIM dedup + best-frame replacement
     const gray = extractGrayscale(output)
     const match = ssimDedup.isDuplicate(gray)
     if (match) {
