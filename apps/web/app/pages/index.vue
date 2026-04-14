@@ -498,11 +498,14 @@ async function startFromFile(): Promise<void> {
 
     URL.revokeObjectURL(objectUrl)
 
-    // Auto-run SigLIP visual dedup as second pass.
-    // SSIM 0.70 gives rough candidates; SigLIP clusters semantically
-    // similar pages and keeps the sharpest representative.
+    // Auto-run SigLIP visual dedup — but only when SSIM left too many
+    // candidates. SigLIP-base-224 can over-merge similar-looking pages
+    // from the same document (e.g., manual pages with identical layout).
+    // Heuristic: if SSIM candidates > duration/3, there are likely
+    // duplicates that need semantic dedup. Otherwise SSIM was sufficient.
     const ssimCount = captured.value.length
-    if (ssimCount >= 2) {
+    const maxReasonable = Math.max(10, Math.floor(duration / 3))
+    if (ssimCount > maxReasonable) {
       statusText.value = `${ssimCount} 候補を SigLIP で最終重複除去中...`
       try {
         await runDedup()

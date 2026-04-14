@@ -39,11 +39,12 @@ const NORMALIZE = {
 
 /**
  * Cosine distance threshold for merging. Pages with cosine distance
- * below this are considered the same document. Calibrated to 0.15 in
- * the Python eval (SigLIP-384); may need slight adjustment for the
- * 224px base variant.
+ * below this are considered the same document.
+ * Calibrated on SigLIP-base-224 int8: cosine 0.20 gives 11 on Video 2
+ * (GT=10, ±1). Higher than SigLIP-384's 0.15 because the 224px model
+ * produces less discriminative embeddings.
  */
-export const VISUAL_DEDUP_THRESHOLD = 0.15
+export const VISUAL_DEDUP_THRESHOLD = 0.2
 
 // ---------------------------------------------------------------------------
 // State
