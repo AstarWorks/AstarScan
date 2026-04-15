@@ -285,14 +285,15 @@ async function processFrame(video: HTMLVideoElement): Promise<void> {
       if (quad) backendName = 'canny'
     }
 
-    // 2. Perspective warp + deskew (or raw frame if no quad found)
+    // 2. Perspective warp + deskew (or raw frame for SSIM comparison)
+    // NOTE: enhancement (auto-crop, CLAHE, A4) is applied AFTER dedup,
+    // not here. SSIM must compare raw frames for consistent results.
     let output: HTMLCanvasElement
     if (quad) {
       output = warpPerspective(work, quad, EXTRACT_WIDTH, EXTRACT_HEIGHT)
-      output = deskewDocument(output) // correct residual rotation
+      output = deskewDocument(output)
     } else {
-      // No quad detected — enhance raw frame: auto-crop + CLAHE + A4 normalize
-      output = enhanceDocument(work)
+      output = work
     }
 
     // 3. Quality scoring — combined sharpness × edge density.
@@ -575,6 +576,34 @@ async function startFromFile(): Promise<void> {
         (p) => p.sharpness >= MIN_READABLE_SHARPNESS,
       )
     }
+
+    // Post-enhance: apply auto-crop + CLAHE + A4 normalization to raw frames.
+    // This runs AFTER dedup so SSIM compares raw (consistent) frames.
+    statusText.value = `${captured.value.length} ページを画像補正中...`
+    const pages = [...captured.value]
+    for (let i = 0; i < pages.length; i++) {
+      const page = pages[i]!
+      if (page.backendName && page.backendName !== 'raw') continue
+      // Load dataUrl into canvas
+      const img = await new Promise<HTMLImageElement>((resolve) => {
+        const el = new Image()
+        el.onload = () => resolve(el)
+        el.src = page.dataUrl
+      })
+      const c = document.createElement('canvas')
+      c.width = img.width
+      c.height = img.height
+      c.getContext('2d')?.drawImage(img, 0, 0)
+      const out = enhanceDocument(c)
+      pages[i] = {
+        ...page,
+        dataUrl: out.toDataURL('image/jpeg', 0.85),
+        width: out.width,
+        height: out.height,
+        backendName: 'enhanced',
+      }
+    }
+    captured.value = pages
 
     statusText.value = ''
     void persistSession()
