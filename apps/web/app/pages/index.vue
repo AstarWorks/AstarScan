@@ -7,7 +7,6 @@ import { measureSharpness } from '~/services/blur-detection'
 import { cannyDetectQuad } from '~/services/canny-detector'
 import { deskewDocument } from '~/services/deskew'
 import { DocAlignerBackend } from '~/services/docaligner-backend'
-import { measureEdgeDensity } from '~/services/edge-density'
 import { enhanceDocument } from '~/services/image-enhancer'
 import { JscanifyBackend } from '~/services/jscanify-backend'
 import { extractGrayscale, SsimDedupManager } from '~/services/ssim-dedup'
@@ -296,41 +295,14 @@ async function processFrame(video: HTMLVideoElement): Promise<void> {
       output = work
     }
 
-    // 3. Quality scoring — combined sharpness × edge density.
-    // Desk/background frames have very low combined score (<5).
-    // Documents with text always have high edge density + reasonable sharpness.
+    // 3. Sharpness for best-frame selection (no pre-dedup filtering —
+    // all filters were found to kill valid pages. SigLIP handles non-doc removal.)
     const sharpness = measureSharpness(output)
-    if (!quad) {
-      const edgeDensity = measureEdgeDensity(output)
-      const combinedScore = sharpness * edgeDensity
-      if (combinedScore < 5.0) return // desk, hand, transition frames
-    }
 
-    // 3. SSIM dedup + best-frame replacement
+    // 3. SSIM dedup — simple accept/reject (no best-frame replacement,
+    // which was found to merge different pages at SSIM 0.70 threshold)
     const gray = extractGrayscale(output)
-    const match = ssimDedup.isDuplicate(gray)
-    if (match) {
-      const existingIdx = captured.value.findIndex((p) => p.id === match.pageId)
-      const existing = captured.value[existingIdx]
-      if (existing && sharpness > existing.sharpness) {
-        ssimDedup.updatePage(existing.id, gray)
-        const dataUrl = output.toDataURL('image/jpeg', 0.85)
-        const pages = [...captured.value]
-        pages[existingIdx] = {
-          ...existing,
-          dataUrl,
-          width: output.width,
-          height: output.height,
-          sharpness,
-          backendName,
-          ocrText: undefined,
-        }
-        captured.value = pages
-        showCaptureNotification(output, 'replaced', existingIdx + 1)
-        void persistSession()
-      }
-      return
-    }
+    if (ssimDedup.isDuplicate(gray)) return
 
     // 4. Accept new page
     const pageId = crypto.randomUUID()
@@ -565,9 +537,10 @@ async function startFromFile(): Promise<void> {
       }
     }
 
-    // Post-filter: remove frames too blurry to read (sharpness < 30).
-    // These are page-flip transition frames that survived SSIM/SigLIP.
-    const MIN_READABLE_SHARPNESS = 30
+    // Post-filter: remove completely unreadable frames (sharpness < 10).
+    // Only catches extreme motion blur (page-flip mid-transition).
+    // Threshold 10 preserves dim/soft pages while removing garbage.
+    const MIN_READABLE_SHARPNESS = 10
     const blurry = captured.value.filter(
       (p) => p.sharpness < MIN_READABLE_SHARPNESS,
     )
