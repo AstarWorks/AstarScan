@@ -24,7 +24,7 @@ import type * as ort from 'onnxruntime-web'
 import { canvasToTensor, loadOrtSession } from './ort-model-loader'
 
 const INPUT_SIZE = 256
-const HEATMAP_THRESHOLD = 0.3
+const HEATMAP_THRESHOLD = 0.15
 const MIN_FRAME_FRACTION = 0.05
 const MAX_FRAME_FRACTION = 1.0
 

@@ -4,6 +4,11 @@ import jsPDF from 'jspdf'
 
 import type { EdgeDetectorBackend, Quad } from '@astarworks/scan-core'
 import { measureSharpness } from '~/services/blur-detection'
+import {
+  cannyDetectQuad,
+  documentCoverageScore,
+} from '~/services/canny-detector'
+import { deskewDocument } from '~/services/deskew'
 import { DocAlignerBackend } from '~/services/docaligner-backend'
 import { JscanifyBackend } from '~/services/jscanify-backend'
 import { extractGrayscale, SsimDedupManager } from '~/services/ssim-dedup'
@@ -107,6 +112,7 @@ const ocrPanelPage = ref<{
 // --------------------------------------------------------------------------
 
 let edgeBackend: EdgeDetectorBackend | null = null
+let fallbackBackend: EdgeDetectorBackend | null = null
 const ssimDedup = new SsimDedupManager()
 let stream: MediaStream | null = null
 let visibilityCleanup: (() => void) | null = null
@@ -249,24 +255,51 @@ async function processFrame(video: HTMLVideoElement): Promise<void> {
     if (!ctx) return
     ctx.drawImage(video, 0, 0)
 
-    // 1. Edge detect + perspective warp (or full-frame fallback)
-    let output: HTMLCanvasElement = work
+    // 1. Edge detect — cascade: DocAligner → jscanify → Canny contour
+    let quad: Quad | null = null
     let backendName = 'raw'
+
+    // Try primary backend (DocAligner ML)
     if (edgeBackend) {
       try {
-        const quad = await edgeBackend.detect(work)
-        if (quad) {
-          output = warpPerspective(work, quad, EXTRACT_WIDTH, EXTRACT_HEIGHT)
-          backendName = edgeBackend.name
-        }
+        quad = await edgeBackend.detect(work)
+        if (quad) backendName = edgeBackend.name
       } catch {
-        // Detection failed — use raw frame
+        /* silent */
       }
     }
 
-    // 2. Sharpness (for best-frame selection, NOT as a gate — filtering
-    // kills valid pages in video mode. SigLIP handles non-document rejection.)
+    // Try fallback backend (jscanify classical CV)
+    if (!quad && fallbackBackend) {
+      try {
+        quad = await fallbackBackend.detect(work)
+        if (quad) backendName = fallbackBackend.name
+      } catch {
+        /* silent */
+      }
+    }
+
+    // Try Canny + contour detection (OpenCV.js direct)
+    if (!quad) {
+      quad = cannyDetectQuad(work)
+      if (quad) backendName = 'canny'
+    }
+
+    // 2. Perspective warp + deskew (or raw frame if no quad found)
+    let output: HTMLCanvasElement
+    if (quad) {
+      output = warpPerspective(work, quad, EXTRACT_WIDTH, EXTRACT_HEIGHT)
+      output = deskewDocument(output) // correct residual rotation
+    } else {
+      output = work // raw frame — will be filtered by coverage score
+    }
+
+    // 3. Quality scoring — multi-dimensional
     const sharpness = measureSharpness(output)
+    const coverage = quad ? 1.0 : documentCoverageScore(work)
+
+    // Reject frames with very low document coverage (desk/background)
+    if (coverage < 0.15 && !quad) return
 
     // 3. SSIM dedup + best-frame replacement
     const gray = extractGrayscale(output)
@@ -410,21 +443,30 @@ function stopCaptureTimer(): void {
 // --------------------------------------------------------------------------
 
 async function initEdgeBackend(): Promise<void> {
+  // Primary: DocAligner ML model
   statusText.value = 'AI モデル読み込み中 (初回のみ)...'
   try {
     const docaligner = new DocAlignerBackend('fastvit_t8')
     await docaligner.warmUp()
     edgeBackend = docaligner
   } catch {
-    try {
-      statusText.value = 'フォールバック: 古典スキャナー初期化中...'
-      const jscanify = new JscanifyBackend()
-      await jscanify.warmUp()
-      edgeBackend = jscanify
-    } catch {
-      edgeBackend = null
-    }
+    edgeBackend = null
   }
+
+  // Fallback: jscanify (Canny + contour, requires OpenCV.js)
+  try {
+    statusText.value = 'OpenCV 初期化中...'
+    const jscanify = new JscanifyBackend()
+    await jscanify.warmUp()
+    if (edgeBackend) {
+      fallbackBackend = jscanify // secondary
+    } else {
+      edgeBackend = jscanify // promote to primary if DocAligner failed
+    }
+  } catch {
+    fallbackBackend = null
+  }
+  // Canny direct (cannyDetectQuad) needs OpenCV.js too, which is now loaded
 }
 
 async function start(): Promise<void> {
@@ -1072,6 +1114,8 @@ onBeforeUnmount(() => {
   stream = null
   edgeBackend?.dispose()
   edgeBackend = null
+  fallbackBackend?.dispose()
+  fallbackBackend = null
   lastQuad = null
   ssimDedup.clear()
   disposeOcr()
