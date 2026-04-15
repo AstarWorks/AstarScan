@@ -8,7 +8,7 @@ import { DocAlignerBackend } from '~/services/docaligner-backend'
 import { JscanifyBackend } from '~/services/jscanify-backend'
 import { extractGrayscale, SsimDedupManager } from '~/services/ssim-dedup'
 import { disposeOcr, initOcr, isOcrReady, runOcr } from '~/services/ocr-service'
-import type { OcrResult } from '~/services/ocr-service'
+import type { OcrLine, OcrResult } from '~/services/ocr-service'
 import { disposeVisualDedup, runVisualDedup } from '~/services/visual-dedup'
 import { classifyBatch, disposeClassifier } from '~/services/smolvlm-backend'
 import { warpPerspective } from '~/services/perspective-warper'
@@ -45,6 +45,7 @@ interface CapturedPage {
   /** Name of the backend that detected this page ("docaligner" or "jscanify"). */
   readonly backendName?: string
   ocrText?: string
+  ocrLines?: readonly OcrLine[]
 }
 
 interface CaptureNotification {
@@ -682,7 +683,11 @@ async function startOcr(pageIndex: number): Promise<void> {
     const pages = [...captured.value]
     const target = pages[pageIndex]
     if (target) {
-      pages[pageIndex] = { ...target, ocrText: result.text }
+      pages[pageIndex] = {
+        ...target,
+        ocrText: result.text,
+        ocrLines: result.lines,
+      }
       captured.value = pages
     }
 
@@ -852,10 +857,41 @@ async function runVlmFilter(): Promise<void> {
 type PdfMode = 'single' | 'split' | 'batch'
 const pdfMode = ref<PdfMode>('single')
 
-function buildPdf(pages: CapturedPage[]): jsPDF {
+// CJK font cache — loaded once, reused across PDF exports
+let cjkFontBase64: string | null = null
+
+async function loadCjkFont(): Promise<string> {
+  if (cjkFontBase64) return cjkFontBase64
+  // Try local first, fallback to Google Fonts CDN
+  let resp = await fetch('/fonts/NotoSansJP-Regular.ttf').catch(() => null)
+  if (!resp?.ok) {
+    resp = await fetch(
+      'https://cdn.jsdelivr.net/gh/google/fonts@main/ofl/notosansjp/NotoSansJP%5Bwght%5D.ttf',
+    )
+  }
+  const buf = await resp.arrayBuffer()
+  // Convert ArrayBuffer to base64
+  const bytes = new Uint8Array(buf)
+  let binary = ''
+  for (let i = 0; i < bytes.length; i++) {
+    binary += String.fromCharCode(bytes[i]!)
+  }
+  cjkFontBase64 = btoa(binary)
+  return cjkFontBase64
+}
+
+async function buildPdf(pages: CapturedPage[]): Promise<jsPDF> {
   const pdf = new jsPDF({ unit: 'mm', format: 'a4', orientation: 'portrait' })
   const mmWidth = pdf.internal.pageSize.getWidth()
   const mmHeight = pdf.internal.pageSize.getHeight()
+
+  // Register CJK font if any page has OCR lines
+  const hasOcr = pages.some((p) => p.ocrLines?.length)
+  if (hasOcr) {
+    const fontData = await loadCjkFont()
+    pdf.addFileToVFS('NotoSansJP-Regular.ttf', fontData)
+    pdf.addFont('NotoSansJP-Regular.ttf', 'NotoSansJP', 'normal', 'Identity-H')
+  }
 
   pages.forEach((page, i) => {
     if (i > 0) pdf.addPage()
@@ -873,45 +909,91 @@ function buildPdf(pages: CapturedPage[]): jsPDF {
     const x = (mmWidth - w) / 2
     const y = (mmHeight - h) / 2
     pdf.addImage(page.dataUrl, 'JPEG', x, y, w, h)
+
+    // Transparent text overlay for searchable PDF
+    if (page.ocrLines?.length) {
+      pdf.setFont('NotoSansJP')
+      for (const line of page.ocrLines) {
+        const mmX = x + (line.bbox[0] / EXTRACT_WIDTH) * w
+        // bbox[1] is top of text; add bbox[3] (height) for baseline
+        const mmY = y + ((line.bbox[1] + line.bbox[3]) / EXTRACT_HEIGHT) * h
+        const fontPt = Math.max(
+          4,
+          Math.min((line.bbox[3] / EXTRACT_HEIGHT) * h * 2.835, 24),
+        )
+        pdf.setFontSize(fontPt)
+        pdf.text(line.text, mmX, mmY, { renderingMode: 'invisible' })
+      }
+    }
   })
   return pdf
 }
 
-function exportPdf(): void {
-  if (captured.value.length === 0) return
+const pdfExporting = ref(false)
+
+async function exportPdf(): Promise<void> {
+  if (captured.value.length === 0 || pdfExporting.value) return
+  pdfExporting.value = true
   try {
+    // Auto-run OCR on pages that don't have it yet
+    const needsOcr = captured.value.filter((p) => !p.ocrLines)
+    if (needsOcr.length > 0) {
+      statusText.value = `OCR 実行中... (${needsOcr.length} ページ)`
+      if (!isOcrReady()) {
+        await initOcr((p) => {
+          statusText.value = `OCR モデル準備中... (${Math.round(p.percent)}%)`
+        })
+      }
+      const pages = [...captured.value]
+      for (let i = 0; i < pages.length; i++) {
+        if (!pages[i]!.ocrLines) {
+          statusText.value = `OCR: ${i + 1}/${pages.length}`
+          const result = await runOcr(pages[i]!.dataUrl)
+          pages[i] = {
+            ...pages[i]!,
+            ocrText: result.text,
+            ocrLines: result.lines,
+          }
+        }
+      }
+      captured.value = pages
+      void persistSession()
+    }
+
+    statusText.value = 'PDF 生成中...'
     const ts = new Date().toISOString().slice(0, 19).replace(/[:T]/g, '-')
     const mode = pdfMode.value
 
     if (mode === 'single') {
-      const pdf = buildPdf(captured.value)
+      const pdf = await buildPdf(captured.value)
       pdf.save(`astarscan-${ts}.pdf`)
     } else if (mode === 'split') {
-      // Each page as a separate PDF download
-      captured.value.forEach((page, i) => {
-        const pdf = buildPdf([page])
+      for (let i = 0; i < captured.value.length; i++) {
+        const pdf = await buildPdf([captured.value[i]!])
         pdf.save(`astarscan-${ts}-p${String(i + 1).padStart(3, '0')}.pdf`)
-      })
+      }
     } else if (mode === 'batch') {
-      // Group into batches of 10
       const batchSize = 10
       for (let start = 0; start < captured.value.length; start += batchSize) {
         const batch = captured.value.slice(start, start + batchSize)
         const batchNum = Math.floor(start / batchSize) + 1
-        const pdf = buildPdf(batch)
+        const pdf = await buildPdf(batch)
         pdf.save(
           `astarscan-${ts}-batch${String(batchNum).padStart(2, '0')}.pdf`,
         )
       }
     }
 
-    // Clear persisted session and dedup state after successful export
+    statusText.value = ''
     ssimDedup.clear()
     void clearSession()
   } catch (err) {
     showTransientError(
       err instanceof Error ? err.message : 'PDF の生成に失敗しました',
     )
+    statusText.value = ''
+  } finally {
+    pdfExporting.value = false
   }
 }
 
@@ -927,12 +1009,10 @@ function persistSession(): Promise<void> {
     height: p.height,
     sharpness: p.sharpness,
     ocrText: p.ocrText,
+    ocrLines: p.ocrLines,
     capturedAt: Date.now(),
   }))
-  return saveSession(pages).catch(() => {
-    // IndexedDB write failure is non-fatal — the session just won't
-    // survive a refresh. Don't bother the user about it.
-  })
+  return saveSession(pages).catch(() => {})
 }
 
 async function restoreSession(): Promise<void> {
@@ -945,6 +1025,7 @@ async function restoreSession(): Promise<void> {
     height: p.height,
     sharpness: p.sharpness,
     ocrText: p.ocrText,
+    ocrLines: p.ocrLines as readonly OcrLine[] | undefined,
   }))
 }
 
@@ -1165,9 +1246,10 @@ onBeforeUnmount(() => {
           v-if="captured.length > 0"
           class="btn btn--primary"
           type="button"
+          :disabled="pdfExporting"
           @click="exportPdf"
         >
-          PDF 出力 ({{ captured.length }})
+          {{ pdfExporting ? 'PDF 生成中...' : `PDF 出力 (${captured.length})` }}
         </button>
       </template>
 
@@ -1211,10 +1293,10 @@ onBeforeUnmount(() => {
         <button
           class="btn btn--primary"
           type="button"
-          :disabled="captured.length === 0"
+          :disabled="captured.length === 0 || pdfExporting"
           @click="exportPdf"
         >
-          PDF 出力 ({{ captured.length }})
+          {{ pdfExporting ? 'PDF 生成中...' : `PDF 出力 (${captured.length})` }}
         </button>
       </template>
     </footer>

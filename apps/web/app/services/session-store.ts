@@ -27,6 +27,11 @@ export interface StoredPage {
   readonly height: number
   readonly sharpness: number
   readonly ocrText?: string
+  readonly ocrLines?: readonly {
+    text: string
+    bbox: readonly [number, number, number, number]
+    confidence: number
+  }[]
   readonly capturedAt: number
 }
 
