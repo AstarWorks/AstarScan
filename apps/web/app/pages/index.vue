@@ -71,9 +71,10 @@ const EXTRACT_HEIGHT = 1600
 const NOTIFICATION_THUMB_QUALITY = 0.6
 const NOTIFICATION_DURATION_MS = 2500
 
-// Capture interval: sample every 0.5 seconds for better best-frame selection.
-// SSIM 0.70 at 1s sampling = 11/11 on 43s test video with 11 pages.
-const CAPTURE_INTERVAL_MS = 500
+// Capture interval: 1s sampling. 0.5s causes too many candidates (50+)
+// which overflows SigLIP's stack during embedding extraction.
+// 1s at SSIM 0.70 = 11/11 on test video (verified).
+const CAPTURE_INTERVAL_MS = 1000
 
 // Overlay detection runs every N RAF frames (~15 FPS at 60 FPS display).
 // This is for UX feedback only — capture decisions are made by the timer.
