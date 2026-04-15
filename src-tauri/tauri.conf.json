@@ -7,10 +7,9 @@
     "beforeDevCommand": "bun run dev:web",
     "devUrl": "http://localhost:3005",
     "beforeBuildCommand": "bun run build",
-    "frontendDist": "apps/web/.output/public"
+    "frontendDist": "../apps/web/.output/public"
   },
   "app": {
-    "title": "AstarScan",
     "windows": [
       {
         "title": "AstarScan — Edge Document Scanner",

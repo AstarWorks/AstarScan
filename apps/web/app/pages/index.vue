@@ -1143,6 +1143,15 @@ onBeforeUnmount(() => {
       <video ref="videoRef" class="viewport__video" playsinline muted />
       <canvas ref="overlayRef" class="viewport__overlay" />
 
+      <!-- Shooting guide: shown during camera mode when no quad detected -->
+      <div v-if="phase === 'ready' && !lastQuad" class="shooting-guide">
+        <div class="shooting-guide__frame" />
+        <p class="shooting-guide__text">
+          書類の周りに少し余白を残して撮影すると<br />
+          自動で切り出し・補正されます
+        </p>
+      </div>
+
       <div v-if="phase === 'idle'" class="splash">
         <h2 class="splash__title">書類の山をスマホで電子化</h2>
         <p class="splash__tagline">
@@ -1542,6 +1551,35 @@ onBeforeUnmount(() => {
   pointer-events: none;
   z-index: 2;
   background: transparent;
+}
+
+.shooting-guide {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  z-index: 3;
+  pointer-events: none;
+}
+
+.shooting-guide__frame {
+  width: 70%;
+  aspect-ratio: 3 / 4;
+  border: 2px dashed rgba(0, 132, 255, 0.5);
+  border-radius: 0.625rem;
+}
+
+.shooting-guide__text {
+  margin-top: 1rem;
+  padding: 0.5rem 1rem;
+  background: rgba(0, 0, 0, 0.5);
+  color: #ffffff;
+  font-size: 0.75rem;
+  line-height: 1.6;
+  text-align: center;
+  border-radius: 0.5rem;
 }
 
 .splash {
