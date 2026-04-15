@@ -86,3 +86,9 @@
     @apply bg-background text-foreground;
   }
 }
+
+@media (min-width: 768px) {
+  body {
+    background: #f0f1f5;
+  }
+}

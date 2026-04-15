@@ -254,4 +254,34 @@ async function copyToClipboard(): Promise<void> {
 .ocr-panel__copy:active {
   background: rgba(96, 165, 250, 0.25);
 }
+
+/* Desktop overrides */
+@media (min-width: 768px) {
+  .ocr-panel {
+    border-radius: 1rem;
+  }
+
+  .ocr-panel__image {
+    flex: 0 0 12rem;
+  }
+
+  .ocr-panel__pre {
+    font-size: 0.875rem;
+    max-height: 50dvh;
+  }
+
+  .ocr-panel__footer {
+    padding-bottom: 0.75rem;
+  }
+
+  .ocr-panel__copy {
+    width: auto;
+    min-width: 12rem;
+    margin-left: auto;
+  }
+
+  .ocr-panel__copy:hover {
+    background: rgba(96, 165, 250, 0.25);
+  }
+}
 </style>
