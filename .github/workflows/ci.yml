@@ -60,8 +60,9 @@ jobs:
           command: deploy
 
   android:
-    name: Build Android APK
+    name: Build Android APK (experimental)
     needs: ci
+    continue-on-error: true
     if: github.ref == 'refs/heads/main' && github.event_name == 'push'
     runs-on: ubuntu-latest
     timeout-minutes: 45
