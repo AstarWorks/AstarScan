@@ -7,6 +7,12 @@ import { measureSharpness } from '~/services/blur-detection'
 import { cannyDetectQuad } from '~/services/canny-detector'
 import { deskewDocument } from '~/services/deskew'
 import { DocAlignerBackend } from '~/services/docaligner-backend'
+import {
+  classifyWithGemma4,
+  disposeGemma4,
+  initGemma4Background,
+  isGemma4Ready,
+} from '~/services/gemma4-browser-backend'
 import { enhanceDocument } from '~/services/image-enhancer'
 import { JscanifyBackend } from '~/services/jscanify-backend'
 import { extractGrayscale, SsimDedupManager } from '~/services/ssim-dedup'
@@ -548,6 +554,34 @@ async function startFromFile(): Promise<void> {
       captured.value = captured.value.filter(
         (p) => p.sharpness >= MIN_READABLE_SHARPNESS,
       )
+    }
+
+    // Auto document classification — Gemma 4 > SmolVLM > skip
+    // Removes non-document frames (desk, hand, blur) automatically.
+    if (captured.value.length > 0) {
+      const useGemma = isGemma4Ready()
+      if (useGemma || captured.value.length <= 20) {
+        statusText.value = `${captured.value.length} ページを AI 判定中...`
+        const kept: typeof captured.value = []
+        for (const page of captured.value) {
+          let result: { isDocument: boolean }
+          if (useGemma) {
+            result = await classifyWithGemma4(page.dataUrl)
+          } else {
+            // SmolVLM fallback
+            try {
+              const results = await classifyBatch([{ dataUrl: page.dataUrl }])
+              result = results[0] ?? { isDocument: true }
+            } catch {
+              result = { isDocument: true } // fail-open
+            }
+          }
+          if (result.isDocument) kept.push(page)
+        }
+        if (kept.length > 0 && kept.length < captured.value.length) {
+          captured.value = kept
+        }
+      }
     }
 
     // Post-enhance: apply auto-crop + CLAHE + A4 normalization to raw frames.
@@ -1102,6 +1136,10 @@ function showTransientError(msg: string): void {
 
 onMounted(() => {
   void restoreSession()
+  // Background prefetch Gemma 4 E2B (3.4GB, cached after first load)
+  void initGemma4Background((msg) => {
+    console.log(`[gemma4] ${msg}`)
+  })
 })
 
 onBeforeUnmount(() => {
@@ -1127,6 +1165,7 @@ onBeforeUnmount(() => {
   disposeOcr()
   disposeVisualDedup()
   disposeClassifier()
+  disposeGemma4()
 })
 </script>
 
