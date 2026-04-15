@@ -18,7 +18,7 @@ import { JscanifyBackend } from '~/services/jscanify-backend'
 import { extractGrayscale, SsimDedupManager } from '~/services/ssim-dedup'
 import { disposeOcr, initOcr, isOcrReady, runOcr } from '~/services/ocr-service'
 import type { OcrLine, OcrResult } from '~/services/ocr-service'
-import { disposeVisualDedup, runVisualDedup } from '~/services/visual-dedup'
+import { disposeVisualDedup } from '~/services/visual-dedup'
 import { classifyBatch, disposeClassifier } from '~/services/smolvlm-backend'
 import { warpPerspective } from '~/services/perspective-warper'
 import {
@@ -95,10 +95,6 @@ const statusText = ref<string>('')
 const errorText = ref<string | null>(null)
 const captured = ref<CapturedPage[]>([])
 const notification = ref<CaptureNotification | null>(null)
-
-// Visual dedup state
-const dedupRunning = ref(false)
-const dedupProgressText = ref('')
 
 // Page preview state
 const previewPageIndex = ref<number | null>(null)
@@ -816,109 +812,6 @@ function previewDeleteAndClose(): void {
 // --------------------------------------------------------------------------
 // Visual dedup (post-processing)
 // --------------------------------------------------------------------------
-
-/**
- * Run visual embedding-based dedup on all captured pages. Uses a SigLIP
- * vision encoder (~55MB, lazy-loaded) to find semantically similar pages
- * and merge clusters. Keeps the sharpest representative per cluster.
- */
-async function runDedup(): Promise<void> {
-  if (captured.value.length < 2 || dedupRunning.value) return
-  dedupRunning.value = true
-  dedupProgressText.value = ''
-
-  try {
-    const result = await runVisualDedup(
-      captured.value.map((p) => ({
-        dataUrl: p.dataUrl,
-        sharpness: p.sharpness,
-      })),
-      undefined, // use default threshold
-      (msg) => {
-        dedupProgressText.value = msg
-      },
-    )
-
-    const removed = captured.value.length - result.keepIndices.length
-    if (removed === 0) {
-      showTransientError('重複は検出されませんでした。')
-      return
-    }
-
-    // Keep only the representative pages
-    const keepSet = new Set(result.keepIndices)
-    const newPages = captured.value.filter((_, i) => keepSet.has(i))
-
-    // Rebuild dedup manager with the surviving pages
-    ssimDedup.clear()
-    // (SSIM thumbnails would need to be re-extracted, but since we're
-    // in post-processing mode the dedup manager is secondary. Just
-    // clear it — new captures will build it fresh.)
-
-    captured.value = newPages
-    void persistSession()
-    showTransientError(
-      `重複除去完了: ${removed} 件の重複を除外し、${result.clusterCount} ページに整理しました。`,
-    )
-  } catch (err) {
-    showTransientError(
-      err instanceof Error ? err.message : '重複除去に失敗しました',
-    )
-  } finally {
-    dedupRunning.value = false
-    dedupProgressText.value = ''
-  }
-}
-
-// VLM filter state
-const vlmRunning = ref(false)
-const vlmProgressText = ref('')
-
-/**
- * Run VLM-based document classification on all captured pages.
- * Removes non-document frames (desk, hand occlusion, etc.).
- * Uses SmolVLM-256M (~175MB, lazy-loaded).
- */
-async function runVlmFilter(): Promise<void> {
-  if (captured.value.length === 0 || vlmRunning.value) return
-  vlmRunning.value = true
-  vlmProgressText.value = ''
-
-  try {
-    const results = await classifyBatch(
-      captured.value.map((p) => ({ dataUrl: p.dataUrl })),
-      (msg) => {
-        vlmProgressText.value = msg
-      },
-    )
-
-    const removed: number[] = []
-    results.forEach((r, i) => {
-      if (!r.isDocument) removed.push(i)
-    })
-
-    if (removed.length === 0) {
-      showTransientError('全てのページが書類として認識されました。')
-      return
-    }
-
-    const removeSet = new Set(removed)
-    const kept = captured.value.filter((_, i) => !removeSet.has(i))
-    ssimDedup.clear()
-    captured.value = kept
-    void persistSession()
-    showTransientError(
-      `書類判定完了: ${removed.length} 件の非書類フレームを除外しました。`,
-    )
-  } catch (err) {
-    showTransientError(
-      err instanceof Error ? err.message : '書類判定に失敗しました',
-    )
-  } finally {
-    vlmRunning.value = false
-    vlmProgressText.value = ''
-  }
-}
 
 type PdfMode = 'single' | 'split' | 'batch'
 const pdfMode = ref<PdfMode>('single')
