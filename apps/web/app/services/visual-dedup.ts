@@ -44,7 +44,7 @@ const NORMALIZE = {
  * (GT=10, ±1). Higher than SigLIP-384's 0.15 because the 224px model
  * produces less discriminative embeddings.
  */
-export const VISUAL_DEDUP_THRESHOLD = 0.2
+export const VISUAL_DEDUP_THRESHOLD = 0.22
 
 // ---------------------------------------------------------------------------
 // State

@@ -66,9 +66,9 @@ const EXTRACT_HEIGHT = 1600
 const NOTIFICATION_THUMB_QUALITY = 0.6
 const NOTIFICATION_DURATION_MS = 2500
 
-// Capture interval: sample one frame per second. Calibrated on eval set:
+// Capture interval: sample every 0.5 seconds for better best-frame selection.
 // SSIM 0.70 at 1s sampling = 11/11 on 43s test video with 11 pages.
-const CAPTURE_INTERVAL_MS = 1000
+const CAPTURE_INTERVAL_MS = 500
 
 // Overlay detection runs every N RAF frames (~15 FPS at 60 FPS display).
 // This is for UX feedback only — capture decisions are made by the timer.
@@ -516,6 +516,18 @@ async function startFromFile(): Promise<void> {
           `SigLIP 重複除去失敗: ${dedupErr instanceof Error ? dedupErr.message : String(dedupErr)}`,
         )
       }
+    }
+
+    // Post-filter: remove frames too blurry to read (sharpness < 30).
+    // These are page-flip transition frames that survived SSIM/SigLIP.
+    const MIN_READABLE_SHARPNESS = 30
+    const blurry = captured.value.filter(
+      (p) => p.sharpness < MIN_READABLE_SHARPNESS,
+    )
+    if (blurry.length > 0) {
+      captured.value = captured.value.filter(
+        (p) => p.sharpness >= MIN_READABLE_SHARPNESS,
+      )
     }
 
     statusText.value = ''
