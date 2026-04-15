@@ -4,12 +4,10 @@ import jsPDF from 'jspdf'
 
 import type { EdgeDetectorBackend, Quad } from '@astarworks/scan-core'
 import { measureSharpness } from '~/services/blur-detection'
-import {
-  cannyDetectQuad,
-  documentCoverageScore,
-} from '~/services/canny-detector'
+import { cannyDetectQuad } from '~/services/canny-detector'
 import { deskewDocument } from '~/services/deskew'
 import { DocAlignerBackend } from '~/services/docaligner-backend'
+import { measureEdgeDensity } from '~/services/edge-density'
 import { JscanifyBackend } from '~/services/jscanify-backend'
 import { extractGrayscale, SsimDedupManager } from '~/services/ssim-dedup'
 import { disposeOcr, initOcr, isOcrReady, runOcr } from '~/services/ocr-service'
@@ -295,12 +293,15 @@ async function processFrame(video: HTMLVideoElement): Promise<void> {
       output = work // raw frame — will be filtered by coverage score
     }
 
-    // 3. Quality scoring — multi-dimensional
+    // 3. Quality scoring — combined sharpness × edge density.
+    // Desk/background frames have very low combined score (<5).
+    // Documents with text always have high edge density + reasonable sharpness.
     const sharpness = measureSharpness(output)
-    const coverage = quad ? 1.0 : documentCoverageScore(work)
-
-    // Reject frames with very low document coverage (desk/background)
-    if (coverage < 0.15 && !quad) return
+    if (!quad) {
+      const edgeDensity = measureEdgeDensity(output)
+      const combinedScore = sharpness * edgeDensity
+      if (combinedScore < 5.0) return // desk, hand, transition frames
+    }
 
     // 3. SSIM dedup + best-frame replacement
     const gray = extractGrayscale(output)
