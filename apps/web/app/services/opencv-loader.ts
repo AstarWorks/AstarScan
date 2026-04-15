@@ -14,7 +14,8 @@
  * The type of `window.cv` is declared in `apps/web/app/types/globals.d.ts`.
  */
 
-const OPENCV_URL = 'https://docs.opencv.org/4.10.0/opencv.js'
+// Served locally to avoid CORS issues with docs.opencv.org
+const OPENCV_URL = '/opencv.js'
 const DEFAULT_TIMEOUT_MS = 30_000
 const POLL_INTERVAL_MS = 100
 const SCRIPT_MARKER = 'data-astar-opencv'
