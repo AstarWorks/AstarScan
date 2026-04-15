@@ -33,7 +33,7 @@ jobs:
       - run: bun run ci
 
   deploy:
-    name: Deploy to Cloudflare Pages
+    name: Deploy to Cloudflare
     needs: ci
     if: github.ref == 'refs/heads/main' && github.event_name == 'push'
     runs-on: ubuntu-latest
@@ -48,10 +48,6 @@ jobs:
 
       - run: bun install
 
-      # ONNX models (52-147MB each) exceed Workers' 25MB asset limit.
-      # They are loaded at runtime from external CDN (HuggingFace/GitHub),
-      # not bundled in the deploy.
-
       - name: Build
         run: bun run build
 
@@ -62,3 +58,46 @@ jobs:
           accountId: ${{ vars.CLOUDFLARE_ACCOUNT_ID }}
           packageManager: bun
           command: deploy
+
+  android:
+    name: Build Android APK
+    needs: ci
+    if: github.ref == 'refs/heads/main' && github.event_name == 'push'
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: latest
+
+      - uses: actions-rust-lang/setup-rust-toolchain@v1
+        with:
+          toolchain: stable
+          target: aarch64-linux-android
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '21'
+
+      - name: Setup Android SDK
+        uses: android-actions/setup-android@v3
+
+      - name: Install Android NDK
+        run: sdkmanager "ndk;27.0.12077973"
+
+      - run: bun install
+
+      - name: Build frontend
+        run: bun run build
+
+      - name: Initialize Android project
+        run: bun run tauri:android:init || true
+
+      - name: Build Android APK
+        run: bun run tauri:android:build
+        env:
+          NDK_HOME: ${{ env.ANDROID_SDK_ROOT }}/ndk/27.0.12077973
