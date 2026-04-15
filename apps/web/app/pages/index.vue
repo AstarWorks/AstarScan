@@ -8,6 +8,7 @@ import { cannyDetectQuad } from '~/services/canny-detector'
 import { deskewDocument } from '~/services/deskew'
 import { DocAlignerBackend } from '~/services/docaligner-backend'
 import { measureEdgeDensity } from '~/services/edge-density'
+import { enhanceDocument } from '~/services/image-enhancer'
 import { JscanifyBackend } from '~/services/jscanify-backend'
 import { extractGrayscale, SsimDedupManager } from '~/services/ssim-dedup'
 import { disposeOcr, initOcr, isOcrReady, runOcr } from '~/services/ocr-service'
@@ -290,7 +291,8 @@ async function processFrame(video: HTMLVideoElement): Promise<void> {
       output = warpPerspective(work, quad, EXTRACT_WIDTH, EXTRACT_HEIGHT)
       output = deskewDocument(output) // correct residual rotation
     } else {
-      output = work // raw frame — will be filtered by coverage score
+      // No quad detected — enhance raw frame: auto-crop + CLAHE + A4 normalize
+      output = enhanceDocument(work)
     }
 
     // 3. Quality scoring — combined sharpness × edge density.
