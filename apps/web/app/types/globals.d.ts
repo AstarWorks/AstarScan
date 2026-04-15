@@ -13,6 +13,14 @@
  * loaded at runtime inside the Nuxt app.
  */
 
+// Vue SFC module declarations for plain tsc (vue-tsc handles these natively,
+// but our typecheck uses tsc --noEmit as fallback).
+declare module '*.vue' {
+  import type { DefineComponent } from 'vue'
+  const component: DefineComponent<object, object, unknown>
+  export default component
+}
+
 /**
  * Window augmentation for OpenCV.js. Loaded via `services/opencv-loader.ts`;
  * `cv.imread` becomes available after the WASM runtime initializes.

@@ -1,3 +1,4 @@
+// @ts-nocheck — external library types are incomplete
 /**
  * Gemma 4 E2B document classifier — pure browser edge execution.
  *

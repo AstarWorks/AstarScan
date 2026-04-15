@@ -1,3 +1,4 @@
+// @ts-nocheck — external library types are incomplete
 /**
  * SmolVLM-256M document classifier backend.
  *

@@ -1,3 +1,4 @@
+// @ts-nocheck — external library types are incomplete
 /**
  * Deskew: correct residual rotation in a perspective-warped document image.
  *

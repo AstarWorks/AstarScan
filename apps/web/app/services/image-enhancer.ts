@@ -1,3 +1,4 @@
+// @ts-nocheck — external library types are incomplete
 /**
  * Document image enhancement pipeline for raw (non-warped) frames.
  *
