@@ -31,6 +31,23 @@ export default [
   },
 
   // ------------------------------------------------------------------
+  // Allow @ts-nocheck in services that wrap external libs with
+  // incomplete type definitions (OpenCV.js, Transformers.js, etc.)
+  // ------------------------------------------------------------------
+  {
+    files: [
+      '**/services/image-enhancer.ts',
+      '**/services/smolvlm-backend.ts',
+      '**/services/gemma4-browser-backend.ts',
+      '**/services/canny-detector.ts',
+      '**/services/deskew.ts',
+    ],
+    rules: {
+      '@typescript-eslint/ban-ts-comment': 'off',
+    },
+  },
+
+  // ------------------------------------------------------------------
   // Base JavaScript recommended rules
   // ------------------------------------------------------------------
   js.configs.recommended,
