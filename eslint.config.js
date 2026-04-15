@@ -31,23 +31,6 @@ export default [
   },
 
   // ------------------------------------------------------------------
-  // Allow @ts-nocheck in services that wrap external libs with
-  // incomplete type definitions (OpenCV.js, Transformers.js, etc.)
-  // ------------------------------------------------------------------
-  {
-    files: [
-      '**/services/image-enhancer.ts',
-      '**/services/smolvlm-backend.ts',
-      '**/services/gemma4-browser-backend.ts',
-      '**/services/canny-detector.ts',
-      '**/services/deskew.ts',
-    ],
-    rules: {
-      '@typescript-eslint/ban-ts-comment': 'off',
-    },
-  },
-
-  // ------------------------------------------------------------------
   // Base JavaScript recommended rules
   // ------------------------------------------------------------------
   js.configs.recommended,
@@ -57,6 +40,24 @@ export default [
   // (type-aware rules are slower; we'll opt in per-file later if needed)
   // ------------------------------------------------------------------
   ...tseslint.configs.recommended,
+
+  // ------------------------------------------------------------------
+  // Allow @ts-nocheck in services that wrap external libs with
+  // incomplete type definitions (OpenCV.js, Transformers.js, etc.)
+  // Must come AFTER tseslint.configs.recommended to override it.
+  // ------------------------------------------------------------------
+  {
+    files: [
+      'apps/web/app/services/image-enhancer.ts',
+      'apps/web/app/services/smolvlm-backend.ts',
+      'apps/web/app/services/gemma4-browser-backend.ts',
+      'apps/web/app/services/canny-detector.ts',
+      'apps/web/app/services/deskew.ts',
+    ],
+    rules: {
+      '@typescript-eslint/ban-ts-comment': 'off',
+    },
+  },
 
   // ------------------------------------------------------------------
   // Vue — flat/recommended pulls in the essential + strongly-recommended rules
