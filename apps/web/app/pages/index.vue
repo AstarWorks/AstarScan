@@ -524,64 +524,36 @@ async function startFromFile(): Promise<void> {
 
     URL.revokeObjectURL(objectUrl)
 
-    // Auto-run SigLIP visual dedup — but only when SSIM left too many
-    // candidates. SigLIP-base-224 can over-merge similar-looking pages
-    // from the same document (e.g., manual pages with identical layout).
-    // Heuristic: if SSIM candidates > duration/3, there are likely
-    // duplicates that need semantic dedup. Otherwise SSIM was sufficient.
+    // Gemma 4 AI classification — replaces SigLIP, blur filter, and SmolVLM.
+    // Single model handles: "is this a document?", "is it readable?", dedup quality.
+    // Fallback: Gemma 4 → SmolVLM → skip (heuristics only).
     const ssimCount = captured.value.length
-    const maxReasonable = Math.max(10, Math.floor(duration / 3))
-    if (ssimCount > maxReasonable) {
-      statusText.value = `${ssimCount} 候補を SigLIP で最終重複除去中...`
-      try {
-        await runDedup()
-      } catch (dedupErr) {
-        console.error('[scan] SigLIP dedup failed:', dedupErr)
-        showTransientError(
-          `SigLIP 重複除去失敗: ${dedupErr instanceof Error ? dedupErr.message : String(dedupErr)}`,
-        )
-      }
-    }
-
-    // Post-filter: remove completely unreadable frames (sharpness < 10).
-    // Only catches extreme motion blur (page-flip mid-transition).
-    // Threshold 10 preserves dim/soft pages while removing garbage.
-    const MIN_READABLE_SHARPNESS = 10
-    const blurry = captured.value.filter(
-      (p) => p.sharpness < MIN_READABLE_SHARPNESS,
-    )
-    if (blurry.length > 0) {
-      captured.value = captured.value.filter(
-        (p) => p.sharpness >= MIN_READABLE_SHARPNESS,
-      )
-    }
-
-    // Auto document classification — Gemma 4 > SmolVLM > skip
-    // Removes non-document frames (desk, hand, blur) automatically.
-    if (captured.value.length > 0) {
+    if (ssimCount > 0) {
       const useGemma = isGemma4Ready()
-      if (useGemma || captured.value.length <= 20) {
-        statusText.value = `${captured.value.length} ページを AI 判定中...`
-        const kept: typeof captured.value = []
-        for (const page of captured.value) {
-          let result: { isDocument: boolean }
-          if (useGemma) {
-            result = await classifyWithGemma4(page.dataUrl)
-          } else {
-            // SmolVLM fallback
-            try {
-              const results = await classifyBatch([{ dataUrl: page.dataUrl }])
-              result = results[0] ?? { isDocument: true }
-            } catch {
-              result = { isDocument: true } // fail-open
-            }
+      statusText.value = `${ssimCount} ページを AI 判定中...`
+
+      const kept: typeof captured.value = []
+      for (let i = 0; i < captured.value.length; i++) {
+        statusText.value = `AI 判定: ${i + 1}/${ssimCount}`
+        const page = captured.value[i]!
+        let isDoc = true // fail-open default
+
+        if (useGemma) {
+          const r = await classifyWithGemma4(page.dataUrl)
+          isDoc = r.isDocument
+        } else {
+          // SmolVLM fallback
+          try {
+            const results = await classifyBatch([{ dataUrl: page.dataUrl }])
+            isDoc = results[0]?.isDocument ?? true
+          } catch {
+            /* fail-open */
           }
-          if (result.isDocument) kept.push(page)
         }
-        if (kept.length > 0 && kept.length < captured.value.length) {
-          captured.value = kept
-        }
+
+        if (isDoc) kept.push(page)
       }
+      if (kept.length > 0) captured.value = kept
     }
 
     // Post-enhance: apply auto-crop + CLAHE + A4 normalization to raw frames.
@@ -1335,24 +1307,6 @@ onBeforeUnmount(() => {
           動画ファイルから
         </button>
         <button
-          v-if="captured.length >= 2"
-          class="btn btn--accent"
-          type="button"
-          :disabled="dedupRunning"
-          @click="runDedup"
-        >
-          {{ dedupRunning ? '処理中...' : '重複除去' }}
-        </button>
-        <button
-          v-if="captured.length >= 1"
-          class="btn btn--secondary"
-          type="button"
-          :disabled="vlmRunning"
-          @click="runVlmFilter"
-        >
-          {{ vlmRunning ? '判定中...' : 'AI 書類判定' }}
-        </button>
-        <button
           v-if="captured.length > 0"
           class="btn btn--primary"
           type="button"
@@ -1371,24 +1325,6 @@ onBeforeUnmount(() => {
           @click="manualCapture"
         >
           手動で撮影
-        </button>
-        <button
-          v-if="captured.length >= 2"
-          class="btn btn--accent"
-          type="button"
-          :disabled="dedupRunning"
-          @click="runDedup"
-        >
-          {{ dedupRunning ? '処理中...' : '重複除去' }}
-        </button>
-        <button
-          v-if="captured.length >= 1"
-          class="btn btn--secondary"
-          type="button"
-          :disabled="vlmRunning"
-          @click="runVlmFilter"
-        >
-          {{ vlmRunning ? '判定中...' : 'AI 書類判定' }}
         </button>
         <Select v-model="pdfMode">
           <SelectTrigger class="w-[130px] h-10 text-sm">
@@ -1417,14 +1353,6 @@ onBeforeUnmount(() => {
 
     <div v-if="ocrLoading" class="toast toast--info" role="status">
       {{ ocrProgress }}
-    </div>
-
-    <div v-if="dedupRunning" class="toast toast--info" role="status">
-      {{ dedupProgressText || '重複除去中...' }}
-    </div>
-
-    <div v-if="vlmRunning" class="toast toast--info" role="status">
-      {{ vlmProgressText || 'AI 書類判定中...' }}
     </div>
 
     <Transition name="sheet">
