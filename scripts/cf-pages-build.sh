@@ -9,6 +9,7 @@ set -euo pipefail
 
 cd "$(dirname "$0")/.."
 
+bash scripts/download-opencv.sh
 bash scripts/download-ocr-models.sh
 bash scripts/download-siglip-model.sh
 bun run build

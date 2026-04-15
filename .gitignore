@@ -65,6 +65,11 @@ apps/web/public/fonts/*.ttf
 *.mp4
 *.mov
 
+# Tauri
+src-tauri/target/
+src-tauri/gen/android/
+src-tauri/gen/apple/
+
 # Temporary
 tmp/
 temp/
