@@ -21,6 +21,7 @@ export default defineNuxtConfig({
 
   vite: {
     plugins: [tailwindcss()],
+    server: { hmr: { overlay: false } },
     worker: { format: 'es' as const },
     optimizeDeps: {
       exclude: ['onnxruntime-web', 'onnxruntime-web/wasm'],
