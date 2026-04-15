@@ -10,7 +10,22 @@ export default defineNuxtConfig({
 
   devServer: { port: 3005 },
 
-  modules: ['shadcn-nuxt'],
+  modules: ['shadcn-nuxt', '@vite-pwa/nuxt'],
+
+  pwa: {
+    registerType: 'autoUpdate',
+    manifest: {
+      name: 'AstarScan — Edge Document Scanner',
+      short_name: 'AstarScan',
+      description: 'スマホで書類を電子化。完全オフラインのエッジスキャナー。',
+      theme_color: '#001f42',
+      background_color: '#ffffff',
+      display: 'standalone',
+      orientation: 'portrait',
+      lang: 'ja',
+      icons: [{ src: '/favicon.svg', sizes: 'any', type: 'image/svg+xml' }],
+    },
+  },
 
   shadcn: {
     prefix: '',
