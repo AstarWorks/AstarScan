@@ -1,476 +1,180 @@
 <script setup lang="ts">
-import { onBeforeUnmount, onMounted, ref } from 'vue'
+/**
+ * AstarScan — minimal document scanner.
+ *
+ * Pipeline (4 stages, strictly linear):
+ *   1. Sample video / camera frame every SAMPLE_INTERVAL_S
+ *   2. detectDocumentQuad → 4 corner Quad via Otsu + minAreaRect, null if none
+ *   3. warpPerspective → cropped rectangular canvas
+ *   4. pHash dedup → skip if same page already captured
+ *
+ * Intentionally removed vs. the previous implementation:
+ *   - jscanify / Canny fallback cascades (one detector only)
+ *   - Gemma4 / SmolVLM AI post-filter (trust the detector)
+ *   - best-of-N sharpness replacement
+ *   - autoCrop / CLAHE / deskew / A4-normalize post-processing
+ *   - Streaming AI during capture
+ * If detection misses, we accept that as a signal to swap the detector,
+ * not as a reason to layer more stages on top of it.
+ */
+
+import { ref, computed, onMounted } from 'vue'
 import jsPDF from 'jspdf'
 
-import type { EdgeDetectorBackend, Quad } from '@astarworks/scan-core'
-import { measureSharpness } from '~/services/blur-detection'
-import { cannyDetectQuad } from '~/services/canny-detector'
-import { deskewDocument } from '~/services/deskew'
-import { DocAlignerBackend } from '~/services/docaligner-backend'
-import {
-  classifyWithGemma4,
-  disposeGemma4,
-  initGemma4Background,
-  isGemma4Ready,
-} from '~/services/gemma4-browser-backend'
-import { enhanceDocument } from '~/services/image-enhancer'
-import { JscanifyBackend } from '~/services/jscanify-backend'
-import { extractGrayscale, SsimDedupManager } from '~/services/ssim-dedup'
-import { disposeOcr, initOcr, isOcrReady, runOcr } from '~/services/ocr-service'
-import type { OcrLine, OcrResult } from '~/services/ocr-service'
-import { disposeVisualDedup } from '~/services/visual-dedup'
-import { classifyBatch, disposeClassifier } from '~/services/smolvlm-backend'
+import { detectDocumentQuad } from '~/services/doc-detector'
+import { loadOpenCV } from '~/services/opencv-loader'
 import { warpPerspective } from '~/services/perspective-warper'
+import { computePHash, PHashDedupManager } from '~/services/phash-dedup'
 import {
   clearSession,
   loadSession,
   saveSession,
+  type StoredPage,
 } from '~/services/session-store'
-import type { StoredPage } from '~/services/session-store'
-import {
-  Select,
-  SelectContent,
-  SelectItem,
-  SelectTrigger,
-  SelectValue,
-} from '~/components/ui/select'
 
-// --------------------------------------------------------------------------
-// Types
-// --------------------------------------------------------------------------
-
-type Phase = 'idle' | 'loading' | 'ready' | 'error'
-
-interface CapturedPage {
-  readonly id: string
-  readonly dataUrl: string
-  readonly width: number
-  readonly height: number
-  readonly sharpness: number
-  /** Full camera frame before perspective correction (for re-detection). */
-  readonly sourceDataUrl?: string
-  readonly sourceWidth?: number
-  readonly sourceHeight?: number
-  /** Name of the backend that detected this page ("docaligner" or "jscanify"). */
-  readonly backendName?: string
-  ocrText?: string
-  ocrLines?: readonly OcrLine[]
+interface Page {
+  id: string
+  dataUrl: string
+  width: number
+  height: number
+  capturedAt: number
 }
 
-interface CaptureNotification {
-  readonly id: number
-  readonly dataUrl: string
-  readonly pageNumber: number
-  readonly type: 'new' | 'replaced' | 'skipped'
-}
+const EXTRACT_W = 1200
+const EXTRACT_H = 1600
+const SAMPLE_INTERVAL_S = 0.5
 
-// --------------------------------------------------------------------------
-// Constants
-// --------------------------------------------------------------------------
-
-// Target resolution for the perspective-corrected output. A4-ish aspect.
-const EXTRACT_WIDTH = 1200
-const EXTRACT_HEIGHT = 1600
-
-const NOTIFICATION_THUMB_QUALITY = 0.6
-const NOTIFICATION_DURATION_MS = 2500
-
-// Capture interval: 1s sampling. 0.5s causes too many candidates (50+)
-// which overflows SigLIP's stack during embedding extraction.
-// 1s at SSIM 0.70 = 11/11 on test video (verified).
-const CAPTURE_INTERVAL_MS = 1000
-
-// Overlay detection runs every N RAF frames (~15 FPS at 60 FPS display).
-// This is for UX feedback only — capture decisions are made by the timer.
-const OVERLAY_DETECT_EVERY_N = 4
-
-// --------------------------------------------------------------------------
-// Reactive state
-// --------------------------------------------------------------------------
+type Phase = 'idle' | 'loading' | 'scanning' | 'done' | 'error'
+const phase = ref<Phase>('idle')
+const statusText = ref('')
+const errorText = ref('')
+const captured = ref<Page[]>([])
+const pdfExporting = ref(false)
+const stripOpen = ref(false)
 
 const videoRef = ref<HTMLVideoElement | null>(null)
-const overlayRef = ref<HTMLCanvasElement | null>(null)
-const phase = ref<Phase>('idle')
-const statusText = ref<string>('')
-const errorText = ref<string | null>(null)
-const captured = ref<CapturedPage[]>([])
-const notification = ref<CaptureNotification | null>(null)
+const mediaStream = ref<MediaStream | null>(null)
 
-// Page preview state
-const previewPageIndex = ref<number | null>(null)
+let detectorReady = false
+const dedup = new PHashDedupManager()
 
-// OCR state
-const ocrLoading = ref(false)
-const ocrProgress = ref<string>('')
-const ocrPanelPage = ref<{
-  pageIndex: number
-  result: OcrResult | null
-  loading: boolean
-} | null>(null)
+onMounted(async () => {
+  const saved = await loadSession()
+  if (saved?.pages?.length) {
+    captured.value = saved.pages.map(storedToPage)
+  }
+})
 
-// --------------------------------------------------------------------------
-// Non-reactive handles
-// --------------------------------------------------------------------------
+// ---------------------------------------------------------------------------
+// Detection pipeline
+// ---------------------------------------------------------------------------
 
-let edgeBackend: EdgeDetectorBackend | null = null
-let fallbackBackend: EdgeDetectorBackend | null = null
-const ssimDedup = new SsimDedupManager()
-let stream: MediaStream | null = null
-let visibilityCleanup: (() => void) | null = null
-let rafId: number | null = null
-let captureTimerId: ReturnType<typeof setInterval> | null = null
-let overlayTick = 0
-let lastQuad: Quad | null = null
-let detectionInFlight = false
-let processingFrame = false
-let nextNotificationId = 0
-let notificationTimeoutId: number | null = null
-
-// --------------------------------------------------------------------------
-// Camera lifecycle — iOS Safari survival kit (WebKit bug #185448)
-//
-// 1. Single MediaStream: only one getUserMedia call per session
-// 2. visibilitychange handler: detect background→foreground transitions
-// 3. track.onended listener: detect surprise camera loss
-// 4. Error retry: NotReadableError / AbortError → retry once after 500ms
-// 5. Safari version check: warn on iOS < 15
-// --------------------------------------------------------------------------
-
-function isIOSSafari(): boolean {
-  const ua = navigator.userAgent
-  return (
-    /iPhone|iPad|iPod/.test(ua) && /WebKit/.test(ua) && !/CriOS|FxiOS/.test(ua)
-  )
+async function ensureDetector(): Promise<void> {
+  if (detectorReady) return
+  statusText.value = 'OpenCV 初期化中 (初回のみ)...'
+  await loadOpenCV()
+  detectorReady = true
 }
 
-async function startCamera(): Promise<void> {
-  // iOS Safari version check
-  if (isIOSSafari()) {
-    const match = navigator.userAgent.match(/OS (\d+)_/)
-    const iosVersion = match ? parseInt(match[1] ?? '0', 10) : 0
-    if (iosVersion > 0 && iosVersion < 15) {
-      throw new Error(
-        `iOS ${iosVersion} は対応していません。iOS 15 以上にアップデートしてください。`,
-      )
-    }
-  }
+async function processFrame(video: HTMLVideoElement): Promise<boolean> {
+  if (!detectorReady) return false
+  if (video.readyState < 2 || video.videoWidth === 0) return false
 
-  let mediaStream: MediaStream
-  try {
-    mediaStream = await navigator.mediaDevices.getUserMedia({
-      video: {
-        facingMode: { ideal: 'environment' },
-        width: { ideal: 1920 },
-        height: { ideal: 1080 },
-      },
-      audio: false,
-    })
-  } catch (err) {
-    // iOS Safari retry: NotReadableError / AbortError can be transient
-    // in standalone (home screen) mode — retry once after 500ms.
-    if (
-      err instanceof DOMException &&
-      (err.name === 'NotReadableError' || err.name === 'AbortError')
-    ) {
-      await new Promise((r) => setTimeout(r, 500))
-      mediaStream = await navigator.mediaDevices.getUserMedia({
-        video: {
-          facingMode: { ideal: 'environment' },
-          width: { ideal: 1920 },
-          height: { ideal: 1080 },
-        },
-        audio: false,
-      })
-    } else {
-      throw err
-    }
-  }
+  const work = document.createElement('canvas')
+  work.width = video.videoWidth
+  work.height = video.videoHeight
+  work.getContext('2d')?.drawImage(video, 0, 0)
 
-  stream = mediaStream
+  const quad = detectDocumentQuad(work)
+  if (!quad) return false
 
-  const video = videoRef.value
-  if (!video) {
-    mediaStream.getTracks().forEach((t) => t.stop())
-    stream = null
-    throw new Error('ビデオ要素の取得に失敗しました')
-  }
+  const warped = warpPerspective(work, quad, EXTRACT_W, EXTRACT_H)
+  const hash = computePHash(warped)
+  if (dedup.isDuplicate(hash)) return false
 
-  video.srcObject = mediaStream
-  await video.play()
-
-  // Track ended listener: detect surprise camera loss (iOS Safari
-  // standalone mode, tab switch, or another app grabbing the camera)
-  const videoTrack = mediaStream.getVideoTracks()[0]
-  if (videoTrack) {
-    videoTrack.onended = () => {
-      showTransientError(
-        'カメラが切断されました。再度「スキャンを開始」をタップしてください。',
-      )
-      phase.value = 'error'
-      errorText.value =
-        'カメラが切断されました。再度「スキャンを開始」をタップしてください。'
-    }
-  }
-
-  // Visibility change handler: if the page goes background and comes
-  // back, the MediaStream may be dead on iOS Safari. Check and warn.
-  const onVisibilityChange = () => {
-    if (document.visibilityState === 'visible' && stream) {
-      const tracks = stream.getVideoTracks()
-      const allEnded =
-        tracks.length === 0 || tracks.every((t) => t.readyState === 'ended')
-      if (allEnded) {
-        showTransientError(
-          'バックグラウンドから復帰後、カメラが停止しました。再開してください。',
-        )
-        phase.value = 'error'
-        errorText.value =
-          'バックグラウンドから復帰後、カメラが停止しました。再開してください。'
-      }
-    }
-  }
-  document.addEventListener('visibilitychange', onVisibilityChange)
-  // Store cleanup ref so onBeforeUnmount can remove it
-  visibilityCleanup = () =>
-    document.removeEventListener('visibilitychange', onVisibilityChange)
+  const id = crypto.randomUUID()
+  dedup.addPage(id, hash)
+  captured.value = [
+    ...captured.value,
+    {
+      id,
+      dataUrl: warped.toDataURL('image/jpeg', 0.85),
+      width: warped.width,
+      height: warped.height,
+      capturedAt: Date.now(),
+    },
+  ]
+  void saveSession(captured.value.map(pageToStored))
+  return true
 }
 
-// --------------------------------------------------------------------------
-// Unified capture pipeline — shared by camera and video file modes.
-// Same logic: edge detect → warp → blur check → SSIM dedup → accept.
-// --------------------------------------------------------------------------
+// ---------------------------------------------------------------------------
+// Video-file mode
+// ---------------------------------------------------------------------------
 
-/**
- * Capture a single frame from the video, run edge detection + warp,
- * blur check, and SSIM dedup. Shared by camera and video file modes.
- */
-async function processFrame(video: HTMLVideoElement): Promise<void> {
-  if (processingFrame || video.readyState < 2 || video.videoWidth === 0) return
-  processingFrame = true
+async function startFromFile(): Promise<void> {
+  const file = await pickFile()
+  if (!file) return
 
-  try {
-    const work = document.createElement('canvas')
-    work.width = video.videoWidth
-    work.height = video.videoHeight
-    const ctx = work.getContext('2d')
-    if (!ctx) return
-    ctx.drawImage(video, 0, 0)
-
-    // 1. Edge detect — cascade: DocAligner → jscanify → Canny contour
-    let quad: Quad | null = null
-    let backendName = 'raw'
-
-    // Try primary backend (DocAligner ML)
-    if (edgeBackend) {
-      try {
-        quad = await edgeBackend.detect(work)
-        if (quad) backendName = edgeBackend.name
-      } catch {
-        /* silent */
-      }
-    }
-
-    // Try fallback backend (jscanify classical CV)
-    if (!quad && fallbackBackend) {
-      try {
-        quad = await fallbackBackend.detect(work)
-        if (quad) backendName = fallbackBackend.name
-      } catch {
-        /* silent */
-      }
-    }
-
-    // Try Canny + contour detection (OpenCV.js direct)
-    if (!quad) {
-      quad = cannyDetectQuad(work)
-      if (quad) backendName = 'canny'
-    }
-
-    // 2. Perspective warp + deskew (or raw frame for SSIM comparison)
-    // NOTE: enhancement (auto-crop, CLAHE, A4) is applied AFTER dedup,
-    // not here. SSIM must compare raw frames for consistent results.
-    let output: HTMLCanvasElement
-    if (quad) {
-      output = warpPerspective(work, quad, EXTRACT_WIDTH, EXTRACT_HEIGHT)
-      output = deskewDocument(output)
-    } else {
-      output = work
-    }
-
-    // 3. Sharpness for best-frame selection (no pre-dedup filtering —
-    // all filters were found to kill valid pages. SigLIP handles non-doc removal.)
-    const sharpness = measureSharpness(output)
-
-    // 3. SSIM dedup — simple accept/reject (no best-frame replacement,
-    // which was found to merge different pages at SSIM 0.70 threshold)
-    const gray = extractGrayscale(output)
-    if (ssimDedup.isDuplicate(gray)) return
-
-    // 4. Accept new page
-    const pageId = crypto.randomUUID()
-    const dataUrl = output.toDataURL('image/jpeg', 0.85)
-    ssimDedup.addPage(pageId, gray)
-    captured.value = [
-      ...captured.value,
-      {
-        id: pageId,
-        dataUrl,
-        width: output.width,
-        height: output.height,
-        sharpness,
-        backendName,
-      },
-    ]
-    showCaptureNotification(output, 'new')
-    void persistSession()
-  } finally {
-    processingFrame = false
-  }
-}
-
-function drawQuadOverlay(
-  ctx: CanvasRenderingContext2D,
-  quad: Quad,
-  canvasWidth: number,
-): void {
-  ctx.fillStyle = 'rgba(0, 132, 255, 0.15)'
-  ctx.strokeStyle = 'rgba(0, 132, 255, 0.8)'
-  ctx.lineWidth = Math.max(3, Math.round(canvasWidth / 400))
-  ctx.beginPath()
-  ctx.moveTo(quad.tl.x, quad.tl.y)
-  ctx.lineTo(quad.tr.x, quad.tr.y)
-  ctx.lineTo(quad.br.x, quad.br.y)
-  ctx.lineTo(quad.bl.x, quad.bl.y)
-  ctx.closePath()
-  ctx.fill()
-  ctx.stroke()
-}
-
-/**
- * Overlay-only RAF loop for camera mode: draws detected quad on the
- * canvas for UX feedback. Capture decisions are NOT made here — they
- * happen in the 1s interval timer via processFrame().
- */
-function startOverlayLoop(): void {
-  const video = videoRef.value
-  const overlay = overlayRef.value
-  if (!video || !overlay) return
-  const ctx = overlay.getContext('2d')
-  if (!ctx) return
-
-  const loop = () => {
-    rafId = requestAnimationFrame(loop)
-    if (video.readyState < 2 || video.videoWidth === 0) return
-
-    if (overlay.width !== video.videoWidth) {
-      overlay.width = video.videoWidth
-      overlay.height = video.videoHeight
-    }
-
-    ctx.clearRect(0, 0, overlay.width, overlay.height)
-    if (lastQuad) {
-      drawQuadOverlay(ctx, lastQuad, overlay.width)
-    }
-
-    // Throttled detection for overlay display only
-    overlayTick += 1
-    if (overlayTick % OVERLAY_DETECT_EVERY_N === 0 && !detectionInFlight) {
-      if (edgeBackend) {
-        detectionInFlight = true
-        const work = document.createElement('canvas')
-        work.width = video.videoWidth
-        work.height = video.videoHeight
-        work.getContext('2d')?.drawImage(video, 0, 0)
-        edgeBackend
-          .detect(work)
-          .then((quad) => {
-            lastQuad = quad
-          })
-          .catch(() => {
-            lastQuad = null
-          })
-          .finally(() => {
-            detectionInFlight = false
-          })
-      }
-    }
-  }
-  loop()
-}
-
-/**
- * Start capture timer: processFrame() runs every CAPTURE_INTERVAL_MS.
- * Used by both camera and video-playback modes.
- */
-function startCaptureTimer(): void {
-  const video = videoRef.value
-  if (!video) return
-  captureTimerId = setInterval(() => {
-    void processFrame(video)
-  }, CAPTURE_INTERVAL_MS)
-}
-
-function stopCaptureTimer(): void {
-  if (captureTimerId !== null) {
-    clearInterval(captureTimerId)
-    captureTimerId = null
-  }
-}
-
-// --------------------------------------------------------------------------
-// Start / stop orchestration
-// --------------------------------------------------------------------------
-
-async function initEdgeBackend(): Promise<void> {
-  // Primary: DocAligner ML model
-  statusText.value = 'AI モデル読み込み中 (初回のみ)...'
-  try {
-    const docaligner = new DocAlignerBackend('fastvit_t8')
-    await docaligner.warmUp()
-    edgeBackend = docaligner
-  } catch {
-    edgeBackend = null
-  }
-
-  // Fallback: jscanify (Canny + contour, requires OpenCV.js)
-  try {
-    statusText.value = 'OpenCV 初期化中...'
-    const jscanify = new JscanifyBackend()
-    await jscanify.warmUp()
-    if (edgeBackend) {
-      fallbackBackend = jscanify // secondary
-    } else {
-      edgeBackend = jscanify // promote to primary if DocAligner failed
-    }
-  } catch {
-    fallbackBackend = null
-  }
-  // Canny direct (cannyDetectQuad) needs OpenCV.js too, which is now loaded
-}
-
-async function start(): Promise<void> {
   phase.value = 'loading'
-  errorText.value = null
+  errorText.value = ''
   try {
-    await initEdgeBackend()
+    await ensureDetector()
+    const video = videoRef.value
+    if (!video) throw new Error('ビデオ要素が見つかりません')
 
-    statusText.value = 'カメラ起動中...'
-    await startCamera()
+    const objectUrl = URL.createObjectURL(file)
+    video.srcObject = null
+    video.muted = true
+    video.playsInline = true
+    video.src = objectUrl
+    await new Promise<void>((resolve, reject) => {
+      video.oncanplay = () => resolve()
+      video.onerror = () => reject(new Error('動画の読み込みに失敗しました'))
+    })
 
-    statusText.value = ''
-    phase.value = 'ready'
-    startOverlayLoop()
-    startCaptureTimer()
+    phase.value = 'scanning'
+    dedup.clear()
+    captured.value = []
+
+    const duration = video.duration
+    let lastSampleT = -999
+    await video.play()
+
+    await new Promise<void>((resolve) => {
+      const step = async () => {
+        if (video.ended) {
+          resolve()
+          return
+        }
+        if (video.currentTime - lastSampleT >= SAMPLE_INTERVAL_S) {
+          lastSampleT = video.currentTime
+          const pct = duration > 0
+            ? Math.round((video.currentTime / duration) * 100)
+            : 0
+          statusText.value = `解析中 ${pct}% (${captured.value.length} 枚検出)`
+          await processFrame(video)
+        }
+        if (!video.ended) video.requestVideoFrameCallback(step)
+        else resolve()
+      }
+      video.requestVideoFrameCallback(step)
+      video.onended = () => resolve()
+    })
+
+    URL.revokeObjectURL(objectUrl)
+    phase.value = 'done'
+    statusText.value = `完了: ${captured.value.length} 枚`
   } catch (err) {
     phase.value = 'error'
     errorText.value =
-      err instanceof Error ? err.message : '初期化に失敗しました'
+      err instanceof Error ? err.message : 'スキャンに失敗しました'
     statusText.value = ''
   }
 }
 
-async function startFromFile(): Promise<void> {
-  const file = await new Promise<File | null>((resolve) => {
+function pickFile(): Promise<File | null> {
+  return new Promise((resolve) => {
     const input = document.createElement('input')
     input.type = 'file'
     input.accept = 'video/*,.mp4,.mov,.webm,.avi'
@@ -478,920 +182,354 @@ async function startFromFile(): Promise<void> {
     input.oncancel = () => resolve(null)
     input.click()
   })
-  if (!file) return
+}
 
+// ---------------------------------------------------------------------------
+// Live-camera mode
+// ---------------------------------------------------------------------------
+
+async function startCamera(): Promise<void> {
   phase.value = 'loading'
-  errorText.value = null
+  errorText.value = ''
   try {
-    await initEdgeBackend()
-
+    await ensureDetector()
     const video = videoRef.value
-    if (!video) throw new Error('ビデオ要素の取得に失敗しました')
+    if (!video) throw new Error('ビデオ要素が見つかりません')
 
-    statusText.value = '動画を読み込み中...'
-    const objectUrl = URL.createObjectURL(file)
-    video.srcObject = null
-    video.muted = true
-    video.playsInline = true
-
-    const ready = new Promise<void>((resolve, reject) => {
-      video.oncanplay = () => resolve()
-      video.onerror = () => reject(new Error('動画の読み込みに失敗しました'))
+    statusText.value = 'カメラ起動中...'
+    mediaStream.value = await navigator.mediaDevices.getUserMedia({
+      video: {
+        facingMode: { ideal: 'environment' },
+        width: { ideal: 1920 },
+        height: { ideal: 1080 },
+      },
+      audio: false,
     })
-    video.src = objectUrl
-    await ready
+    video.srcObject = mediaStream.value
+    await video.play()
 
-    const duration = video.duration
-    const totalSamples = Math.floor(duration / (CAPTURE_INTERVAL_MS / 1000))
+    phase.value = 'scanning'
+    statusText.value = '書類を映してください'
+    dedup.clear()
 
-    statusText.value = `${totalSamples} フレームを解析中...`
-    phase.value = 'ready'
-
-    // Batch: seek to each sample point, run processFrame
-    for (let i = 0; i <= totalSamples; i++) {
-      const seekTime = i * (CAPTURE_INTERVAL_MS / 1000)
-      await new Promise<void>((resolve) => {
-        video.onseeked = () => resolve()
-        video.currentTime = seekTime
-      })
-      await processFrame(video)
-      statusText.value = `解析中... ${i + 1}/${totalSamples} (${captured.value.length} ページ検出)`
-    }
-
-    URL.revokeObjectURL(objectUrl)
-
-    // Gemma 4 AI classification — replaces SigLIP, blur filter, and SmolVLM.
-    // Single model handles: "is this a document?", "is it readable?", dedup quality.
-    // Fallback: Gemma 4 → SmolVLM → skip (heuristics only).
-    const ssimCount = captured.value.length
-    if (ssimCount > 0) {
-      const useGemma = isGemma4Ready()
-      statusText.value = `${ssimCount} ページを AI 判定中...`
-
-      const kept: typeof captured.value = []
-      for (let i = 0; i < captured.value.length; i++) {
-        statusText.value = `AI 判定: ${i + 1}/${ssimCount}`
-        const page = captured.value[i]!
-        let isDoc = true // fail-open default
-
-        if (useGemma) {
-          const r = await classifyWithGemma4(page.dataUrl)
-          isDoc = r.isDocument
-        } else {
-          // SmolVLM fallback
-          try {
-            const results = await classifyBatch([{ dataUrl: page.dataUrl }])
-            isDoc = results[0]?.isDocument ?? true
-          } catch {
-            /* fail-open */
-          }
-        }
-
-        if (isDoc) kept.push(page)
+    let lastSampleT = performance.now() - 10000
+    const loop = async () => {
+      if (phase.value !== 'scanning') return
+      const now = performance.now()
+      if (now - lastSampleT >= SAMPLE_INTERVAL_S * 1000) {
+        lastSampleT = now
+        const added = await processFrame(video)
+        if (added) statusText.value = `検出 ${captured.value.length} 枚`
       }
-      if (kept.length > 0) captured.value = kept
+      video.requestVideoFrameCallback(loop)
     }
-
-    // Post-enhance: apply auto-crop + CLAHE + A4 normalization to raw frames.
-    // This runs AFTER dedup so SSIM compares raw (consistent) frames.
-    statusText.value = `${captured.value.length} ページを画像補正中...`
-    const pages = [...captured.value]
-    for (let i = 0; i < pages.length; i++) {
-      const page = pages[i]!
-      if (page.backendName && page.backendName !== 'raw') continue
-      // Load dataUrl into canvas
-      const img = await new Promise<HTMLImageElement>((resolve) => {
-        const el = new Image()
-        el.onload = () => resolve(el)
-        el.src = page.dataUrl
-      })
-      const c = document.createElement('canvas')
-      c.width = img.width
-      c.height = img.height
-      c.getContext('2d')?.drawImage(img, 0, 0)
-      const out = enhanceDocument(c)
-      pages[i] = {
-        ...page,
-        dataUrl: out.toDataURL('image/jpeg', 0.85),
-        width: out.width,
-        height: out.height,
-        backendName: 'enhanced',
-      }
-    }
-    captured.value = pages
-
-    statusText.value = ''
-    void persistSession()
-    showTransientError(
-      `完了: ${captured.value.length} ユニークページを検出しました。`,
-    )
+    video.requestVideoFrameCallback(loop)
   } catch (err) {
     phase.value = 'error'
     errorText.value =
-      err instanceof Error ? err.message : '動画の読み込みに失敗しました'
+      err instanceof Error ? err.message : 'カメラ起動に失敗しました'
     statusText.value = ''
   }
 }
 
-// --------------------------------------------------------------------------
-// Manual capture (button tap in camera mode)
-// --------------------------------------------------------------------------
-
-async function manualCapture(): Promise<void> {
+function stopCamera(): void {
+  mediaStream.value?.getTracks().forEach((t) => t.stop())
+  mediaStream.value = null
   const video = videoRef.value
-  if (!video) return
-  await processFrame(video)
+  if (video) video.srcObject = null
+  phase.value = captured.value.length > 0 ? 'done' : 'idle'
+  statusText.value = ''
 }
 
-function showCaptureNotification(
-  source: HTMLCanvasElement,
-  type: 'new' | 'replaced' | 'skipped' = 'new',
-  pageNumber?: number,
-): void {
-  const id = ++nextNotificationId
-  notification.value = {
-    id,
-    dataUrl: source.toDataURL('image/jpeg', NOTIFICATION_THUMB_QUALITY),
-    pageNumber: pageNumber ?? captured.value.length,
-    type,
-  }
-  if (notificationTimeoutId !== null) {
-    window.clearTimeout(notificationTimeoutId)
-  }
-  // Skipped notifications fade faster — they're informational, not actionable.
-  const duration = type === 'skipped' ? 1500 : NOTIFICATION_DURATION_MS
-  notificationTimeoutId = window.setTimeout(() => {
-    if (notification.value?.id === id) {
-      notification.value = null
-    }
-    notificationTimeoutId = null
-  }, duration)
-}
-
-function downloadPageImage(page: CapturedPage, idx: number): void {
-  const a = document.createElement('a')
-  a.href = page.dataUrl
-  a.download = `astarscan-page-${String(idx + 1).padStart(3, '0')}.jpg`
-  a.click()
-}
+// ---------------------------------------------------------------------------
+// Page list management
+// ---------------------------------------------------------------------------
 
 function removePage(id: string): void {
   captured.value = captured.value.filter((p) => p.id !== id)
-  ssimDedup.removePage(id)
-  void persistSession()
+  dedup.removePage(id)
+  void saveSession(captured.value.map(pageToStored))
 }
 
 function movePageUp(idx: number): void {
   if (idx <= 0) return
   const pages = [...captured.value]
-  const temp = pages[idx - 1]!
+  const tmp = pages[idx - 1]!
   pages[idx - 1] = pages[idx]!
-  pages[idx] = temp
+  pages[idx] = tmp
   captured.value = pages
-  void persistSession()
+  void saveSession(captured.value.map(pageToStored))
 }
 
 function movePageDown(idx: number): void {
   if (idx >= captured.value.length - 1) return
   const pages = [...captured.value]
-  const temp = pages[idx + 1]!
+  const tmp = pages[idx + 1]!
   pages[idx + 1] = pages[idx]!
-  pages[idx] = temp
+  pages[idx] = tmp
   captured.value = pages
-  void persistSession()
+  void saveSession(captured.value.map(pageToStored))
 }
 
-/**
- * Re-detect corners on the source frame and re-warp. This is the
- * simplified version of "manual 4-corner correction" — the user gets
- * a fresh detection attempt rather than dragging handles. Useful when
- * auto-capture grabbed a slightly off quad.
- */
-async function redetectPage(idx: number): Promise<void> {
-  const page = captured.value[idx]
-  if (!page?.sourceDataUrl || !edgeBackend) return
-
-  try {
-    // Reconstruct canvas from the saved source frame
-    const img = await new Promise<HTMLImageElement>((resolve, reject) => {
-      const el = new Image()
-      el.onload = () => resolve(el)
-      el.onerror = () => reject(new Error('Failed to load source frame'))
-      el.src = page.sourceDataUrl!
-    })
-    const canvas = document.createElement('canvas')
-    canvas.width = img.width
-    canvas.height = img.height
-    canvas.getContext('2d')?.drawImage(img, 0, 0)
-
-    const quad = await edgeBackend.detect(canvas)
-    if (!quad) {
-      showTransientError('再検出できませんでした。')
-      return
-    }
-
-    const extracted = warpPerspective(
-      canvas,
-      quad,
-      EXTRACT_WIDTH,
-      EXTRACT_HEIGHT,
-    )
-    const sharpness = measureSharpness(extracted)
-
-    const pages = [...captured.value]
-    pages[idx] = {
-      ...page,
-      dataUrl: extracted.toDataURL('image/jpeg', 0.85),
-      width: extracted.width,
-      height: extracted.height,
-      sharpness,
-      ocrText: undefined, // OCR needs to be re-run after re-warp
-    }
-    captured.value = pages
-    void persistSession()
-    showTransientError('再検出しました。')
-  } catch {
-    showTransientError('再検出に失敗しました。')
-  }
-}
-
-// --------------------------------------------------------------------------
-// OCR
-// --------------------------------------------------------------------------
-
-async function startOcr(pageIndex: number): Promise<void> {
-  const page = captured.value[pageIndex]
-  if (!page) return
-
-  // Show panel immediately in loading state
-  ocrPanelPage.value = { pageIndex, result: null, loading: true }
-
-  try {
-    // Initialize OCR engine on first use (downloads ~146MB of models)
-    if (!isOcrReady()) {
-      ocrLoading.value = true
-      ocrProgress.value = 'OCR モデル準備中...'
-      await initOcr((p) => {
-        ocrProgress.value = `${p.stage} (${Math.round(p.percent)}%)`
-      })
-      ocrLoading.value = false
-      ocrProgress.value = ''
-    }
-
-    // Run OCR on the page
-    const result = await runOcr(page.dataUrl)
-
-    // Write back text to the CapturedPage
-    const pages = [...captured.value]
-    const target = pages[pageIndex]
-    if (target) {
-      pages[pageIndex] = {
-        ...target,
-        ocrText: result.text,
-        ocrLines: result.lines,
-      }
-      captured.value = pages
-    }
-
-    ocrPanelPage.value = { pageIndex, result, loading: false }
-  } catch (err) {
-    ocrPanelPage.value = null
-    showTransientError(
-      err instanceof Error ? err.message : 'OCR の実行に失敗しました',
-    )
-    ocrLoading.value = false
-  }
-}
-
-function closeOcrPanel(): void {
-  ocrPanelPage.value = null
-}
-
-// --------------------------------------------------------------------------
-// Page preview (fullscreen)
-// --------------------------------------------------------------------------
-
-function openPreview(idx: number): void {
-  previewPageIndex.value = idx
-}
-
-function closePreview(): void {
-  previewPageIndex.value = null
-}
-
-function previewPrev(): void {
-  if (previewPageIndex.value !== null && previewPageIndex.value > 0) {
-    previewPageIndex.value -= 1
-  }
-}
-
-function previewNext(): void {
-  if (
-    previewPageIndex.value !== null &&
-    previewPageIndex.value < captured.value.length - 1
-  ) {
-    previewPageIndex.value += 1
-  }
-}
-
-function previewOcrAndClose(): void {
-  if (previewPageIndex.value !== null) {
-    startOcr(previewPageIndex.value)
-  }
-  closePreview()
-}
-
-function previewDeleteAndClose(): void {
-  if (previewPageIndex.value !== null) {
-    const page = captured.value[previewPageIndex.value]
-    if (page) removePage(page.id)
-  }
-  closePreview()
-}
-
-// --------------------------------------------------------------------------
-// Visual dedup (post-processing)
-// --------------------------------------------------------------------------
-
-type PdfMode = 'single' | 'split' | 'batch'
-const pdfMode = ref<PdfMode>('single')
-
-// CJK font cache — loaded once, reused across PDF exports
-let cjkFontBase64: string | null = null
-
-async function loadCjkFont(): Promise<string> {
-  if (cjkFontBase64) return cjkFontBase64
-  // Try local first, fallback to Google Fonts CDN
-  let resp = await fetch('/fonts/NotoSansJP-Regular.ttf').catch(() => null)
-  if (!resp?.ok) {
-    resp = await fetch(
-      'https://cdn.jsdelivr.net/gh/google/fonts@main/ofl/notosansjp/NotoSansJP%5Bwght%5D.ttf',
-    )
-  }
-  const buf = await resp.arrayBuffer()
-  // Convert ArrayBuffer to base64
-  const bytes = new Uint8Array(buf)
-  let binary = ''
-  for (let i = 0; i < bytes.length; i++) {
-    binary += String.fromCharCode(bytes[i]!)
-  }
-  cjkFontBase64 = btoa(binary)
-  return cjkFontBase64
-}
-
-async function buildPdf(pages: CapturedPage[]): Promise<jsPDF> {
-  const pdf = new jsPDF({ unit: 'mm', format: 'a4', orientation: 'portrait' })
-  const mmWidth = pdf.internal.pageSize.getWidth()
-  const mmHeight = pdf.internal.pageSize.getHeight()
-
-  // Register CJK font if any page has OCR lines
-  const hasOcr = pages.some((p) => p.ocrLines?.length)
-  if (hasOcr) {
-    const fontData = await loadCjkFont()
-    pdf.addFileToVFS('NotoSansJP-Regular.ttf', fontData)
-    pdf.addFont('NotoSansJP-Regular.ttf', 'NotoSansJP', 'normal', 'Identity-H')
-  }
-
-  pages.forEach((page, i) => {
-    if (i > 0) pdf.addPage()
-    const imgAspect = page.width / page.height
-    const pageAspect = mmWidth / mmHeight
-    let w: number
-    let h: number
-    if (imgAspect > pageAspect) {
-      w = mmWidth
-      h = mmWidth / imgAspect
-    } else {
-      h = mmHeight
-      w = mmHeight * imgAspect
-    }
-    const x = (mmWidth - w) / 2
-    const y = (mmHeight - h) / 2
-    pdf.addImage(page.dataUrl, 'JPEG', x, y, w, h)
-
-    // Transparent text overlay for searchable PDF
-    if (page.ocrLines?.length) {
-      pdf.setFont('NotoSansJP')
-      for (const line of page.ocrLines) {
-        const mmX = x + (line.bbox[0] / EXTRACT_WIDTH) * w
-        // bbox[1] is top of text; add bbox[3] (height) for baseline
-        const mmY = y + ((line.bbox[1] + line.bbox[3]) / EXTRACT_HEIGHT) * h
-        const fontPt = Math.max(
-          4,
-          Math.min((line.bbox[3] / EXTRACT_HEIGHT) * h * 2.835, 24),
-        )
-        pdf.setFontSize(fontPt)
-        pdf.text(line.text, mmX, mmY, { renderingMode: 'invisible' })
-      }
-    }
-  })
-  return pdf
-}
-
-const pdfExporting = ref(false)
+// ---------------------------------------------------------------------------
+// PDF export
+// ---------------------------------------------------------------------------
 
 async function exportPdf(): Promise<void> {
   if (captured.value.length === 0 || pdfExporting.value) return
   pdfExporting.value = true
   try {
-    // Auto-run OCR on pages that don't have it yet
-    const needsOcr = captured.value.filter((p) => !p.ocrLines)
-    if (needsOcr.length > 0) {
-      statusText.value = `OCR 実行中... (${needsOcr.length} ページ)`
-      if (!isOcrReady()) {
-        await initOcr((p) => {
-          statusText.value = `OCR モデル準備中... (${Math.round(p.percent)}%)`
-        })
-      }
-      const pages = [...captured.value]
-      for (let i = 0; i < pages.length; i++) {
-        if (!pages[i]!.ocrLines) {
-          statusText.value = `OCR: ${i + 1}/${pages.length}`
-          const result = await runOcr(pages[i]!.dataUrl)
-          pages[i] = {
-            ...pages[i]!,
-            ocrText: result.text,
-            ocrLines: result.lines,
-          }
-        }
-      }
-      captured.value = pages
-      void persistSession()
-    }
+    const pdf = new jsPDF({
+      unit: 'mm',
+      format: 'a4',
+      orientation: 'portrait',
+    })
+    const mmW = pdf.internal.pageSize.getWidth()
+    const mmH = pdf.internal.pageSize.getHeight()
 
-    statusText.value = 'PDF 生成中...'
-    const ts = new Date().toISOString().slice(0, 19).replace(/[:T]/g, '-')
-    const mode = pdfMode.value
-
-    if (mode === 'single') {
-      const pdf = await buildPdf(captured.value)
-      pdf.save(`astarscan-${ts}.pdf`)
-    } else if (mode === 'split') {
-      for (let i = 0; i < captured.value.length; i++) {
-        const pdf = await buildPdf([captured.value[i]!])
-        pdf.save(`astarscan-${ts}-p${String(i + 1).padStart(3, '0')}.pdf`)
+    captured.value.forEach((page, i) => {
+      if (i > 0) pdf.addPage()
+      const imgAspect = page.width / page.height
+      const pageAspect = mmW / mmH
+      let w: number
+      let h: number
+      if (imgAspect > pageAspect) {
+        w = mmW
+        h = mmW / imgAspect
+      } else {
+        h = mmH
+        w = mmH * imgAspect
       }
-    } else if (mode === 'batch') {
-      const batchSize = 10
-      for (let start = 0; start < captured.value.length; start += batchSize) {
-        const batch = captured.value.slice(start, start + batchSize)
-        const batchNum = Math.floor(start / batchSize) + 1
-        const pdf = await buildPdf(batch)
-        pdf.save(
-          `astarscan-${ts}-batch${String(batchNum).padStart(2, '0')}.pdf`,
-        )
-      }
-    }
+      const x = (mmW - w) / 2
+      const y = (mmH - h) / 2
+      pdf.addImage(page.dataUrl, 'JPEG', x, y, w, h)
+    })
 
-    statusText.value = ''
-    ssimDedup.clear()
-    void clearSession()
-  } catch (err) {
-    showTransientError(
-      err instanceof Error ? err.message : 'PDF の生成に失敗しました',
-    )
-    statusText.value = ''
+    pdf.save(`astarscan-${Date.now()}.pdf`)
   } finally {
     pdfExporting.value = false
   }
 }
 
-// --------------------------------------------------------------------------
-// Session persistence
-// --------------------------------------------------------------------------
+async function clearAll(): Promise<void> {
+  captured.value = []
+  dedup.clear()
+  await clearSession()
+  phase.value = 'idle'
+}
 
-function persistSession(): Promise<void> {
-  const pages: StoredPage[] = captured.value.map((p) => ({
+// ---------------------------------------------------------------------------
+// Converters
+// ---------------------------------------------------------------------------
+
+function pageToStored(p: Page): StoredPage {
+  return {
     id: p.id,
     dataUrl: p.dataUrl,
     width: p.width,
     height: p.height,
-    sharpness: p.sharpness,
-    ocrText: p.ocrText,
-    ocrLines: p.ocrLines,
-    capturedAt: Date.now(),
-  }))
-  return saveSession(pages).catch(() => {})
-}
-
-async function restoreSession(): Promise<void> {
-  const session = await loadSession()
-  if (!session || session.pages.length === 0) return
-  captured.value = session.pages.map((p) => ({
-    id: p.id,
-    dataUrl: p.dataUrl,
-    width: p.width,
-    height: p.height,
-    sharpness: p.sharpness,
-    ocrText: p.ocrText,
-    ocrLines: p.ocrLines as readonly OcrLine[] | undefined,
-  }))
-}
-
-function showTransientError(msg: string): void {
-  errorText.value = msg
-  window.setTimeout(() => {
-    errorText.value = null
-  }, 3000)
-}
-
-// --------------------------------------------------------------------------
-// Lifecycle
-// --------------------------------------------------------------------------
-
-onMounted(() => {
-  void restoreSession()
-  // Background prefetch Gemma 4 E2B (3.4GB, cached after first load)
-  void initGemma4Background((msg) => {
-    console.log(`[gemma4] ${msg}`)
-  })
-})
-
-onBeforeUnmount(() => {
-  stopCaptureTimer()
-  if (rafId !== null) {
-    cancelAnimationFrame(rafId)
-    rafId = null
+    sharpness: 0,
+    capturedAt: p.capturedAt,
   }
-  if (notificationTimeoutId !== null) {
-    window.clearTimeout(notificationTimeoutId)
-    notificationTimeoutId = null
+}
+
+function storedToPage(s: StoredPage): Page {
+  return {
+    id: s.id,
+    dataUrl: s.dataUrl,
+    width: s.width,
+    height: s.height,
+    capturedAt: s.capturedAt,
   }
-  visibilityCleanup?.()
-  visibilityCleanup = null
-  stream?.getTracks().forEach((t) => t.stop())
-  stream = null
-  edgeBackend?.dispose()
-  edgeBackend = null
-  fallbackBackend?.dispose()
-  fallbackBackend = null
-  lastQuad = null
-  ssimDedup.clear()
-  disposeOcr()
-  disposeVisualDedup()
-  disposeClassifier()
-  disposeGemma4()
-})
+}
+
+const canExport = computed(
+  () => captured.value.length > 0 && !pdfExporting.value,
+)
 </script>
 
 <template>
   <main class="app">
     <header class="app__header">
       <h1 class="app__title">AstarScan</h1>
-      <span v-if="statusText && phase === 'loading'" class="app__status">
-        {{ statusText }}
-      </span>
+      <span v-if="statusText" class="app__status">{{ statusText }}</span>
     </header>
 
     <section class="viewport">
-      <video ref="videoRef" class="viewport__video" playsinline muted />
-      <canvas ref="overlayRef" class="viewport__overlay" />
-
-      <!-- Shooting guide: shown during camera mode when no quad detected -->
-      <div v-if="phase === 'ready' && !lastQuad" class="shooting-guide">
-        <div class="shooting-guide__frame" />
-        <p class="shooting-guide__text">
-          書類の周りに少し余白を残して撮影すると<br />
-          自動で切り出し・補正されます
-        </p>
-      </div>
+      <video
+        ref="videoRef"
+        class="viewport__video"
+        :class="{ 'viewport__video--hidden': phase === 'idle' }"
+        playsinline
+        muted
+      />
 
       <div v-if="phase === 'idle'" class="splash">
         <h2 class="splash__title">書類の山をスマホで電子化</h2>
         <p class="splash__tagline">
-          スマホを書類に向けるだけ。<br />
-          安定したページを自動で検出し、PDF にまとめます。
+          動画ファイルから自動で書類ページを抽出し、<br />
+          PDF にまとめます。
         </p>
         <p class="splash__privacy">
-          全ての処理はこの端末内で完結し、画像や PDF
-          は外部サーバーに送信されません。
-          <NuxtLink to="/privacy" class="splash__privacy-link"
-            >プライバシーポリシー</NuxtLink
-          >
+          全ての処理は端末内で完結します。画像や PDF は外部に送信されません。
+          <NuxtLink to="/privacy" class="splash__link">
+            プライバシーポリシー
+          </NuxtLink>
         </p>
-      </div>
-
-      <div v-else-if="phase === 'loading'" class="splash">
-        <div class="spinner" aria-hidden="true" />
       </div>
 
       <div v-else-if="phase === 'error'" class="splash splash--error">
         <p class="splash__error">{{ errorText }}</p>
       </div>
-
-      <Transition name="notify">
-        <div
-          v-if="notification && phase === 'ready'"
-          :key="notification.id"
-          class="notify"
-          :class="{
-            'notify--replaced': notification.type === 'replaced',
-            'notify--skipped': notification.type === 'skipped',
-          }"
-          role="status"
-        >
-          <img
-            :src="notification.dataUrl"
-            :alt="`ページ ${notification.pageNumber}`"
-            class="notify__thumb"
-          />
-          <div class="notify__body">
-            <span class="notify__title">
-              <template v-if="notification.type === 'replaced'">
-                ページ {{ notification.pageNumber }} を更新
-              </template>
-              <template v-else-if="notification.type === 'skipped'">
-                ページ {{ notification.pageNumber }}
-              </template>
-              <template v-else> ページ {{ notification.pageNumber }} </template>
-            </span>
-            <span class="notify__subtitle">
-              <template v-if="notification.type === 'replaced'">
-                より鮮明なフレームに差し替えました
-              </template>
-              <template v-else-if="notification.type === 'skipped'">
-                既にキャプチャ済み
-              </template>
-              <template v-else> キャプチャしました </template>
-            </span>
-          </div>
-        </div>
-      </Transition>
     </section>
 
-    <div v-if="captured.length > 0" class="strip">
-      <div
-        v-for="(page, idx) in captured"
-        :key="page.id"
-        class="strip__thumb"
-        :class="{ 'strip__thumb--ocr': page.ocrText }"
-      >
-        <img
-          :src="page.dataUrl"
-          :alt="`ページ ${idx + 1}`"
-          @click="openPreview(idx)"
-        />
-        <span class="strip__num">{{ idx + 1 }}</span>
-        <span class="strip__debug"
-          >{{ (page.backendName ?? '?').slice(0, 3) }}:{{
-            Math.round(page.sharpness)
-          }}</span
+    <details
+      v-if="captured.length > 0"
+      class="strip-drawer"
+      :open="stripOpen"
+      @toggle="stripOpen = ($event.target as HTMLDetailsElement).open"
+    >
+      <summary class="strip-drawer__summary">
+        書類 {{ captured.length }} 件
+        <span class="strip-drawer__hint">
+          {{ stripOpen ? '（クリックで閉じる）' : '（クリックで開く）' }}
+        </span>
+      </summary>
+      <div class="strip">
+        <figure
+          v-for="(page, idx) in captured"
+          :key="page.id"
+          class="strip__thumb"
         >
-        <span v-if="page.ocrText" class="strip__ocr-badge">OCR</span>
-        <div class="strip__actions">
-          <button
-            v-if="idx > 0"
-            class="strip__btn"
-            type="button"
-            :aria-label="`ページ ${idx + 1} を前に`"
-            @click.stop="movePageUp(idx)"
-          >
-            &lt;
-          </button>
-          <button
-            class="strip__btn strip__btn--dl"
-            type="button"
-            :aria-label="`ページ ${idx + 1} を画像で保存`"
-            @click.stop="downloadPageImage(page, idx)"
-          >
-            DL
-          </button>
-          <button
-            v-if="page.sourceDataUrl"
-            class="strip__btn strip__btn--re"
-            type="button"
-            :aria-label="`ページ ${idx + 1} を再検出`"
-            @click.stop="redetectPage(idx)"
-          >
-            R
-          </button>
-          <button
-            v-if="idx < captured.length - 1"
-            class="strip__btn"
-            type="button"
-            :aria-label="`ページ ${idx + 1} を後に`"
-            @click.stop="movePageDown(idx)"
-          >
-            &gt;
-          </button>
-        </div>
-        <button
-          class="strip__remove"
-          type="button"
-          :aria-label="`ページ ${idx + 1} を削除`"
-          @click.stop="removePage(page.id)"
-        >
-          ×
-        </button>
+          <img :src="page.dataUrl" :alt="`ページ ${idx + 1}`" />
+          <figcaption class="strip__caption">{{ idx + 1 }}</figcaption>
+          <div class="strip__actions">
+            <button
+              type="button"
+              aria-label="前のページと入れ替え"
+              :disabled="idx === 0"
+              @click="movePageUp(idx)"
+            >
+              ◀
+            </button>
+            <button
+              type="button"
+              aria-label="次のページと入れ替え"
+              :disabled="idx === captured.length - 1"
+              @click="movePageDown(idx)"
+            >
+              ▶
+            </button>
+            <button
+              type="button"
+              aria-label="削除"
+              @click="removePage(page.id)"
+            >
+              ×
+            </button>
+          </div>
+        </figure>
       </div>
-    </div>
+    </details>
 
     <footer class="controls">
       <template v-if="phase === 'idle' || phase === 'error'">
-        <button class="btn btn--primary" type="button" @click="start">
-          {{ phase === 'idle' ? 'カメラで撮影' : '再試行' }}
+        <button class="btn btn--primary" type="button" @click="startCamera">
+          カメラで撮影
         </button>
-        <button
-          v-if="phase === 'idle'"
-          class="btn btn--secondary"
-          type="button"
-          @click="startFromFile"
-        >
+        <button class="btn btn--secondary" type="button" @click="startFromFile">
           動画ファイルから
         </button>
         <button
           v-if="captured.length > 0"
           class="btn btn--primary"
           type="button"
-          :disabled="pdfExporting"
+          :disabled="!canExport"
           @click="exportPdf"
         >
-          {{ pdfExporting ? 'PDF 生成中...' : `PDF 出力 (${captured.length})` }}
+          {{ pdfExporting ? 'PDF 生成中…' : `PDF 出力 (${captured.length})` }}
+        </button>
+      </template>
+
+      <template v-else-if="phase === 'scanning'">
+        <button class="btn btn--secondary" type="button" @click="stopCamera">
+          {{ mediaStream ? '停止' : '処理中…' }}
+        </button>
+      </template>
+
+      <template v-else-if="phase === 'done'">
+        <button
+          class="btn btn--primary"
+          type="button"
+          :disabled="!canExport"
+          @click="exportPdf"
+        >
+          {{ pdfExporting ? 'PDF 生成中…' : `PDF 出力 (${captured.length})` }}
+        </button>
+        <button class="btn btn--secondary" type="button" @click="startCamera">
+          追加撮影
+        </button>
+        <button class="btn btn--secondary" type="button" @click="startFromFile">
+          動画から追加
+        </button>
+        <button class="btn btn--ghost" type="button" @click="clearAll">
+          すべて削除
         </button>
       </template>
 
       <template v-else>
-        <button
-          class="btn btn--secondary"
-          type="button"
-          :disabled="phase !== 'ready'"
-          @click="manualCapture"
-        >
-          手動で撮影
-        </button>
-        <Select v-model="pdfMode">
-          <SelectTrigger class="w-[130px] h-10 text-sm">
-            <SelectValue />
-          </SelectTrigger>
-          <SelectContent>
-            <SelectItem value="single">1つの PDF</SelectItem>
-            <SelectItem value="split">ページ別 PDF</SelectItem>
-            <SelectItem value="batch">10枚ずつ</SelectItem>
-          </SelectContent>
-        </Select>
-        <button
-          class="btn btn--primary"
-          type="button"
-          :disabled="captured.length === 0 || pdfExporting"
-          @click="exportPdf"
-        >
-          {{ pdfExporting ? 'PDF 生成中...' : `PDF 出力 (${captured.length})` }}
-        </button>
+        <span class="controls__loading">読み込み中…</span>
       </template>
     </footer>
-
-    <div v-if="errorText && phase === 'ready'" class="toast" role="alert">
-      {{ errorText }}
-    </div>
-
-    <div v-if="ocrLoading" class="toast toast--info" role="status">
-      {{ ocrProgress }}
-    </div>
-
-    <Transition name="sheet">
-      <div
-        v-if="ocrPanelPage !== null"
-        class="sheet-backdrop"
-        @click.self="closeOcrPanel"
-      >
-        <OcrResultPanel
-          :result="ocrPanelPage.result"
-          :page-image-url="captured[ocrPanelPage.pageIndex]?.dataUrl ?? ''"
-          :page-number="ocrPanelPage.pageIndex + 1"
-          :loading="ocrPanelPage.loading"
-          @close="closeOcrPanel"
-        />
-      </div>
-    </Transition>
-
-    <!-- Fullscreen page preview -->
-    <Transition name="sheet">
-      <div
-        v-if="previewPageIndex !== null && captured[previewPageIndex]"
-        class="preview-backdrop"
-        @click.self="closePreview"
-      >
-        <div class="preview">
-          <div class="preview__header">
-            <span class="preview__title">
-              ページ {{ previewPageIndex + 1 }} / {{ captured.length }}
-            </span>
-            <button
-              class="preview__close"
-              type="button"
-              aria-label="閉じる"
-              @click="closePreview"
-            >
-              ×
-            </button>
-          </div>
-
-          <div class="preview__image-wrap">
-            <img
-              :src="captured[previewPageIndex]!.dataUrl"
-              :alt="`ページ ${previewPageIndex + 1}`"
-              class="preview__image"
-            />
-          </div>
-
-          <div class="preview__footer">
-            <button
-              class="btn btn--secondary"
-              type="button"
-              :disabled="previewPageIndex <= 0"
-              @click="previewPrev"
-            >
-              ← 前
-            </button>
-            <button
-              class="btn btn--secondary"
-              type="button"
-              @click="
-                downloadPageImage(captured[previewPageIndex]!, previewPageIndex)
-              "
-            >
-              DL
-            </button>
-            <button
-              class="btn btn--secondary"
-              type="button"
-              @click="previewOcrAndClose"
-            >
-              OCR
-            </button>
-            <button
-              class="btn btn--secondary"
-              type="button"
-              @click="previewDeleteAndClose"
-            >
-              削除
-            </button>
-            <button
-              class="btn btn--secondary"
-              type="button"
-              :disabled="previewPageIndex >= captured.length - 1"
-              @click="previewNext"
-            >
-              次 →
-            </button>
-          </div>
-        </div>
-      </div>
-    </Transition>
   </main>
 </template>
 
 <style scoped>
-/* ============================================================
- * Astar Design System — Light theme, warm minimalism
- * "Notion のやさしさ × Linear の精密さ × 日本語の読みやすさ"
- * ============================================================ */
-
 .app {
   display: flex;
   flex-direction: column;
+  height: 100vh;
   min-height: 100dvh;
-  background: #ffffff;
-  color: #1e293b;
+  background: #0b1120;
+  color: #f1f5f9;
   font-family:
-    'BIZTER',
-    ui-sans-serif,
-    system-ui,
     -apple-system,
+    BlinkMacSystemFont,
+    'Segoe UI',
+    system-ui,
     sans-serif;
-  overflow: hidden;
 }
 
 .app__header {
   display: flex;
-  align-items: center;
+  align-items: baseline;
   justify-content: space-between;
   padding: 0.75rem 1rem;
-  padding-top: calc(0.75rem + env(safe-area-inset-top));
-  background: #ffffff;
-  border-bottom: 1px solid rgba(0, 0, 0, 0.08);
-  z-index: 10;
+  background: #001f42;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.1);
+  gap: 1rem;
 }
 
 .app__title {
-  margin: 0;
-  font-size: 1.25rem;
-  font-weight: 700;
-  letter-spacing: -0.01em;
-  color: #001f42;
+  font-size: 1.125rem;
+  font-weight: 600;
+  letter-spacing: 0.02em;
 }
 
 .app__status {
   font-size: 0.8125rem;
-  color: #64748b;
+  color: #94a3b8;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .viewport {
   position: relative;
   flex: 1;
+  min-height: 0;
   overflow: hidden;
   background: #000;
-  min-height: 0;
 }
 
 .viewport__video {
@@ -1403,43 +541,8 @@ onBeforeUnmount(() => {
   z-index: 1;
 }
 
-.viewport__overlay {
-  position: absolute;
-  inset: 0;
-  width: 100%;
-  height: 100%;
-  pointer-events: none;
-  z-index: 2;
-  background: transparent;
-}
-
-.shooting-guide {
-  position: absolute;
-  inset: 0;
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  justify-content: center;
-  z-index: 3;
-  pointer-events: none;
-}
-
-.shooting-guide__frame {
-  width: 70%;
-  aspect-ratio: 3 / 4;
-  border: 2px dashed rgba(0, 132, 255, 0.5);
-  border-radius: 0.625rem;
-}
-
-.shooting-guide__text {
-  margin-top: 1rem;
-  padding: 0.5rem 1rem;
-  background: rgba(0, 0, 0, 0.5);
-  color: #ffffff;
-  font-size: 0.75rem;
-  line-height: 1.6;
-  text-align: center;
-  border-radius: 0.5rem;
+.viewport__video--hidden {
+  visibility: hidden;
 }
 
 .splash {
@@ -1450,208 +553,104 @@ onBeforeUnmount(() => {
   align-items: center;
   justify-content: center;
   padding: 2rem;
-  background: #ffffff;
+  gap: 1rem;
+  background: #0b1120;
+  z-index: 2;
   text-align: center;
-  z-index: 5;
 }
 
 .splash__title {
-  margin: 0 0 1rem;
   font-size: 1.5rem;
-  font-weight: 700;
-  color: #001f42;
+  font-weight: 600;
 }
 
 .splash__tagline {
-  margin: 0 0 2rem;
-  font-size: 0.9375rem;
-  line-height: 1.7;
-  color: #64748b;
-}
-
-.splash__privacy {
-  margin: 0;
-  font-size: 0.8125rem;
-  color: #909090;
-  max-width: 20rem;
+  font-size: 0.875rem;
+  color: #cbd5e1;
   line-height: 1.6;
 }
 
-.splash__privacy-link {
-  color: #0084ff;
-  text-decoration: underline;
-  text-underline-offset: 2px;
-}
-
-.splash--error {
-  background: #fff5f5;
-}
-
-.splash__error {
-  margin: 0;
-  font-size: 1rem;
-  color: #dc2626;
-  font-weight: 500;
+.splash__privacy {
+  font-size: 0.75rem;
+  color: #94a3b8;
   max-width: 24rem;
   line-height: 1.6;
 }
 
-.spinner {
-  width: 2.5rem;
-  height: 2.5rem;
-  border-radius: 50%;
-  border: 3px solid rgba(0, 0, 0, 0.06);
-  border-top-color: #0084ff;
-  animation: spin 0.8s linear infinite;
+.splash__link {
+  color: #7dd3fc;
+  text-decoration: underline;
 }
 
-@keyframes spin {
-  to {
-    transform: rotate(360deg);
-  }
+.splash--error {
+  background: rgba(185, 28, 28, 0.85);
 }
 
-.notify {
-  position: absolute;
-  top: 1rem;
-  right: 1rem;
+.splash__error {
+  font-size: 1rem;
+  white-space: pre-line;
+  max-width: 28rem;
+}
+
+.strip-drawer {
+  background: #101a2d;
+  border-top: 1px solid rgba(255, 255, 255, 0.08);
+}
+
+.strip-drawer__summary {
+  padding: 0.625rem 1rem;
+  font-size: 0.8125rem;
+  cursor: pointer;
+  list-style: none;
+  user-select: none;
   display: flex;
   align-items: center;
-  gap: 0.75rem;
-  padding: 0.625rem 0.875rem 0.625rem 0.625rem;
-  background: #ffffff;
-  border: 1px solid rgba(0, 0, 0, 0.08);
-  border-radius: 0.625rem;
-  box-shadow:
-    0 1px 3px rgba(0, 0, 0, 0.08),
-    0 1px 2px rgba(0, 0, 0, 0.04);
-  max-width: calc(100% - 2rem);
-  z-index: 15;
+  gap: 0.5rem;
 }
 
-.notify__thumb {
-  width: 3.5rem;
-  height: 4.5rem;
-  object-fit: cover;
-  border-radius: 0.375rem;
-  border: 1px solid rgba(0, 0, 0, 0.08);
-  flex-shrink: 0;
+.strip-drawer__summary::-webkit-details-marker {
+  display: none;
 }
 
-.notify__body {
-  display: flex;
-  flex-direction: column;
-  gap: 0.125rem;
-  min-width: 0;
-}
-
-.notify__title {
-  font-size: 0.8125rem;
-  font-weight: 700;
-  color: #001f42;
-}
-
-.notify__subtitle {
-  font-size: 0.75rem;
+.strip-drawer__hint {
   color: #64748b;
-}
-
-.notify-enter-active,
-.notify-leave-active {
-  transition:
-    transform 0.3s cubic-bezier(0.4, 0, 0.2, 1),
-    opacity 0.2s cubic-bezier(0.4, 0, 0.2, 1);
-}
-.notify-enter-from,
-.notify-leave-to {
-  transform: translateX(calc(100% + 2rem));
-  opacity: 0;
-}
-.notify-enter-to,
-.notify-leave-from {
-  transform: translateX(0);
-  opacity: 1;
-}
-
-.notify--replaced {
-  border-left: 3px solid #16a34a;
-}
-
-.notify--replaced .notify__title {
-  color: #16a34a;
-}
-
-.notify--skipped {
-  opacity: 0.7;
-}
-
-.notify--skipped .notify__title {
-  color: #909090;
+  font-size: 0.75rem;
 }
 
 .strip {
   display: flex;
   gap: 0.5rem;
-  padding: 0.75rem 1rem;
+  padding: 0 0.75rem 0.75rem;
   overflow-x: auto;
   overflow-y: hidden;
-  background: #f4f5f9;
-  border-top: 1px solid rgba(0, 0, 0, 0.08);
-  scrollbar-width: none;
-}
-
-.strip::-webkit-scrollbar {
-  display: none;
+  scrollbar-width: thin;
 }
 
 .strip__thumb {
   position: relative;
-  flex: 0 0 3.5rem;
+  flex: 0 0 4.5rem;
   aspect-ratio: 3 / 4;
+  background: #0b1120;
   border-radius: 0.5rem;
   overflow: hidden;
-  border: 1px solid rgba(0, 0, 0, 0.1);
-  background: #ffffff;
 }
 
 .strip__thumb img {
-  display: block;
   width: 100%;
   height: 100%;
   object-fit: cover;
+  display: block;
 }
 
-.strip__num {
+.strip__caption {
   position: absolute;
-  top: 0.125rem;
-  left: 0.125rem;
-  padding: 0 0.3125rem;
-  background: rgba(0, 31, 66, 0.75);
-  border-radius: 0.25rem;
-  font-size: 0.625rem;
-  font-weight: 600;
-  color: #ffffff;
-}
-
-.strip__remove {
-  position: absolute;
-  top: 0;
-  right: 0;
-  width: 1.25rem;
-  height: 1.25rem;
-  padding: 0;
-  border: none;
-  border-radius: 0 0 0 0.375rem;
-  background: rgba(239, 68, 68, 0.9);
+  top: 0.25rem;
+  left: 0.25rem;
+  background: rgba(0, 0, 0, 0.6);
   color: #fff;
-  font-size: 0.875rem;
-  font-weight: 700;
-  line-height: 1;
-  cursor: pointer;
-}
-
-.strip__remove:active {
-  background: rgb(220, 38, 38);
+  padding: 0 0.375rem;
+  font-size: 0.625rem;
+  border-radius: 0.25rem;
 }
 
 .strip__actions {
@@ -1660,477 +659,78 @@ onBeforeUnmount(() => {
   left: 0;
   right: 0;
   display: flex;
-  justify-content: center;
   gap: 1px;
-  opacity: 0;
-  transition: opacity 0.15s ease;
-}
-
-.strip__thumb:hover .strip__actions,
-.strip__thumb:focus-within .strip__actions {
-  opacity: 1;
-}
-
-.strip__btn {
-  padding: 0.125rem 0.25rem;
-  border: none;
-  background: rgba(0, 31, 66, 0.7);
-  color: #ffffff;
-  font-size: 0.5rem;
-  font-weight: 700;
-  cursor: pointer;
-  font-family: inherit;
-}
-
-.strip__btn--re {
-  background: rgba(0, 132, 255, 0.8);
-}
-
-.strip__btn--dl {
-  background: rgba(22, 163, 74, 0.8);
-}
-
-.strip__btn:active {
-  background: rgba(0, 31, 66, 0.9);
-}
-
-.strip__debug {
-  position: absolute;
-  top: 0.125rem;
-  right: 1.375rem;
-  font-size: 0.4375rem;
-  color: rgba(0, 0, 0, 0.4);
-  font-family: monospace;
-}
-
-.strip__thumb--ocr {
-  border-color: #0084ff;
-}
-
-.strip__ocr-badge {
-  position: absolute;
-  bottom: 0.125rem;
-  left: 0.125rem;
-  right: 0.125rem;
-  padding: 0.0625rem 0;
-  background: #0084ff;
-  color: #ffffff;
-  border-radius: 0.1875rem;
-  font-size: 0.5rem;
-  font-weight: 700;
-  text-align: center;
-}
-
-.toast--info {
-  background: #ffffff;
-  color: #0084ff;
-  border-left: 3px solid #0084ff;
-}
-
-.sheet-backdrop {
-  position: fixed;
-  inset: 0;
   background: rgba(0, 0, 0, 0.6);
-  display: flex;
-  align-items: flex-end;
-  z-index: 30;
 }
 
-.sheet-enter-active,
-.sheet-leave-active {
-  transition: opacity 0.25s ease;
-}
-.sheet-enter-active > *,
-.sheet-leave-active > * {
-  transition: transform 0.3s cubic-bezier(0.4, 0, 0.2, 1);
-}
-.sheet-enter-from,
-.sheet-leave-to {
-  opacity: 0;
-}
-.sheet-enter-from > *,
-.sheet-leave-to > * {
-  transform: translateY(100%);
-}
-
-.preview-backdrop {
-  position: fixed;
-  inset: 0;
-  background: rgba(0, 0, 0, 0.92);
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  z-index: 30;
-}
-
-.preview {
-  display: flex;
-  flex-direction: column;
-  width: 100%;
-  height: 100%;
-  max-width: 100vw;
-  max-height: 100dvh;
-}
-
-.preview__header {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  padding: 0.75rem 1rem;
-  padding-top: calc(0.75rem + env(safe-area-inset-top));
-  flex-shrink: 0;
-}
-
-.preview__title {
-  font-size: 0.875rem;
-  font-weight: 600;
-  color: #f1f5f9;
-}
-
-.preview__close {
-  width: 2.5rem;
-  height: 2.5rem;
+.strip__actions button {
+  flex: 1;
+  padding: 0.125rem 0;
+  background: transparent;
   border: none;
-  background: rgba(255, 255, 255, 0.15);
-  color: #f1f5f9;
-  font-size: 1.25rem;
-  border-radius: 50%;
+  color: #fff;
+  font-size: 0.75rem;
   cursor: pointer;
 }
 
-.preview__image-wrap {
-  flex: 1;
-  overflow: auto;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  padding: 0.5rem;
-  -webkit-overflow-scrolling: touch;
-}
-
-.preview__image {
-  max-width: 100%;
-  max-height: 100%;
-  object-fit: contain;
-  border-radius: 0.375rem;
-  box-shadow: 0 4px 24px rgba(0, 0, 0, 0.4);
-}
-
-.preview__footer {
-  display: flex;
-  gap: 0.5rem;
-  padding: 0.75rem 1rem;
-  padding-bottom: calc(0.75rem + env(safe-area-inset-bottom));
-  justify-content: center;
-  flex-shrink: 0;
-}
-
-.preview__footer .btn {
-  font-size: 0.75rem;
-  padding: 0.5rem 0.75rem;
-  min-width: auto;
+.strip__actions button:disabled {
+  color: #475569;
+  cursor: not-allowed;
 }
 
 .controls {
   display: flex;
-  gap: 0.75rem;
-  padding: 1rem;
-  padding-bottom: calc(1rem + env(safe-area-inset-bottom));
-  background: #ffffff;
-  border-top: 1px solid rgba(0, 0, 0, 0.08);
+  gap: 0.5rem;
+  padding: 0.75rem 1rem;
+  background: #001f42;
+  border-top: 1px solid rgba(255, 255, 255, 0.1);
+  flex-wrap: wrap;
 }
 
 .btn {
-  flex: 1;
-  padding: 1rem;
-  border: none;
-  border-radius: 0.625rem;
-  font-size: 1rem;
+  flex: 1 1 auto;
+  min-width: 6rem;
+  padding: 0.625rem 1rem;
+  border-radius: 0.5rem;
+  border: 1px solid transparent;
+  font-size: 0.875rem;
   font-weight: 600;
-  color: #ffffff;
   cursor: pointer;
-  transition:
-    transform 0.15s cubic-bezier(0.4, 0, 0.2, 1),
-    opacity 0.2s cubic-bezier(0.4, 0, 0.2, 1);
-  font-family: inherit;
-}
-
-.btn--full {
-  flex: 1 1 100%;
-}
-
-.btn--primary {
-  background: #0084ff;
-  box-shadow:
-    0 1px 3px rgba(0, 132, 255, 0.2),
-    0 1px 2px rgba(0, 0, 0, 0.06);
-}
-
-.btn--secondary {
-  background: #ffffff;
-  border: 1px solid rgba(0, 0, 0, 0.12);
-  color: #001f42;
-}
-
-.btn--accent {
-  background: #001f42;
-  box-shadow:
-    0 1px 3px rgba(0, 0, 0, 0.1),
-    0 1px 2px rgba(0, 0, 0, 0.06);
-}
-
-.btn:active:not(:disabled) {
-  transform: scale(0.97);
+  transition: opacity 0.15s;
 }
 
 .btn:disabled {
-  opacity: 0.4;
+  opacity: 0.5;
   cursor: not-allowed;
-  box-shadow: none;
 }
 
-.toast {
-  position: fixed;
-  left: 1rem;
-  right: 1rem;
-  bottom: calc(5.5rem + env(safe-area-inset-bottom));
-  padding: 0.75rem 1rem;
-  background: #ffffff;
-  color: #dc2626;
-  border: 1px solid rgba(0, 0, 0, 0.08);
-  border-left: 3px solid #dc2626;
-  border-radius: 0.625rem;
+.btn--primary {
+  background: #0284c7;
+  color: #fff;
+}
+
+.btn--secondary {
+  background: transparent;
+  color: #e2e8f0;
+  border-color: #334155;
+}
+
+.btn--ghost {
+  background: transparent;
+  color: #94a3b8;
+  border-color: transparent;
+  flex: 0 0 auto;
+}
+
+.controls__loading {
+  color: #94a3b8;
   font-size: 0.875rem;
-  text-align: center;
-  font-weight: 500;
-  box-shadow:
-    0 1px 3px rgba(0, 0, 0, 0.08),
-    0 1px 2px rgba(0, 0, 0, 0.04);
-  z-index: 20;
-  animation: slideUp 0.2s cubic-bezier(0.4, 0, 0.2, 1);
+  align-self: center;
 }
 
-@keyframes slideUp {
-  from {
-    opacity: 0;
-    transform: translateY(0.5rem);
-  }
-  to {
-    opacity: 1;
-    transform: translateY(0);
-  }
-}
-
-@keyframes slideUpDesktop {
-  from {
-    opacity: 0;
-    transform: translateX(-50%) translateY(0.5rem);
-  }
-  to {
-    opacity: 1;
-    transform: translateX(-50%) translateY(0);
-  }
-}
-
-/* Mobile: always show strip action buttons (hover doesn't work on touch) */
-@media (max-width: 767px) {
-  .strip__actions {
-    opacity: 1;
-  }
-}
-
-/* Desktop / Tablet overrides */
 @media (min-width: 768px) {
-  .app {
-    max-width: 960px;
-    margin: 0 auto;
-    overflow: visible;
-    box-shadow:
-      0 0 0 1px rgba(0, 0, 0, 0.06),
-      0 4px 24px rgba(0, 0, 0, 0.04);
-  }
-
-  .app__header {
-    padding: 1rem 1.5rem;
-    padding-top: 1rem;
-  }
-
-  .app__title {
-    font-size: 1.375rem;
-  }
-
-  .app__status {
-    font-size: 0.875rem;
-  }
-
-  .viewport {
-    flex: 1 1 0;
-    max-height: 70vh;
-    border-radius: 0.5rem;
-    margin: 0.5rem 1rem;
-  }
-
-  .splash__title {
-    font-size: 2rem;
-  }
-
-  .splash__tagline {
-    font-size: 1.125rem;
-    max-width: 28rem;
-  }
-
-  .splash__privacy {
-    font-size: 0.875rem;
-    max-width: 24rem;
-  }
-
-  .splash__error {
-    font-size: 1.125rem;
-    max-width: 28rem;
-  }
-
-  .shooting-guide__frame {
-    width: 50%;
-  }
-
-  .shooting-guide__text {
-    font-size: 0.875rem;
-  }
-
-  .strip {
-    flex-wrap: wrap;
-    overflow-x: visible;
-    padding: 1rem 1.5rem;
-    gap: 0.625rem;
-    justify-content: flex-start;
-  }
-
   .strip__thumb {
-    flex: 0 0 5rem;
-  }
-
-  .strip__num {
-    font-size: 0.6875rem;
-    padding: 0.0625rem 0.375rem;
-  }
-
-  .strip__debug {
-    font-size: 0.5rem;
-  }
-
-  .strip__remove {
-    width: 1.5rem;
-    height: 1.5rem;
-    font-size: 1rem;
-  }
-
-  .strip__btn {
-    padding: 0.1875rem 0.375rem;
-    font-size: 0.5625rem;
-  }
-
-  .strip__ocr-badge {
-    font-size: 0.5625rem;
-  }
-
-  .controls {
-    padding: 1rem 1.5rem;
-    padding-bottom: 1rem;
-    gap: 1rem;
-    justify-content: center;
-    margin-top: auto;
-  }
-
-  .btn {
-    flex: 0 1 auto;
-    min-width: 10rem;
-    padding: 0.875rem 1.5rem;
-  }
-
-  .btn--full {
-    flex: 0 1 auto;
-    min-width: 14rem;
-  }
-
-  .btn:hover:not(:disabled) {
-    filter: brightness(1.08);
-  }
-
-  .notify {
-    max-width: 20rem;
-  }
-
-  .notify__thumb {
-    width: 4rem;
-    height: 5.25rem;
-  }
-
-  .notify__title {
-    font-size: 0.875rem;
-  }
-
-  .notify__subtitle {
-    font-size: 0.8125rem;
-  }
-
-  .toast {
-    left: 50%;
-    right: auto;
-    max-width: 28rem;
-    width: calc(100% - 2rem);
-    bottom: 5rem;
-    transform: translateX(-50%);
-    animation-name: slideUpDesktop;
-  }
-
-  .preview {
-    max-width: 56rem;
-    max-height: 90dvh;
-    margin: auto;
-  }
-
-  .preview__header {
-    padding: 1rem 1.5rem;
-    padding-top: 1rem;
-  }
-
-  .preview__title {
-    font-size: 1rem;
-  }
-
-  .preview__close {
-    width: 2.75rem;
-    height: 2.75rem;
-    font-size: 1.375rem;
-  }
-
-  .preview__close:hover {
-    background: rgba(255, 255, 255, 0.25);
-  }
-
-  .preview__image-wrap {
-    padding: 1rem;
-  }
-
-  .preview__footer {
-    padding: 1rem 1.5rem;
-    padding-bottom: 1rem;
-    gap: 0.75rem;
-  }
-
-  .preview__footer .btn {
-    font-size: 0.8125rem;
-    padding: 0.625rem 1rem;
-  }
-
-  .sheet-backdrop {
-    align-items: center;
-    justify-content: center;
-  }
-
-  .sheet-enter-from > *,
-  .sheet-leave-to > * {
-    transform: translateY(2rem);
+    flex: 0 0 6rem;
   }
 }
 </style>

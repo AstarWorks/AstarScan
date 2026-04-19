@@ -4,8 +4,14 @@
  * jscanify (and any future backend that wants to touch cv.Mat directly)
  * needs `window.cv` to exist and have finished its async WASM init before
  * it can be used. This module centralizes the "inject a <script> once and
- * wait for `cv.imread` to become callable" dance so callers don't have to
+ * wait for the runtime to be fully ready" dance so callers don't have to
  * reimplement the poll loop.
+ *
+ * OpenCV.js initializes in two stages: JS wrappers like `imread` appear as
+ * soon as the script evaluates, but embind-backed functions
+ * (`getPerspectiveTransform`, `warpPerspective`, `Mat`, `Size`, ...) only
+ * appear after `onRuntimeInitialized` fires. We poll on the warp functions
+ * — if those are live, the full runtime is live.
  *
  * Loaded from the official docs mirror. First load is ~8MB; subsequent
  * visits are served from the HTTP cache (and eventually the Service Worker
@@ -20,11 +26,20 @@ const DEFAULT_TIMEOUT_MS = 30_000
 const POLL_INTERVAL_MS = 100
 const SCRIPT_MARKER = 'data-astar-opencv'
 
+function isRuntimeReady(): boolean {
+  const cv = window.cv
+  return (
+    typeof cv?.imread === 'function' &&
+    typeof cv?.getPerspectiveTransform === 'function' &&
+    typeof cv?.warpPerspective === 'function'
+  )
+}
+
 /**
- * Inject the OpenCV.js `<script>` tag (once) and resolve when
- * `window.cv.imread` is available. Safe to call multiple times — the
- * script is only inserted once per page, subsequent calls just poll the
- * existing initialization.
+ * Inject the OpenCV.js `<script>` tag (once) and resolve when the full
+ * WASM runtime — including the warp API — is ready. Safe to call multiple
+ * times; the script is only inserted once per page, subsequent calls just
+ * poll the existing initialization.
  *
  * Rejects if the script fails to load or if the poll exceeds
  * `timeoutMs` (default 30 seconds).
@@ -33,7 +48,7 @@ export function loadOpenCV(
   timeoutMs: number = DEFAULT_TIMEOUT_MS,
 ): Promise<void> {
   return new Promise((resolve, reject) => {
-    if (window.cv?.imread) {
+    if (isRuntimeReady()) {
       resolve()
       return
     }
@@ -53,7 +68,7 @@ export function loadOpenCV(
 
     const started = Date.now()
     const poll = () => {
-      if (window.cv?.imread) {
+      if (isRuntimeReady()) {
         resolve()
         return
       }
@@ -67,7 +82,7 @@ export function loadOpenCV(
   })
 }
 
-/** `true` if OpenCV.js has finished loading and `cv.imread` is callable. */
+/** `true` if OpenCV.js has finished loading and the warp API is callable. */
 export function isOpenCVReady(): boolean {
-  return typeof window.cv?.imread === 'function'
+  return isRuntimeReady()
 }

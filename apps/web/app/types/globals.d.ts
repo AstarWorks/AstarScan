@@ -22,12 +22,20 @@ declare module '*.vue' {
 }
 
 /**
- * Window augmentation for OpenCV.js. Loaded via `services/opencv-loader.ts`;
- * `cv.imread` becomes available after the WASM runtime initializes.
+ * Window augmentation for OpenCV.js. Loaded via `services/opencv-loader.ts`.
+ *
+ * OpenCV.js exposes `cv` in two stages: some JS wrappers (`imread`, `imshow`)
+ * are attached synchronously when the script evaluates, but the embind-backed
+ * functions (`getPerspectiveTransform`, `warpPerspective`, and the rest of
+ * the WASM surface) only appear after `onRuntimeInitialized` fires. The
+ * loader polls for the warp functions specifically because they are the
+ * reliable "runtime actually ready" signal.
  */
 interface Window {
   cv?: {
     imread?: (canvas: HTMLCanvasElement) => OpenCvMat
+    getPerspectiveTransform?: (...args: unknown[]) => unknown
+    warpPerspective?: (...args: unknown[]) => unknown
     onRuntimeInitialized?: () => void
   }
 }
