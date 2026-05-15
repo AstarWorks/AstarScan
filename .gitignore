@@ -56,6 +56,14 @@ apps/web/public/models/ocr/*.onnx
 # Run `scripts/download-siglip-model.sh` to fetch it.
 apps/web/public/models/siglip-*.onnx
 
+# Document corner detector — fine-tuned per-deployment, see
+# docs/training-doc-corners.md. Untracked so each fork can train its own.
+apps/web/public/models/doc-corners.onnx
+
+# DocAligner ONNX models (legacy failed experiment, kept locally for
+# reference but never tracked).
+apps/web/public/models/docaligner-*.onnx
+
 # OpenCV.js (7.6MB — downloaded via scripts)
 apps/web/public/opencv.js
 
@@ -75,3 +83,7 @@ src-tauri/gen/apple/
 tmp/
 temp/
 *.tmp
+
+# Eval harness outputs and Python venv for OCR backends
+eval-out/
+.venv-yomitoku/
