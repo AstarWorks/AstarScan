@@ -50,6 +50,16 @@ function normName(n) {
  * Returns canonical keys in priority order. Each is a `<type>:<value>` string.
  *
  * `fields` shape: { name?, company?, email?, tel?, fax?, mobile?, ... }
+ *
+ * Cards are keyed by their *strongest* unique identifier. Email beats phone
+ * (less likely to collide across a person's multiple cards); phone is used
+ * only when email is missing on either side. name+company is the last resort.
+ *
+ * The exception: a person may have multiple physical cards for different
+ * roles (e.g. 込田友紀子's BuonVento COO card AND 中野組商事 取締役 card,
+ * which both list mobile 090-5516-1153 but are clearly different cards).
+ * The caller (`clusterByCanonicalKey`) considers company/name when deciding
+ * to merge on a phone-only key.
  */
 export function canonicalKeys(fields) {
   const keys = []
@@ -100,28 +110,57 @@ class UnionFind {
 /**
  * Cluster items by shared canonical keys.
  *
+ * Same-email items always merge (an email uniquely identifies a person at
+ * one role).
+ *
+ * Same-phone items merge ONLY IF the companies are compatible (both null,
+ * both equal after normalization, or one is a substring of the other).
+ * This is the "込田友紀子 has two cards with shared mobile but different
+ * companies" case — they are physically distinct cards and must be kept
+ * separate.
+ *
+ * name+company keys behave like other keys.
+ *
  * @param {Array<{id, fields, score?}>} items
  * @returns {Array<{winner_id, member_ids, dropped_ids, key}>}
- *
- * `score` is bigger-is-better; default 0.
  */
 export function clusterByCanonicalKey(items) {
   const uf = new UnionFind()
-  const keyToItem = new Map() // key -> first item.id seen
+  const byId = new Map()
+  for (const it of items) {
+    byId.set(it.id, it)
+    uf.find(it.id) // register
+  }
 
+  // Build {key -> ids[]} index then apply per-key merge rules.
+  const keyIndex = new Map()
   for (const item of items) {
-    uf.find(item.id) // ensure registered
     for (const k of canonicalKeys(item.fields)) {
-      const prior = keyToItem.get(k)
-      if (prior !== undefined) {
-        uf.union(item.id, prior)
-      } else {
-        keyToItem.set(k, item.id)
+      if (!keyIndex.has(k)) keyIndex.set(k, [])
+      keyIndex.get(k).push(item.id)
+    }
+  }
+
+  for (const [key, ids] of keyIndex) {
+    if (ids.length < 2) continue
+    if (key.startsWith('email:') || key.startsWith('name+company:')) {
+      // Unconditional merge
+      for (let i = 1; i < ids.length; i++) uf.union(ids[0], ids[i])
+    } else if (key.startsWith('phone:')) {
+      // Only merge phone-keyed pairs when companies are compatible.
+      for (let i = 0; i < ids.length; i++) {
+        for (let j = i + 1; j < ids.length; j++) {
+          const a = byId.get(ids[i])
+          const b = byId.get(ids[j])
+          if (companiesCompatible(a.fields, b.fields)) {
+            uf.union(ids[i], ids[j])
+          }
+        }
       }
     }
   }
 
-  const groups = new Map() // root -> { members: Set, repr_key? }
+  const groups = new Map()
   for (const item of items) {
     const root = uf.find(item.id)
     if (!groups.has(root)) groups.set(root, [])
@@ -142,6 +181,49 @@ export function clusterByCanonicalKey(items) {
     })
   }
   return clusters
+}
+
+/**
+ * Decide whether two items that share a phone number are the SAME physical
+ * card or two different cards of the same person (e.g. 込田友紀子's
+ * BuonVento COO card vs her 中野組商事 取締役 card both list 090-5516-1153).
+ *
+ * Rules (ordered):
+ *   1. Emails on both sides:
+ *      - match            → same card
+ *      - differ           → different cards
+ *   2. Email on EXACTLY one side and the other has a real company:
+ *      → different cards (the email-bearing card is one identity; the
+ *        company-bearing-but-no-email side is another identity)
+ *   3. Companies on both sides:
+ *      - match (or one is substring of the other) → same card
+ *      - clearly differ                          → different cards
+ *   4. Otherwise (mostly empty fields) → assume same card.
+ *
+ * The "(株)/(有)" trailing label dropouts that the heuristic sometimes
+ * makes mean we compare on normalized substring containment.
+ */
+function companiesCompatible(a, b) {
+  const ea = normEmail(a?.email)
+  const eb = normEmail(b?.email)
+  if (ea && eb) return ea === eb              // rule 1
+
+  const ca = normName(a?.company)
+  const cb = normName(b?.company)
+
+  // Rule 2: asymmetric email vs company
+  if (ea && cb) return false
+  if (eb && ca) return false
+
+  // Rule 3: both companies present
+  if (ca && cb) {
+    if (ca === cb) return true
+    if (ca.includes(cb) || cb.includes(ca)) return true
+    return false
+  }
+
+  // Rule 4: nothing strong enough to discriminate
+  return true
 }
 
 // ---- CLI smoke test --------------------------------------------------------

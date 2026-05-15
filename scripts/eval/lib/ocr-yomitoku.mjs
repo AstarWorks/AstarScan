@@ -53,6 +53,12 @@ export async function runYomiToku(imagePath) {
     '-o', outDir,
     '-d', 'cpu',
     '--reading_order', 'auto',
+    // --figure + --figure_letter rescue cards where the layout parser
+    // misclassifies the whole text area as a "figure" because of a
+    // dominant portrait photo (e.g. 中根徹也). Without these flags such
+    // cards return 0 paragraphs.
+    '--figure',
+    '--figure_letter',
     imagePath,
   ])
   const duration_ms = Date.now() - t0
@@ -68,16 +74,40 @@ export async function runYomiToku(imagePath) {
 
   await fsp.rm(outDir, { recursive: true, force: true })
 
-  const paragraphs = (data.paragraphs ?? []).map((p) => ({
-    contents: p.contents ?? '',
-    box: p.box,
-    direction: p.direction ?? 'horizontal',
-    order: p.order,
-  }))
+  const paragraphs = extractParagraphs(data)
   const figures = (data.figures ?? []).map((f) => ({ box: f.box }))
   const raw_text = paragraphs.map((p) => p.contents).join('\n')
 
   return { paragraphs, figures, raw_text, duration_ms }
+}
+
+/**
+ * YomiToku emits paragraphs at the top level AND nested inside `figures[]`
+ * when --figure_letter is set. Flatten both sources into one paragraph list
+ * preserving order so the downstream heuristic sees everything.
+ */
+function extractParagraphs(data) {
+  const out = []
+  for (const p of data.paragraphs ?? []) {
+    out.push({
+      contents: p.contents ?? '',
+      box: p.box,
+      direction: p.direction ?? 'horizontal',
+      order: p.order,
+    })
+  }
+  for (const f of data.figures ?? []) {
+    for (const p of f.paragraphs ?? []) {
+      out.push({
+        contents: p.contents ?? '',
+        box: p.box,
+        direction: p.direction ?? 'horizontal',
+        order: p.order ?? Number.MAX_SAFE_INTEGER,
+      })
+    }
+  }
+  out.sort((a, b) => (a.order ?? 0) - (b.order ?? 0))
+  return out
 }
 
 function runProcess(cmd, args) {
@@ -111,6 +141,8 @@ export async function runYomiTokuBatch(imageDir) {
     '-o', outDir,
     '-d', 'cpu',
     '--reading_order', 'auto',
+    '--figure',
+    '--figure_letter',
     imageDir,
   ])
 
@@ -124,12 +156,7 @@ export async function runYomiTokuBatch(imageDir) {
     if (e.startsWith(prefix)) stem = e.slice(prefix.length)
     stem = stem.replace(/_p\d+\.json$/, '').replace(/\.json$/, '')
     const data = JSON.parse(await fsp.readFile(path.join(outDir, e), 'utf8'))
-    const paragraphs = (data.paragraphs ?? []).map((p) => ({
-      contents: p.contents ?? '',
-      box: p.box,
-      direction: p.direction ?? 'horizontal',
-      order: p.order,
-    }))
+    const paragraphs = extractParagraphs(data)
     const figures = (data.figures ?? []).map((f) => ({ box: f.box }))
     const raw_text = paragraphs.map((p) => p.contents).join('\n')
     out.set(stem, { paragraphs, figures, raw_text })

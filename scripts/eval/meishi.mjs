@@ -256,28 +256,36 @@ async function main() {
     })
   }
 
-  // ---- Stage 6b: drop low-signal items (gray frames, near-empty OCR) ----
-  // An item is "low-signal" if it has no canonical contact (no email/phone)
-  // AND raw_text is shorter than 30 chars — those are the gray-frame false
-  // positives or one-line slogan fragments that don't help anyone.
+  // ---- Stage 6b: drop low-signal items (gray frames only) ----
+  // Keep ANY item that has either: (a) a contact field, (b) ≥30 chars of
+  // OCR text, OR (c) a name OR company extracted (heuristic at least found
+  // something meaningful). The previous 50-char-no-contact bar was killing
+  // legitimate cards where YomiToku struggled with low-contrast text (e.g.
+  // winner-021 中根徹也 returned 0 paragraphs entirely).
   const beforeFilter = items.length
   const filtered = items.filter((it) => {
     const f = it.fields
     const hasContact = !!(f.email || f.tel || f.mobile || f.fax)
+    const hasIdent = !!(f.name || f.company)
     const txt = (f.raw_text ?? '').replace(/\s+/g, '')
-    if (hasContact) return true                       // any contact → keep
-    if (txt.length >= 50) return true                  // substantial text → keep (e.g. event card)
+    if (hasContact) return true
+    if (hasIdent) return true
+    if (txt.length >= 30) return true
     return false
   })
   console.log(`[meishi] filter: ${beforeFilter} → ${filtered.length} (dropped ${beforeFilter - filtered.length} low-signal)`)
 
   // ---- Stage 6c: temporal back/front pairing ----
-  // When two adjacent winners (by source frame index) have no canonical-key
-  // intersection AND one has contact + the other has only slogan-y text,
-  // assume they are sides of the same physical card and merge the slogan-side
-  // raw_text into the contact-side as `back_text`.
+  // Pair two adjacent winners only when the "back" side has VERY little
+  // text (likely just a slogan / QR / illustration), the "front" has
+  // contact info, and they are within 3 seconds of each other. Previously
+  // we paired anything-no-contact with anything-with-contact, which
+  // collapsed legitimate weak-OCR cards (e.g. 中根徹也) onto neighboring
+  // cards as fake "back sides".
   const sortedByFrame = [...filtered].sort((a, b) => a.source_frame_idx - b.source_frame_idx)
   const mergedBackIds = new Set()
+  const BACK_MAX_RAW_CHARS = 60
+  const PAIR_MAX_GAP_MS = 3000
   for (let i = 0; i < sortedByFrame.length - 1; i++) {
     const a = sortedByFrame[i]
     const b = sortedByFrame[i + 1]
@@ -286,9 +294,11 @@ async function main() {
     const bContact = !!(b.fields.email || b.fields.tel || b.fields.mobile)
     if (aContact === bContact) continue            // need exactly one with contact
     const gap = Math.abs(b.source_ts_ms - a.source_ts_ms)
-    if (gap > 5000) continue                       // > 5s apart → different cards
+    if (gap > PAIR_MAX_GAP_MS) continue
     const front = aContact ? a : b
     const back = aContact ? b : a
+    const backText = (back.fields.raw_text ?? '').replace(/\s+/g, '')
+    if (backText.length > BACK_MAX_RAW_CHARS) continue // too much text → real card
     front.back_raw_text = back.fields.raw_text
     front.back_item_id = back.id
     mergedBackIds.add(back.id)
