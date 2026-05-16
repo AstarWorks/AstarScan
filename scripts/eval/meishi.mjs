@@ -31,6 +31,7 @@ import {
   warpPerspective,
   computeLaplacian,
 } from './pipeline.mjs'
+import { rotateAndCropQuad } from './lib/rotate-crop.mjs'
 import { jpegToCanvas, canvasToJpegBuffer } from './canvas-utils.mjs'
 import { DocAlignerNodeBackend } from './lib/docaligner-node.mjs'
 import { classifyQuad } from './lib/quad-classify.mjs'
@@ -165,8 +166,12 @@ async function main() {
       frameDropOther++
       continue
     }
-    // Warp to mode-specific target so quality + downstream sizes are stable.
-    const warpedRaw = warpPerspective(canvas, det.quad, cls.target.width, cls.target.height)
+    // Rotate-then-bbox crop (no perspective warp). Preserves the card's
+    // actual aspect EXACTLY and avoids the stretch artifacts that
+    // warpPerspective introduced. long side = mode's TARGET_BASE_LONG so
+    // downstream sizing stays consistent for visual layout.
+    const longSide = Math.max(cls.target.width, cls.target.height)
+    const warpedRaw = rotateAndCropQuad(canvas, det.quad, longSide, 0.05)
 
     // FP filter: reject obvious non-documents (gray frames, wood texture).
     const fp = isLikelyDocument(warpedRaw)

@@ -25,6 +25,7 @@ import type { Quad } from '@astarworks/scan-core'
 
 import { detectDocument } from './doc-detector'
 import { warpPerspective } from './perspective-warper'
+import { rotateAndCropQuad } from './rotate-crop'
 import { DocTracker, type Track, type TrackInput } from './bytetrack-doc'
 import { classifyQuad, type DocumentMode } from './quad-classify'
 import {
@@ -193,12 +194,11 @@ export async function processVideoBatch(
       if (cls.mode === 'other' || (requestedMode !== 'auto' && cls.mode !== requestedMode)) continue
       if (!cls.target) continue
 
-      const warpedRaw = warpPerspective(
-        workCanvas,
-        det.quad,
-        cls.target.width,
-        cls.target.height,
-      )
+      // Rotate-then-bbox crop (no perspective warp). Preserves card's
+      // true aspect ratio without the stretch artifacts warpPerspective
+      // introduces from aspect estimation error.
+      const longSide = Math.max(cls.target.width, cls.target.height)
+      const warpedRaw = rotateAndCropQuad(workCanvas, det.quad, longSide, 0.05)
       // FP filter: reject gray-frame / wood-texture detections
       const fp = isLikelyDocument(warpedRaw)
       if (!fp.ok) continue
