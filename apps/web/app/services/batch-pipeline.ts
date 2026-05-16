@@ -44,6 +44,7 @@ import {
   extractWithLlm,
   type LlmProgress,
 } from './llm-extractor-gemma'
+import { pickBestFrameByLlm } from './llm-best-frame'
 
 export interface BatchProgress {
   readonly stage:
@@ -201,7 +202,8 @@ export async function processVideoBatch(
       // FP filter: reject gray-frame / wood-texture detections
       const fp = isLikelyDocument(warpedRaw)
       if (!fp.ok) continue
-      // Edge refinement: trim leftover background strip from outer ~6 %
+      // Edge refinement: trim leftover background strip from outer ~6 %.
+      // Output dims become (newW, newH) — varies per card.
       const { canvas: warped } = refineCardEdges(warpedRaw)
 
       const lap = computeLaplacian(warped)
@@ -219,8 +221,8 @@ export async function processVideoBatch(
         laplacian: lap,
         score: lap * (det.confidence + 0.1) * (cls.area_fraction + 0.1),
         warpedDataUrl: dataUrl,
-        warpedWidth: cls.target.width,
-        warpedHeight: cls.target.height,
+        warpedWidth: warped.width,
+        warpedHeight: warped.height,
       })
 
       onProgress?.({
@@ -244,7 +246,7 @@ export async function processVideoBatch(
       }
       tracker.step(input)
     }
-    const tracks: Track<AcceptedFrame>[] = tracker.finalize()
+    const tracks: Track<AcceptedFrame>[] = tracker.finalize(3)
 
     // ---- Stage 4: per-track winner field extraction ----
     const extractStage = extractor === 'gemma-webgpu' ? 'llm-extract' : 'ocr'
@@ -253,7 +255,29 @@ export async function processVideoBatch(
     for (let i = 0; i < tracks.length; i++) {
       throwIfAborted()
       const t = tracks[i]!
-      const a = t.bestInput.payload
+
+      // Pick the winning frame within this track. In gemma-webgpu mode
+      // we feed the top-K candidates to the LLM and let it judge
+      // readability; in classical mode we use the highest-score frame.
+      let pickedPayload = t.bestInput.payload
+      if (extractor === 'gemma-webgpu' && t.topKInputs.length > 1) {
+        try {
+          const r = await pickBestFrameByLlm(
+            t.topKInputs.map((inp) => ({
+              id: `${t.id}-${inp.frame_idx}`,
+              imageDataUrl: inp.payload.warpedDataUrl,
+              score: inp.score,
+            })),
+          )
+          pickedPayload = t.topKInputs[r.pickedIndex]!.payload
+          console.log(
+            `[batch-pipeline] LLM picked frame ${r.pickedIndex} of ${t.topKInputs.length} for track ${t.id} (${r.reasoning ?? ''})`,
+          )
+        } catch (err) {
+          console.warn('[batch-pipeline] LLM best-frame failed for track', t.id, err)
+        }
+      }
+      const a = pickedPayload
 
       let fields: ReturnType<typeof extractHeuristic>
       if (extractor === 'gemma-webgpu') {

@@ -31,9 +31,11 @@ export interface QuadClassification {
 
 const ASPECT_BANDS: Record<Exclude<DocumentMode, 'other'>, [number, number]> = {
   card: [1.5, 1.85],
-  'card-tall': [1.85, 2.15],
+  // card-tall extended to 2.5 — event flyers / promotional cards at
+  // aspect 2.0-2.5 are still card-class objects, not receipts.
+  'card-tall': [1.85, 2.5],
   a4: [1.35, 1.5],
-  receipt: [2.2, 5.0],
+  receipt: [2.5, 5.0],
 }
 
 const MIN_AREA_FRACTION = 0.04

@@ -67,6 +67,7 @@ export class DocTracker {
       track = best
       track.lastFrame = item.frame_idx
       track.lastQuad = item.quad
+      track.allItems.push(item)
       if ((item.score ?? 0) > (track.bestScore ?? -Infinity)) {
         track.bestScore = item.score
         track.bestItem = item
@@ -79,20 +80,25 @@ export class DocTracker {
         lastQuad: item.quad,
         bestScore: item.score ?? 0,
         bestItem: item,
+        allItems: [item],
       }
       this.tracks.set(track.id, track)
     }
     return { ...item, track_id: track.id }
   }
 
-  /** Return tracks (one per identity), each with bestItem already chosen. */
-  finalize() {
-    return [...this.tracks.values()].map((t) => ({
-      id: t.id,
-      mode: t.mode,
-      bestItem: t.bestItem,
-      lastFrame: t.lastFrame,
-    }))
+  /** Return tracks (one per identity), each with bestItem + topK candidates. */
+  finalize(k = 3) {
+    return [...this.tracks.values()].map((t) => {
+      const sorted = [...t.allItems].sort((a, b) => (b.score ?? 0) - (a.score ?? 0))
+      return {
+        id: t.id,
+        mode: t.mode,
+        bestItem: t.bestItem,
+        topKItems: sorted.slice(0, k),
+        lastFrame: t.lastFrame,
+      }
+    })
   }
 }
 

@@ -30,6 +30,7 @@ interface TrackState<T> {
   lastQuad: Quad
   bestScore: number
   bestInput: TrackInput<T>
+  allInputs: TrackInput<T>[]
 }
 
 export interface Track<T> {
@@ -37,6 +38,8 @@ export interface Track<T> {
   readonly mode: DocumentMode
   readonly lastFrame: number
   readonly bestInput: TrackInput<T>
+  /** All inputs that were assigned to this track, sorted by score desc. */
+  readonly topKInputs: readonly TrackInput<T>[]
 }
 
 export interface DocTrackerOpts {
@@ -97,6 +100,7 @@ export class DocTracker<T> {
       track = best
       track.lastFrame = input.frame_idx
       track.lastQuad = input.quad
+      track.allInputs.push(input)
       if (input.score > track.bestScore) {
         track.bestScore = input.score
         track.bestInput = input
@@ -109,18 +113,23 @@ export class DocTracker<T> {
         lastQuad: input.quad,
         bestScore: input.score,
         bestInput: input,
+        allInputs: [input],
       }
       this.#tracks.set(track.id, track)
     }
     return { input, track_id: track.id }
   }
 
-  finalize(): Track<T>[] {
-    return [...this.#tracks.values()].map((t) => ({
-      id: t.id,
-      mode: t.mode,
-      lastFrame: t.lastFrame,
-      bestInput: t.bestInput,
-    }))
+  finalize(k = 3): Track<T>[] {
+    return [...this.#tracks.values()].map((t) => {
+      const sorted = [...t.allInputs].sort((a, b) => b.score - a.score)
+      return {
+        id: t.id,
+        mode: t.mode,
+        lastFrame: t.lastFrame,
+        bestInput: t.bestInput,
+        topKInputs: sorted.slice(0, k),
+      }
+    })
   }
 }

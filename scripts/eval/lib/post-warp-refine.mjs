@@ -163,10 +163,22 @@ function lineStrengthCol(sobelData, w, h, c) {
 /**
  * Trim the outer few pixels of background from a warped card image.
  *
- * Returns an OBJECT { canvas, inset: { top, bottom, left, right } } so
- * callers can log how much was trimmed.
+ * IMPORTANT: returns the canvas at the CROPPED dimensions (newW, newH),
+ * NOT resized back to (W, H). Resizing back would stretch the content
+ * non-uniformly when insets are asymmetric (e.g. left=5 + right=15) and
+ * distort the card's aspect ratio. Callers must handle variable output
+ * dimensions.
+ *
+ * Returns { canvas, inset: { top, bottom, left, right } } so callers can
+ * log how much was trimmed.
  */
 export function refineCardEdges(canvas) {
+  // Edge detection still happens via OpenCV for the Sobel pass, but the
+  // actual cropping uses canvas-native drawImage — going through cv.roi
+  // + cv.imshow produced garbled output (the @techstark/opencv-js roi
+  // returns a non-contiguous view whose `mat.data` doesn't line up with
+  // our cv.imshow bridge's flat Uint8ClampedArray copy, even after
+  // .clone()).
   const src = cv.imread(canvas)
   const gray = new cv.Mat()
   try {
@@ -177,27 +189,17 @@ export function refineCardEdges(canvas) {
       left: findEdgeInset(gray, 'left'),
       right: findEdgeInset(gray, 'right'),
     }
-    const W = src.cols
-    const H = src.rows
-    const newX = inset.left
-    const newY = inset.top
+    const W = canvas.width
+    const H = canvas.height
     const newW = W - inset.left - inset.right
     const newH = H - inset.top - inset.bottom
     if (newW <= 0 || newH <= 0 || (newW === W && newH === H)) {
       return { canvas, inset }
     }
-    const rect = new cv.Rect(newX, newY, newW, newH)
-    const cropped = src.roi(rect)
-    const resized = new cv.Mat()
-    try {
-      cv.resize(cropped, resized, new cv.Size(W, H), 0, 0, cv.INTER_LINEAR)
-      const out = newCanvas(W, H)
-      cv.imshow(out, resized)
-      return { canvas: out, inset }
-    } finally {
-      cropped.delete()
-      resized.delete()
-    }
+    const out = newCanvas(newW, newH)
+    const ctx = out.getContext('2d')
+    ctx.drawImage(canvas, inset.left, inset.top, newW, newH, 0, 0, newW, newH)
+    return { canvas: out, inset }
   } finally {
     src.delete()
     gray.delete()

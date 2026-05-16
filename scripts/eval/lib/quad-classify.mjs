@@ -19,9 +19,13 @@
 
 const ASPECT_BANDS = {
   card: [1.5, 1.85],
-  'card-tall': [1.85, 2.15],
+  // card-tall extended to 2.5 to catch event flyers / promotional cards
+  // that have slightly elongated proportions but are still business-card
+  // class objects (e.g. 倫理法人会 event flyer at aspect 2.475).
+  // Real receipts (long thermal-printed strips) only start at 2.5+.
+  'card-tall': [1.85, 2.5],
   a4: [1.35, 1.5],
-  receipt: [2.2, 5.0],
+  receipt: [2.5, 5.0],
 }
 
 const MIN_AREA_FRACTION = 0.04

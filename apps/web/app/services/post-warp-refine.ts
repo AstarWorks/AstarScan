@@ -19,7 +19,8 @@
  * OpenCV.js hot path. Speeds: ~5-10 ms per call on a typical card.
  */
 
-import { newCanvasLike } from './canvas-helpers'
+import { newCanvas, newCanvasLike } from './canvas-helpers'
+// newCanvasLike kept available for callers needing same-dim canvases
 
 const VARIANCE_MIN = 200
 const EDGE_DENSITY_MIN = 0.005
@@ -240,10 +241,12 @@ export function refineCardEdges(canvas: HTMLCanvasElement): RefineResult {
   if (newW <= 0 || newH <= 0 || (inset.top === 0 && inset.bottom === 0 && inset.left === 0 && inset.right === 0)) {
     return { canvas, inset }
   }
-  // Crop + resize back to original dims via 2 drawImage calls
-  const out = newCanvasLike(canvas)
+  // CRITICAL: do NOT resize back to (W, H). Asymmetric insets would
+  // stretch content non-uniformly and distort the card aspect.
+  // Output at the cropped dims so the actual card proportions survive.
+  const out = newCanvas(newW, newH)
   const ctx = out.getContext('2d')
   if (!ctx) return { canvas, inset }
-  ctx.drawImage(canvas, inset.left, inset.top, newW, newH, 0, 0, W, H)
+  ctx.drawImage(canvas, inset.left, inset.top, newW, newH, 0, 0, newW, newH)
   return { canvas: out, inset }
 }
