@@ -37,6 +37,7 @@ import {
   type DedupCluster,
 } from './canonical-dedup'
 import { initOcr, runOcr, type OcrResult } from './ocr-service'
+import { isLikelyDocument, refineCardEdges } from './post-warp-refine'
 
 export interface BatchProgress {
   readonly stage:
@@ -166,12 +167,18 @@ export async function processVideoBatch(
       if (cls.mode === 'other' || (requestedMode !== 'auto' && cls.mode !== requestedMode)) continue
       if (!cls.target) continue
 
-      const warped = warpPerspective(
+      const warpedRaw = warpPerspective(
         workCanvas,
         det.quad,
         cls.target.width,
         cls.target.height,
       )
+      // FP filter: reject gray-frame / wood-texture detections
+      const fp = isLikelyDocument(warpedRaw)
+      if (!fp.ok) continue
+      // Edge refinement: trim leftover background strip from outer ~6 %
+      const { canvas: warped } = refineCardEdges(warpedRaw)
+
       const lap = computeLaplacian(warped)
       if (lap < minLap) continue
 

@@ -38,6 +38,7 @@ import { DocTracker } from './lib/bytetrack-doc.mjs'
 import { runYomiTokuBatch } from './lib/ocr-yomitoku.mjs'
 import { extractHeuristic } from './lib/extractor-heuristic.mjs'
 import { clusterByCanonicalKey } from './lib/canonical-dedup.mjs'
+import { isLikelyDocument, refineCardEdges } from './lib/post-warp-refine.mjs'
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url))
 const REPO_ROOT = path.resolve(__dirname, '../..')
@@ -152,6 +153,7 @@ async function main() {
   let frameDetCount = 0
   let frameDropOther = 0
   let frameDropBlur = 0
+  let frameDropFp = 0
   for (const f of frames) {
     const canvas = await jpegToCanvas(f.path)
     const det = await detector.detect(canvas)
@@ -163,7 +165,18 @@ async function main() {
       continue
     }
     // Warp to mode-specific target so quality + downstream sizes are stable.
-    const warped = warpPerspective(canvas, det.quad, cls.target.width, cls.target.height)
+    const warpedRaw = warpPerspective(canvas, det.quad, cls.target.width, cls.target.height)
+
+    // FP filter: reject obvious non-documents (gray frames, wood texture).
+    const fp = isLikelyDocument(warpedRaw)
+    if (!fp.ok) {
+      frameDropFp++
+      continue
+    }
+
+    // Edge refinement: trim residual background pixels from outer ~5 %.
+    const { canvas: warped, inset } = refineCardEdges(warpedRaw)
+
     const lap = computeLaplacian(warped)
     if (lap < args.minLaplacian) {
       frameDropBlur++
@@ -181,6 +194,9 @@ async function main() {
       score: lap * (det.confidence + 0.1) * (cls.area_fraction + 0.1),
       target: cls.target,
       warpedBuf: canvasToJpegBuffer(warped, 88),
+      refine_inset: inset,
+      content_variance: fp.variance,
+      content_edge_density: fp.edgeDensity,
     })
     if (frames.length > 50 && (f.idx + 1) % 50 === 0) {
       console.log(`  [${f.idx + 1}/${frames.length}] det=${frameDetCount} accepted=${accepted.length}`)
@@ -188,7 +204,7 @@ async function main() {
   }
   console.log(`[meishi] detect: ${frames.length} frames → ` +
     `det=${frameDetCount} accepted=${accepted.length} ` +
-    `(drop-other=${frameDropOther} drop-blur=${frameDropBlur}) ` +
+    `(drop-other=${frameDropOther} drop-fp=${frameDropFp} drop-blur=${frameDropBlur}) ` +
     `in ${Date.now() - tDetect} ms`)
 
   // ---- Stage 3: ByteTrack-style identity tracker ----
