@@ -39,6 +39,7 @@ import { runYomiTokuBatch } from './lib/ocr-yomitoku.mjs'
 import { extractHeuristic } from './lib/extractor-heuristic.mjs'
 import { clusterByCanonicalKey } from './lib/canonical-dedup.mjs'
 import { isLikelyDocument, refineCardEdges } from './lib/post-warp-refine.mjs'
+import { visualDedup } from './lib/visual-dedup.mjs'
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url))
 const REPO_ROOT = path.resolve(__dirname, '../..')
@@ -52,7 +53,7 @@ function parseArgs(argv) {
     out: null,
     detector: 'lcnet100',
     mode: 'auto',
-    minLaplacian: 50,
+    minLaplacian: 20,
     minConfidence: 0.1,
     keepFrames: false,
   }
@@ -331,7 +332,7 @@ async function main() {
   for (const c of clusters) {
     for (const m of c.member_ids) idToCluster.set(m, c)
   }
-  const finalItems = []
+  let finalItems = []
   for (const it of afterPairing) {
     const c = idToCluster.get(it.id)
     if (!c || c.winner_id !== it.id) continue
@@ -349,6 +350,37 @@ async function main() {
       })),
     })
   }
+
+  // ---- Stage 7b: visual dedup for no-contact items (pHash) ----
+  // Catches the case where the same physical event card / slogan back is
+  // filmed twice from different angles. Both surface as separate winners
+  // because they have no contact, so canonical-key dedup can't merge them.
+  const idToWinnerBuf = new Map()
+  for (const w of winners) {
+    idToWinnerBuf.set(w.stem, w.bestItem.warpedBuf)
+  }
+  const visualResult = await visualDedup(
+    finalItems.map((it) => ({
+      id: it.id,
+      warpedBuf: idToWinnerBuf.get(it.id),
+      score: it.score,
+      hasContact: !!(it.fields.email || it.fields.tel || it.fields.mobile),
+    })),
+    50,
+  )
+  const visualKeepSet = new Set(visualResult.winnerIds)
+  const visualDroppedCount = finalItems.length - visualKeepSet.size
+  // Attribute dropped ids to their visual-winner
+  for (const it of finalItems) {
+    if (visualKeepSet.has(it.id)) continue
+    const winnerId = visualResult.droppedIds.get(it.id)
+    const winner = finalItems.find((x) => x.id === winnerId)
+    if (winner) {
+      winner.dedup_dropped = [...winner.dedup_dropped, it.id]
+    }
+  }
+  finalItems = finalItems.filter((it) => visualKeepSet.has(it.id))
+  console.log(`[meishi] visual dedup: dropped ${visualDroppedCount} near-duplicate item(s)`)
 
   // Rename final winners to item-XX.<mode>.jpg in items/ for clarity.
   const sorted = finalItems.sort((a, b) => a.source_frame_idx - b.source_frame_idx)

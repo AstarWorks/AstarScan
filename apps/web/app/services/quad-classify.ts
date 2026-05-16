@@ -39,11 +39,14 @@ const ASPECT_BANDS: Record<Exclude<DocumentMode, 'other'>, [number, number]> = {
 const MIN_AREA_FRACTION = 0.04
 const MAX_AREA_FRACTION = 0.97
 
-const TARGET_SIZE: Record<Exclude<DocumentMode, 'other'>, { width: number; height: number }> = {
-  card: { width: 1010, height: 636 },
-  'card-tall': { width: 1100, height: 550 },
-  a4: { width: 1200, height: 1696 },
-  receipt: { width: 600, height: 1500 },
+// Mode-specific BASE long-side pixel count. Actual target dims are derived
+// from the detected quad's own aspect ratio so warpPerspective doesn't
+// squash a 1.7:1 card to a 1.59:1 rectangle.
+const TARGET_BASE_LONG: Record<Exclude<DocumentMode, 'other'>, number> = {
+  card: 1010,
+  'card-tall': 1100,
+  a4: 1696,
+  receipt: 1500,
 }
 
 function dist(a: { x: number; y: number }, b: { x: number; y: number }): number {
@@ -133,7 +136,12 @@ export function classifyQuad(
     [number, number],
   ][]) {
     if (r >= lo && r <= hi) {
-      return { mode, aspect, area_fraction, target: TARGET_SIZE[mode] }
+      const longSide = TARGET_BASE_LONG[mode]
+      const shortSide = Math.round(longSide / r)
+      const target = aspect >= 1
+        ? { width: longSide, height: shortSide }
+        : { width: shortSide, height: longSide }
+      return { mode, aspect, area_fraction, target }
     }
   }
   return {

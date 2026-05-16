@@ -38,12 +38,20 @@ import {
 } from './canonical-dedup'
 import { initOcr, runOcr, type OcrResult } from './ocr-service'
 import { isLikelyDocument, refineCardEdges } from './post-warp-refine'
+import { visualDedup } from './visual-dedup'
+import {
+  ensureLlmReady,
+  extractWithLlm,
+  type LlmProgress,
+} from './llm-extractor-gemma'
 
 export interface BatchProgress {
   readonly stage:
     | 'frame-extract'
     | 'detect'
     | 'ocr'
+    | 'llm-load'
+    | 'llm-extract'
     | 'extract'
     | 'dedup'
     | 'done'
@@ -54,11 +62,14 @@ export interface BatchProgress {
 
 export type BatchProgressCallback = (p: BatchProgress) => void
 
+export type ExtractorKind = 'classical' | 'gemma-webgpu'
+
 export interface BatchOptions {
   readonly fps?: number
   readonly minLaplacian?: number
   readonly minConfidence?: number
   readonly mode?: 'auto' | DocumentMode
+  readonly extractor?: ExtractorKind
   readonly onProgress?: BatchProgressCallback
   readonly signal?: AbortSignal
 }
@@ -124,9 +135,10 @@ export async function processVideoBatch(
   options: BatchOptions = {},
 ): Promise<BatchItem[]> {
   const fps = options.fps ?? 5
-  const minLap = options.minLaplacian ?? 50
+  const minLap = options.minLaplacian ?? 20
   const minConf = options.minConfidence ?? 0.1
   const requestedMode = options.mode ?? 'auto'
+  const extractor = options.extractor ?? 'classical'
   const onProgress = options.onProgress
   const signal = options.signal
 
@@ -134,7 +146,20 @@ export async function processVideoBatch(
     if (signal?.aborted) throw new Error('Batch processing aborted')
   }
 
-  await initOcr() // pre-load OCR while frame extraction runs
+  if (extractor === 'classical') {
+    await initOcr() // pre-load OCR while frame extraction runs
+  } else {
+    // Pre-load the LLM model upfront so the first per-card call is fast
+    onProgress?.({ stage: 'llm-load', current: 0, total: 1, note: 'Gemma 4 E2B 起動中…' })
+    await ensureLlmReady((p: LlmProgress) => {
+      onProgress?.({
+        stage: 'llm-load',
+        current: Math.round((p.progress ?? 0) * 100),
+        total: 100,
+        note: p.file ?? p.note ?? '',
+      })
+    })
+  }
 
   // ---- Stage 1: open the video, count its frames ----
   const videoUrl = URL.createObjectURL(file)
@@ -221,21 +246,35 @@ export async function processVideoBatch(
     }
     const tracks: Track<AcceptedFrame>[] = tracker.finalize()
 
-    // ---- Stage 4: OCR per track winner ----
-    onProgress?.({ stage: 'ocr', current: 0, total: tracks.length })
+    // ---- Stage 4: per-track winner field extraction ----
+    const extractStage = extractor === 'gemma-webgpu' ? 'llm-extract' : 'ocr'
+    onProgress?.({ stage: extractStage, current: 0, total: tracks.length })
     const winners: WinnerItem[] = []
     for (let i = 0; i < tracks.length; i++) {
       throwIfAborted()
       const t = tracks[i]!
       const a = t.bestInput.payload
-      let ocrResult: OcrResult | null = null
-      try {
-        ocrResult = await runOcr(a.warpedDataUrl)
-      } catch (err) {
-        console.warn('[batch-pipeline] OCR failed for track', t.id, err)
+
+      let fields: ReturnType<typeof extractHeuristic>
+      if (extractor === 'gemma-webgpu') {
+        try {
+          const r = await extractWithLlm(a.warpedDataUrl)
+          fields = r.fields
+        } catch (err) {
+          console.warn('[batch-pipeline] LLM failed for track', t.id, err)
+          fields = extractHeuristic([])
+        }
+      } else {
+        let ocrResult: OcrResult | null = null
+        try {
+          ocrResult = await runOcr(a.warpedDataUrl)
+        } catch (err) {
+          console.warn('[batch-pipeline] OCR failed for track', t.id, err)
+        }
+        const paragraphs = ocrResult ? ocrLinesToParagraphs(ocrResult) : []
+        fields = extractHeuristic(paragraphs)
       }
-      const paragraphs = ocrResult ? ocrLinesToParagraphs(ocrResult) : []
-      const fields = extractHeuristic(paragraphs)
+
       winners.push({
         id: `winner-${String(i).padStart(3, '0')}`,
         mode: a.mode,
@@ -249,7 +288,7 @@ export async function processVideoBatch(
         score: a.score,
         fields,
       })
-      onProgress?.({ stage: 'ocr', current: i + 1, total: tracks.length })
+      onProgress?.({ stage: extractStage, current: i + 1, total: tracks.length })
     }
 
     // ---- Stage 5: filter + pair + dedup ----
@@ -290,10 +329,33 @@ export async function processVideoBatch(
       for (const id of c.member_ids) winnerToCluster.set(id, c)
     }
 
+    // Visual dedup for items without canonical contact key (catches event
+    // cards filmed twice from different angles).
+    const visualInputs = afterPair
+      .filter((it) => winnerToCluster.get(it.id)?.winner_id === it.id)
+      .map((it) => {
+        const img = new Image()
+        img.src = it.imageDataUrl
+        const canvas = document.createElement('canvas')
+        canvas.width = it.width
+        canvas.height = it.height
+        const ctx = canvas.getContext('2d')
+        if (ctx) ctx.drawImage(img, 0, 0)
+        return {
+          id: it.id,
+          canvas,
+          score: it.score,
+          hasContact: !!(it.fields.email || it.fields.tel || it.fields.mobile),
+        }
+      })
+    const vis = visualDedup(visualInputs, 50)
+    const visKeep = new Set(vis.winnerIds)
+
     const final: BatchItem[] = []
     for (const it of afterPair) {
       const c = winnerToCluster.get(it.id)
       if (!c || c.winner_id !== it.id) continue
+      if (!visKeep.has(it.id)) continue
       final.push({
         id: it.id,
         mode: it.mode,

@@ -27,11 +27,14 @@ const ASPECT_BANDS = {
 const MIN_AREA_FRACTION = 0.04
 const MAX_AREA_FRACTION = 0.97
 
-const TARGET_SIZE = {
-  card: { width: 1010, height: 636 },
-  'card-tall': { width: 1100, height: 550 },
-  a4: { width: 1200, height: 1696 },
-  receipt: { width: 600, height: 1500 },
+// Mode-specific BASE long-side pixel count. The actual target dimensions
+// are derived from the detected quad's own aspect ratio (see classifyQuad)
+// so warpPerspective doesn't squash a 1.7:1 card to a 1.59:1 rectangle.
+const TARGET_BASE_LONG = {
+  card: 1010,
+  'card-tall': 1100,
+  a4: 1696,
+  receipt: 1500,
 }
 
 function dist(a, b) {
@@ -122,7 +125,17 @@ export function classifyQuad(quad, frameW, frameH) {
 
   for (const [mode, [lo, hi]] of Object.entries(ASPECT_BANDS)) {
     if (r >= lo && r <= hi) {
-      return { mode, aspect, area_fraction, target: TARGET_SIZE[mode] }
+      // Derive target dims from the quad's OWN aspect (not a fixed
+      // mode size) so the warp preserves the card's natural proportions.
+      // The long side is fixed to TARGET_BASE_LONG[mode] for consistent
+      // downstream resolution; the short side is computed from r.
+      const longSide = TARGET_BASE_LONG[mode]
+      const shortSide = Math.round(longSide / r)
+      // Honor orientation: if aspect >= 1 (landscape) width=long, else height=long
+      const target = aspect >= 1
+        ? { width: longSide, height: shortSide }
+        : { width: shortSide, height: longSide }
+      return { mode, aspect, area_fraction, target }
     }
   }
   return { mode: 'other', aspect, area_fraction, rejection_reason: `aspect-out-of-band:${r.toFixed(2)}` }
@@ -132,7 +145,7 @@ export const QUAD_CLASSIFY_DEFAULTS = {
   ASPECT_BANDS,
   MIN_AREA_FRACTION,
   MAX_AREA_FRACTION,
-  TARGET_SIZE,
+  TARGET_BASE_LONG,
 }
 
 // ---- CLI smoke test --------------------------------------------------------

@@ -33,6 +33,7 @@
       "dependencies": {
         "@astarworks/scan-core": "workspace:*",
         "@astarworks/scan-vue": "workspace:*",
+        "@huggingface/transformers": "^4.2.0",
         "@tailwindcss/vite": "^4",
         "@vite-pwa/nuxt": "^1.1.1",
         "class-variance-authority": "^0.7.1",

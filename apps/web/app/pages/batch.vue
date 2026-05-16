@@ -12,7 +12,12 @@
  */
 
 import { ref, computed } from 'vue'
-import { processVideoBatch, type BatchItem, type BatchProgress } from '~/services/batch-pipeline'
+import {
+  processVideoBatch,
+  type BatchItem,
+  type BatchProgress,
+  type ExtractorKind,
+} from '~/services/batch-pipeline'
 
 const fileInput = ref<HTMLInputElement | null>(null)
 const selectedFile = ref<File | null>(null)
@@ -20,6 +25,7 @@ const isProcessing = ref(false)
 const progress = ref<BatchProgress | null>(null)
 const items = ref<BatchItem[]>([])
 const errorMessage = ref<string | null>(null)
+const extractor = ref<ExtractorKind>('classical')
 let abortController: AbortController | null = null
 
 const fileSizeLabel = computed(() => {
@@ -58,6 +64,7 @@ async function startProcessing() {
     const result = await processVideoBatch(selectedFile.value, {
       fps: 5,
       mode: 'auto',
+      extractor: extractor.value,
       onProgress: (p) => {
         progress.value = p
       },
@@ -111,6 +118,8 @@ const stageLabel = computed(() => {
     'frame-extract': 'フレーム抽出',
     detect: '検出',
     ocr: 'OCR 解析',
+    'llm-load': 'LLM model 読込中',
+    'llm-extract': 'LLM 抽出',
     extract: 'フィールド抽出',
     dedup: '重複除去',
     done: '完了',
@@ -141,6 +150,17 @@ const stageLabel = computed(() => {
         <strong>{{ selectedFile.name }}</strong>
         <span class="size">{{ fileSizeLabel }}</span>
       </div>
+      <fieldset class="extractor-pick" :disabled="isProcessing">
+        <legend>抽出 model:</legend>
+        <label>
+          <input v-model="extractor" type="radio" value="classical" />
+          NDLOCR + heuristic (軽量 / 全端末)
+        </label>
+        <label>
+          <input v-model="extractor" type="radio" value="gemma-webgpu" />
+          Gemma 4 E2B (WebGPU 必須 / 初回 ~3 GB DL / 高精度)
+        </label>
+      </fieldset>
       <div class="controls">
         <button
           v-if="!isProcessing"
