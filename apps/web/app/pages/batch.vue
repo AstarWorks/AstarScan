@@ -255,7 +255,36 @@ const stageLabel = computed(() => {
       エラー: {{ errorMessage }}
     </section>
 
-    <section v-if="items.length > 0" class="results">
+    <section v-if="selectedItem" class="detail-view">
+      <header class="detail-header">
+        <button class="back-btn" @click="closeDetail">← 一覧に戻る</button>
+        <h2>{{ selectedItem.id }} <span class="mode" :class="`mode-${selectedItem.mode}`">{{ selectedItem.mode }}</span></h2>
+        <small>
+          frame={{ selectedItem.source_frame_idx }}
+          | t={{ (selectedItem.source_ts_ms / 1000).toFixed(1) }}s
+          | lap={{ Math.round(selectedItem.laplacian) }}
+          | conf={{ selectedItem.detector_confidence.toFixed(3) }}
+          | {{ selectedItem.width }}×{{ selectedItem.height }}px
+        </small>
+      </header>
+      <div class="detail-body">
+        <img :src="selectedItem.imageDataUrl" :alt="selectedItem.id" class="detail-image"/>
+        <table class="detail-fields">
+          <tbody>
+            <tr v-for="(v, k) in selectedItem.fields" :key="k">
+              <th>{{ k }}</th>
+              <td>
+                <span v-if="Array.isArray(v)">{{ v.join(', ') || '—' }}</span>
+                <pre v-else-if="k === 'raw_text'">{{ v || '—' }}</pre>
+                <span v-else>{{ v ?? '—' }}</span>
+              </td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+    </section>
+
+    <section v-else-if="items.length > 0" class="results">
       <header class="results-header">
         <h2>抽出結果 ({{ items.length }} 件 / うち連絡先付き {{ validItemCount }} 件)</h2>
         <div class="download-buttons">
@@ -343,40 +372,6 @@ const stageLabel = computed(() => {
       </div>
     </section>
 
-    <Teleport to="body">
-      <div
-        v-if="selectedItem"
-        class="modal-overlay"
-        @click.self="closeDetail"
-      >
-        <div class="modal-content">
-          <button class="modal-close" @click="closeDetail" aria-label="閉じる">×</button>
-          <img :src="selectedItem.imageDataUrl" :alt="selectedItem.id" class="modal-image"/>
-          <div class="modal-meta">
-            <h3>{{ selectedItem.id }} <span class="mode" :class="`mode-${selectedItem.mode}`">{{ selectedItem.mode }}</span></h3>
-            <small>
-              frame={{ selectedItem.source_frame_idx }}
-              t={{ (selectedItem.source_ts_ms / 1000).toFixed(1) }}s
-              lap={{ Math.round(selectedItem.laplacian) }}
-              conf={{ selectedItem.detector_confidence.toFixed(3) }}
-              {{ selectedItem.width }}×{{ selectedItem.height }}px
-            </small>
-            <table class="modal-fields">
-              <tbody>
-                <tr v-for="(v, k) in selectedItem.fields" :key="k">
-                  <th>{{ k }}</th>
-                  <td>
-                    <span v-if="Array.isArray(v)">{{ v.join(', ') || '—' }}</span>
-                    <pre v-else-if="k === 'raw_text'">{{ v || '—' }}</pre>
-                    <span v-else>{{ v ?? '—' }}</span>
-                  </td>
-                </tr>
-              </tbody>
-            </table>
-          </div>
-        </div>
-      </div>
-    </Teleport>
   </div>
 </template>
 
@@ -523,45 +518,51 @@ button:disabled {
   outline-offset: 2px;
 }
 
-/* ---- Detail modal ---- */
-.modal-overlay {
-  position: fixed;
-  inset: 0;
-  background: rgba(0, 0, 0, 0.7);
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  z-index: 1000;
-  padding: 24px;
-}
-.modal-content {
+/* ---- Detail view (in-page, no overlay) ---- */
+.detail-view {
   background: white;
+  border: 1px solid #e5e7eb;
   border-radius: 12px;
-  max-width: 1100px;
-  max-height: 90vh;
-  width: 100%;
-  display: flex;
-  gap: 20px;
   padding: 24px;
-  position: relative;
-  overflow-y: auto;
+  margin-bottom: 16px;
 }
-.modal-close {
-  position: absolute;
-  top: 8px;
-  right: 8px;
-  background: transparent;
-  border: none;
-  font-size: 1.6rem;
-  cursor: pointer;
-  color: #666;
-  padding: 4px 12px;
+.detail-header {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding-bottom: 16px;
+  border-bottom: 1px solid #eee;
+  margin-bottom: 16px;
+}
+.detail-header h2 {
+  margin: 0;
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  font-size: 1.25rem;
+}
+.detail-header small {
+  color: #888;
+  font-size: 0.85rem;
+}
+.back-btn {
+  background: #f3f4f6;
+  border: 1px solid #d1d5db;
+  color: #001f42;
+  padding: 8px 14px;
   border-radius: 6px;
+  cursor: pointer;
+  font-weight: 500;
+  width: max-content;
 }
-.modal-close:hover {
-  background: #f0f0f0;
+.back-btn:hover {
+  background: #e5e7eb;
 }
-.modal-image {
+.detail-body {
+  display: flex;
+  gap: 24px;
+}
+.detail-image {
   flex: 1 1 60%;
   max-width: 60%;
   max-height: 80vh;
@@ -569,56 +570,41 @@ button:disabled {
   background: #fafafa;
   border-radius: 6px;
 }
-.modal-meta {
+.detail-fields {
   flex: 1 1 40%;
-  overflow-y: auto;
   min-width: 280px;
-}
-.modal-meta h3 {
-  margin: 0 0 4px;
-  font-size: 1.1rem;
-  display: flex;
-  align-items: baseline;
-  gap: 8px;
-}
-.modal-meta small {
-  color: #888;
-  display: block;
-  margin-bottom: 12px;
-  font-size: 0.8rem;
-}
-.modal-fields {
   border-collapse: collapse;
-  width: 100%;
-  font-size: 0.9rem;
+  font-size: 0.92rem;
+  align-self: flex-start;
 }
-.modal-fields th {
+.detail-fields th {
   text-align: left;
   color: #666;
   font-weight: 500;
-  padding: 4px 12px 4px 0;
+  padding: 6px 12px 6px 0;
   vertical-align: top;
-  width: 100px;
+  width: 110px;
   white-space: nowrap;
 }
-.modal-fields td {
-  padding: 4px 0;
+.detail-fields td {
+  padding: 6px 0;
   word-break: break-word;
 }
-.modal-fields pre {
+.detail-fields pre {
   background: #fafafa;
-  padding: 8px;
-  border-radius: 4px;
+  padding: 10px;
+  border-radius: 6px;
   margin: 0;
   white-space: pre-wrap;
   word-break: break-all;
-  font-size: 0.78rem;
-  max-height: 240px;
+  font-size: 0.82rem;
+  max-height: 280px;
   overflow-y: auto;
+  border: 1px solid #eee;
 }
 @media (max-width: 800px) {
-  .modal-content { flex-direction: column; }
-  .modal-image, .modal-meta { max-width: 100%; flex: 0 0 auto; }
+  .detail-body { flex-direction: column; }
+  .detail-image, .detail-fields { max-width: 100%; flex: 0 0 auto; }
 }
 .card--valid {
   border-color: #10b981;
