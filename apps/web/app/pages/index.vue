@@ -28,7 +28,8 @@ import jsPDF from 'jspdf'
 import type { Quad } from '@astarworks/scan-core'
 
 import { detectDocument, ensureDocDetector, getDetectorSource } from '~/services/doc-detector'
-import { warpPerspective } from '~/services/perspective-warper'
+import { rotateAndCropQuad } from '~/services/rotate-crop'
+import { classifyQuad } from '~/services/quad-classify'
 import { computePHash, computeTilePHash } from '~/services/phash-dedup'
 import { FrameCollector, type DetectedFrame } from '~/services/frame-collector'
 import { mergeClustersByOrb } from '~/services/orb-merge'
@@ -47,8 +48,7 @@ interface Page {
   capturedAt: number
 }
 
-const EXTRACT_W = 1200
-const EXTRACT_H = 1600
+const LONG_SIDE_DEFAULT = 1200   // mode 別: card 1010 / a4 1696 / receipt 1500
 /** Dense sampling — a handheld page turn only gives 2-4 genuinely sharp
  *  frames per page (the moments when the hand pauses). Sampling at 0.5 s
  *  routinely missed them; 0.1 s (10 FPS) puts ~5× more candidates per
@@ -423,7 +423,13 @@ async function processFrame(video: HTMLVideoElement): Promise<void> {
 
   detectedFrames += 1
 
-  const warped = warpPerspective(work, detection.quad, EXTRACT_W, EXTRACT_H)
+  // Aspect-preserving crop: derive long side from the detected mode.
+  // No more 1200×1600 stretch — landscape cards stay landscape.
+  const cls = classifyQuad(detection.quad, work.width, work.height)
+  const longSide = cls.target
+    ? Math.max(cls.target.width, cls.target.height)
+    : LONG_SIDE_DEFAULT
+  const warped = rotateAndCropQuad(work, detection.quad, longSide, 0.03)
   const hash = computePHash(warped)
   const tileHash = computeTilePHash(warped)
   const lap = computeLaplacian(warped)
@@ -836,7 +842,7 @@ const canExport = computed(
       <video
         ref="videoRef"
         class="viewport__video"
-        :class="{ 'viewport__video--hidden': phase === 'idle' }"
+        :class="{ 'viewport__video--hidden': phase === 'idle' || !!selectedPage }"
         playsinline
         muted
       />
@@ -844,10 +850,25 @@ const canExport = computed(
         v-if="debugMode"
         ref="overlayRef"
         class="viewport__overlay"
-        :class="{ 'viewport__overlay--hidden': phase === 'idle' }"
+        :class="{ 'viewport__overlay--hidden': phase === 'idle' || !!selectedPage }"
       />
 
-      <div v-if="phase === 'idle'" class="splash">
+      <!-- thumb クリック時はメイン viewport を preview に占有 -->
+      <div v-if="selectedPage" class="viewport__preview">
+        <img :src="selectedPage.dataUrl" alt="page preview" class="viewport__preview-img"/>
+        <button
+          type="button"
+          class="viewport__preview-close"
+          aria-label="閉じる"
+          @click="closePageDetail"
+        >×</button>
+        <small class="viewport__preview-meta">
+          {{ selectedPage.width }}×{{ selectedPage.height }}px
+          · {{ new Date(selectedPage.capturedAt).toLocaleString() }}
+        </small>
+      </div>
+
+      <div v-if="phase === 'idle' && !selectedPage" class="splash">
         <h2 class="splash__title">書類の山をスマホで電子化</h2>
         <p class="splash__tagline">
           動画ファイルから自動で書類ページを抽出し、<br />
@@ -866,24 +887,8 @@ const canExport = computed(
       </div>
     </section>
 
-    <section v-if="selectedPage" class="page-detail">
-      <header class="page-detail__header">
-        <button class="btn btn--secondary" type="button" @click="closePageDetail">
-          ← 一覧に戻る
-        </button>
-        <h2>ページ詳細</h2>
-        <small>
-          {{ new Date(selectedPage.capturedAt).toLocaleString() }}
-          · {{ selectedPage.width }}×{{ selectedPage.height }}px
-        </small>
-      </header>
-      <div class="page-detail__body">
-        <img :src="selectedPage.dataUrl" alt="page detail" class="page-detail__img"/>
-      </div>
-    </section>
-
     <details
-      v-if="captured.length > 0 && !selectedPage"
+      v-if="captured.length > 0"
       class="strip-drawer"
       :open="stripOpen"
       @toggle="stripOpen = ($event.target as HTMLDetailsElement).open"
@@ -1122,39 +1127,48 @@ const canExport = computed(
   transition: transform 0.1s ease;
 }
 
-.page-detail {
-  background: white;
-  border: 1px solid #e5e7eb;
-  border-radius: 12px;
-  padding: 20px;
-  margin: 16px;
-}
-.page-detail__header {
+/* viewport 内に詳細 preview を overlay (専用 dialog ではなく既存 main 領域を再利用) */
+.viewport__preview {
+  position: absolute;
+  inset: 0;
+  background: #0b1120;
   display: flex;
-  flex-direction: column;
-  gap: 6px;
-  margin-bottom: 16px;
-  padding-bottom: 12px;
-  border-bottom: 1px solid #eee;
-}
-.page-detail__header h2 {
-  margin: 0;
-  font-size: 1.2rem;
-}
-.page-detail__header small {
-  color: #888;
-  font-size: 0.82rem;
-}
-.page-detail__body {
-  display: flex;
+  align-items: center;
   justify-content: center;
 }
-.page-detail__img {
+.viewport__preview-img {
   max-width: 100%;
-  max-height: 80vh;
+  max-height: 100%;
   object-fit: contain;
-  background: #fafafa;
-  border-radius: 6px;
+}
+.viewport__preview-close {
+  position: absolute;
+  top: 0.75rem;
+  right: 0.75rem;
+  width: 2.5rem;
+  height: 2.5rem;
+  border-radius: 50%;
+  background: rgba(0, 0, 0, 0.7);
+  color: white;
+  border: 1px solid rgba(255, 255, 255, 0.3);
+  font-size: 1.4rem;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+.viewport__preview-close:hover {
+  background: rgba(0, 0, 0, 0.9);
+}
+.viewport__preview-meta {
+  position: absolute;
+  bottom: 0.75rem;
+  left: 0.75rem;
+  background: rgba(0, 0, 0, 0.7);
+  color: white;
+  padding: 4px 10px;
+  border-radius: 4px;
+  font-size: 0.75rem;
 }
 
 .strip-drawer {
