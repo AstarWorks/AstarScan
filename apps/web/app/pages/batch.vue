@@ -11,7 +11,7 @@
  * FastViT (the same model as the camera /scan flow).
  */
 
-import { ref, computed } from 'vue'
+import { ref, computed, onMounted, onUnmounted } from 'vue'
 import jsPDF from 'jspdf'
 import {
   processVideoBatch,
@@ -27,7 +27,24 @@ const progress = ref<BatchProgress | null>(null)
 const items = ref<BatchItem[]>([])
 const errorMessage = ref<string | null>(null)
 const extractor = ref<ExtractorKind>('classical')
+const selectedItem = ref<BatchItem | null>(null)
 let abortController: AbortController | null = null
+
+function openDetail(item: BatchItem) {
+  selectedItem.value = item
+}
+function closeDetail() {
+  selectedItem.value = null
+}
+function onEsc(e: KeyboardEvent) {
+  if (e.key === 'Escape' && selectedItem.value) closeDetail()
+}
+onMounted(() => {
+  window.addEventListener('keydown', onEsc)
+})
+onUnmounted(() => {
+  window.removeEventListener('keydown', onEsc)
+})
 
 const fileSizeLabel = computed(() => {
   if (!selectedFile.value) return ''
@@ -243,6 +260,10 @@ const stageLabel = computed(() => {
             'card--mode-a4': item.mode === 'a4',
             'card--mode-receipt': item.mode === 'receipt',
           }"
+          @click="openDetail(item)"
+          @keydown.enter="openDetail(item)"
+          tabindex="0"
+          role="button"
         >
           <img :src="item.thumbnailDataUrl" :alt="item.id" loading="lazy" />
           <div class="card-body">
@@ -306,6 +327,41 @@ const stageLabel = computed(() => {
         </article>
       </div>
     </section>
+
+    <Teleport to="body">
+      <div
+        v-if="selectedItem"
+        class="modal-overlay"
+        @click.self="closeDetail"
+      >
+        <div class="modal-content">
+          <button class="modal-close" @click="closeDetail" aria-label="閉じる">×</button>
+          <img :src="selectedItem.imageDataUrl" :alt="selectedItem.id" class="modal-image"/>
+          <div class="modal-meta">
+            <h3>{{ selectedItem.id }} <span class="mode" :class="`mode-${selectedItem.mode}`">{{ selectedItem.mode }}</span></h3>
+            <small>
+              frame={{ selectedItem.source_frame_idx }}
+              t={{ (selectedItem.source_ts_ms / 1000).toFixed(1) }}s
+              lap={{ Math.round(selectedItem.laplacian) }}
+              conf={{ selectedItem.detector_confidence.toFixed(3) }}
+              {{ selectedItem.width }}×{{ selectedItem.height }}px
+            </small>
+            <table class="modal-fields">
+              <tbody>
+                <tr v-for="(v, k) in selectedItem.fields" :key="k">
+                  <th>{{ k }}</th>
+                  <td>
+                    <span v-if="Array.isArray(v)">{{ v.join(', ') || '—' }}</span>
+                    <pre v-else-if="k === 'raw_text'">{{ v || '—' }}</pre>
+                    <span v-else>{{ v ?? '—' }}</span>
+                  </td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+        </div>
+      </div>
+    </Teleport>
   </div>
 </template>
 
@@ -440,6 +496,114 @@ button:disabled {
   overflow: hidden;
   display: flex;
   flex-direction: column;
+  cursor: pointer;
+  transition: transform 0.1s ease, box-shadow 0.1s ease;
+}
+.card:hover {
+  transform: translateY(-2px);
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.1);
+}
+.card:focus-visible {
+  outline: 2px solid #001f42;
+  outline-offset: 2px;
+}
+
+/* ---- Detail modal ---- */
+.modal-overlay {
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.7);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 1000;
+  padding: 24px;
+}
+.modal-content {
+  background: white;
+  border-radius: 12px;
+  max-width: 1100px;
+  max-height: 90vh;
+  width: 100%;
+  display: flex;
+  gap: 20px;
+  padding: 24px;
+  position: relative;
+  overflow-y: auto;
+}
+.modal-close {
+  position: absolute;
+  top: 8px;
+  right: 8px;
+  background: transparent;
+  border: none;
+  font-size: 1.6rem;
+  cursor: pointer;
+  color: #666;
+  padding: 4px 12px;
+  border-radius: 6px;
+}
+.modal-close:hover {
+  background: #f0f0f0;
+}
+.modal-image {
+  flex: 1 1 60%;
+  max-width: 60%;
+  max-height: 80vh;
+  object-fit: contain;
+  background: #fafafa;
+  border-radius: 6px;
+}
+.modal-meta {
+  flex: 1 1 40%;
+  overflow-y: auto;
+  min-width: 280px;
+}
+.modal-meta h3 {
+  margin: 0 0 4px;
+  font-size: 1.1rem;
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+}
+.modal-meta small {
+  color: #888;
+  display: block;
+  margin-bottom: 12px;
+  font-size: 0.8rem;
+}
+.modal-fields {
+  border-collapse: collapse;
+  width: 100%;
+  font-size: 0.9rem;
+}
+.modal-fields th {
+  text-align: left;
+  color: #666;
+  font-weight: 500;
+  padding: 4px 12px 4px 0;
+  vertical-align: top;
+  width: 100px;
+  white-space: nowrap;
+}
+.modal-fields td {
+  padding: 4px 0;
+  word-break: break-word;
+}
+.modal-fields pre {
+  background: #fafafa;
+  padding: 8px;
+  border-radius: 4px;
+  margin: 0;
+  white-space: pre-wrap;
+  word-break: break-all;
+  font-size: 0.78rem;
+  max-height: 240px;
+  overflow-y: auto;
+}
+@media (max-width: 800px) {
+  .modal-content { flex-direction: column; }
+  .modal-image, .modal-meta { max-width: 100%; flex: 0 0 auto; }
 }
 .card--valid {
   border-color: #10b981;

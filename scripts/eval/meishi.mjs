@@ -55,9 +55,11 @@ function parseArgs(argv) {
     out: null,
     detector: 'lcnet100',
     mode: 'auto',
-    minLaplacian: 20,
+    minLaplacian: 10,
     minConfidence: 0.1,
     keepFrames: false,
+    frameQuality: false,    // Phase 2d-A2: opt-in. Default = single-best frame.
+    permissive: false,      // Phase 2d-D: relax all gates, expect LLM dedup.
   }
   const rest = []
   for (let i = 0; i < argv.length; i += 1) {
@@ -71,6 +73,11 @@ function parseArgs(argv) {
       case '--min-laplacian': args.minLaplacian = Number(next()); break
       case '--min-confidence': args.minConfidence = Number(next()); break
       case '--keep-frames': args.keepFrames = true; break
+      case '--frame-quality': args.frameQuality = true; break
+      case '--permissive':
+        args.permissive = true
+        args.minLaplacian = Math.min(args.minLaplacian, 5)
+        break
       default: rest.push(a)
     }
   }
@@ -214,75 +221,90 @@ async function main() {
     `(drop-other=${frameDropOther} drop-fp=${frameDropFp} drop-blur=${frameDropBlur}) ` +
     `in ${Date.now() - tDetect} ms`)
 
-  // ---- Stage 3: ByteTrack-style identity tracker (top-K candidates) ----
+  // ---- Stage 3: ByteTrack-style identity tracker ----
   const tracker = new DocTracker()
   for (const r of accepted) tracker.step(r)
-  const TOPK = 3
+  const TOPK = args.frameQuality ? 3 : 1
   const tracks = tracker.finalize(TOPK)
-  const totalCandidates = tracks.reduce((s, t) => s + (t.topKItems?.length ?? 1), 0)
-  console.log(`[meishi] tracker → ${tracks.length} tracks, ${totalCandidates} candidates (top-${TOPK})`)
-
-  // ---- Stage 4a: write ALL top-K candidates so YomiToku can OCR them ----
-  // Filename pattern "track-{trackId}-cand-{k}.jpg" lets us map OCR JSON
-  // back to (trackId, candidate-index) for the frame-quality scorer.
-  for (let i = 0; i < tracks.length; i++) {
-    const t = tracks[i]
-    const cands = t.topKItems ?? [t.bestItem]
-    for (let k = 0; k < cands.length; k++) {
-      const filename = `track-${String(i).padStart(3, '0')}-cand-${k}.jpg`
-      await fsp.writeFile(path.join(winnersDir, filename), cands[k].warpedBuf)
-    }
+  if (args.frameQuality) {
+    const totalCandidates = tracks.reduce((s, t) => s + (t.topKItems?.length ?? 1), 0)
+    console.log(`[meishi] tracker → ${tracks.length} tracks, ${totalCandidates} candidates (top-${TOPK}, --frame-quality)`)
+  } else {
+    console.log(`[meishi] tracker → ${tracks.length} tracks`)
   }
-  console.log(`[meishi] wrote ${totalCandidates} candidate images for OCR`)
 
-  // ---- Stage 4b: batch OCR all candidates ----
-  const tOcr = Date.now()
-  console.log('[meishi] running YomiToku batch (all candidates)…')
-  const ocrMap = await runYomiTokuBatch(winnersDir)
-  console.log(`[meishi] OCR ${ocrMap.size}/${totalCandidates} in ${Date.now() - tOcr} ms`)
-
-  // ---- Stage 4c: per track, re-score top-K with frame-quality ----
-  // Pick the candidate with the highest text-region quality score as
-  // the winner. The previous "score = lap × conf × area" heuristic
-  // didn't look at text sharpness specifically; this does.
-  const winners = []
-  for (let i = 0; i < tracks.length; i++) {
-    const t = tracks[i]
-    const cands = t.topKItems ?? [t.bestItem]
-    let bestK = 0
-    let bestQScore = -Infinity
-    let bestOcr = null
-    for (let k = 0; k < cands.length; k++) {
-      const candStem = `track-${String(i).padStart(3, '0')}-cand-${k}`
-      const ocr = ocrMap.get(candStem)
-      if (!ocr) continue
-      const candCanvas = await jpegToCanvas(cands[k].warpedBuf)
-      const q = scoreFrame({
-        canvas: candCanvas,
-        paragraphs: ocr.paragraphs,
-        areaFraction: cands[k].area_fraction,
-      })
-      if (q.score > bestQScore) {
-        bestQScore = q.score
-        bestK = k
-        bestOcr = ocr
+  // ---- Stage 4: persist winner images + batch OCR ----
+  let winners
+  let ocrMap
+  if (args.frameQuality) {
+    // Top-K candidates: OCR each, then re-pick by frame-quality scorer.
+    for (let i = 0; i < tracks.length; i++) {
+      const t = tracks[i]
+      const cands = t.topKItems ?? [t.bestItem]
+      for (let k = 0; k < cands.length; k++) {
+        const filename = `track-${String(i).padStart(3, '0')}-cand-${k}.jpg`
+        await fsp.writeFile(path.join(winnersDir, filename), cands[k].warpedBuf)
       }
     }
-    const chosen = cands[bestK]
-    const stem = `winner-${String(i).padStart(3, '0')}`
-    const filename = `${stem}.jpg`
-    await fsp.writeFile(path.join(winnersDir, filename), chosen.warpedBuf)
-    winners.push({
-      stem,
-      filename,
-      ...t,
-      bestItem: chosen,
-      cached_ocr: bestOcr,
-      quality_score: bestQScore,
-      picked_k: bestK,
-    })
+    const tOcr = Date.now()
+    console.log('[meishi] running YomiToku batch (top-K candidates)…')
+    ocrMap = await runYomiTokuBatch(winnersDir)
+    console.log(`[meishi] OCR ${ocrMap.size} candidates in ${Date.now() - tOcr} ms`)
+
+    winners = []
+    for (let i = 0; i < tracks.length; i++) {
+      const t = tracks[i]
+      const cands = t.topKItems ?? [t.bestItem]
+      let bestK = 0
+      let bestQScore = -Infinity
+      let bestOcr = null
+      for (let k = 0; k < cands.length; k++) {
+        const candStem = `track-${String(i).padStart(3, '0')}-cand-${k}`
+        const ocr = ocrMap.get(candStem)
+        if (!ocr) continue
+        const candCanvas = await jpegToCanvas(cands[k].warpedBuf)
+        const q = scoreFrame({
+          canvas: candCanvas,
+          paragraphs: ocr.paragraphs,
+          areaFraction: cands[k].area_fraction,
+        })
+        if (q.score > bestQScore) {
+          bestQScore = q.score
+          bestK = k
+          bestOcr = ocr
+        }
+      }
+      const chosen = cands[bestK]
+      const stem = `winner-${String(i).padStart(3, '0')}`
+      const filename = `${stem}.jpg`
+      await fsp.writeFile(path.join(winnersDir, filename), chosen.warpedBuf)
+      winners.push({
+        stem,
+        filename,
+        ...t,
+        bestItem: chosen,
+        cached_ocr: bestOcr,
+        quality_score: bestQScore,
+        picked_k: bestK,
+      })
+    }
+    console.log(`[meishi] frame-quality picked winners (top-K re-scored)`)
+  } else {
+    // Default: single bestItem per track (score-based picker, fast).
+    winners = []
+    for (let i = 0; i < tracks.length; i++) {
+      const t = tracks[i]
+      const stem = `winner-${String(i).padStart(3, '0')}`
+      const filename = `${stem}.jpg`
+      await fsp.writeFile(path.join(winnersDir, filename), t.bestItem.warpedBuf)
+      winners.push({ stem, filename, ...t })
+    }
+    console.log(`[meishi] wrote ${winners.length} winner images`)
+    const tOcr = Date.now()
+    console.log('[meishi] running YomiToku batch…')
+    ocrMap = await runYomiTokuBatch(winnersDir)
+    console.log(`[meishi] OCR ${ocrMap.size}/${winners.length} in ${Date.now() - tOcr} ms`)
   }
-  console.log(`[meishi] frame-quality picked winners (top-K re-scored)`)
 
   // ---- Stage 6: heuristic field extraction per winner ----
   // Re-use the cached OCR from Stage 4c (avoids a second YomiToku pass).
@@ -328,17 +350,21 @@ async function main() {
   // legitimate cards where YomiToku struggled with low-contrast text (e.g.
   // winner-021 中根徹也 returned 0 paragraphs entirely).
   const beforeFilter = items.length
-  const filtered = items.filter((it) => {
-    const f = it.fields
-    const hasContact = !!(f.email || f.tel || f.mobile || f.fax)
-    const hasIdent = !!(f.name || f.company)
-    const txt = (f.raw_text ?? '').replace(/\s+/g, '')
-    if (hasContact) return true
-    if (hasIdent) return true
-    if (txt.length >= 30) return true
-    return false
-  })
-  console.log(`[meishi] filter: ${beforeFilter} → ${filtered.length} (dropped ${beforeFilter - filtered.length} low-signal)`)
+  // Phase 2d-A1: 30→10 char floor. Permissive mode skips the filter entirely.
+  const minRawTextLen = args.permissive ? 0 : 10
+  const filtered = args.permissive
+    ? items
+    : items.filter((it) => {
+        const f = it.fields
+        const hasContact = !!(f.email || f.tel || f.mobile || f.fax)
+        const hasIdent = !!(f.name || f.company)
+        const txt = (f.raw_text ?? '').replace(/\s+/g, '')
+        if (hasContact) return true
+        if (hasIdent) return true
+        if (txt.length >= minRawTextLen) return true
+        return false
+      })
+  console.log(`[meishi] filter: ${beforeFilter} → ${filtered.length} (dropped ${beforeFilter - filtered.length} low-signal${args.permissive ? '; permissive=skip' : ''})`)
 
   // ---- Stage 6c: temporal back/front pairing ----
   // Pair two adjacent winners only when the "back" side has VERY little

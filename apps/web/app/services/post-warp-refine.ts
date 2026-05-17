@@ -22,8 +22,9 @@
 import { newCanvas, newCanvasLike } from './canvas-helpers'
 // newCanvasLike kept available for callers needing same-dim canvases
 
-const VARIANCE_MIN = 200
-const EDGE_DENSITY_MIN = 0.005
+// Phase 2d-A1: relaxed to keep low-contrast / thin-line cards.
+const VARIANCE_MIN = 80
+const EDGE_DENSITY_MIN = 0.002
 
 const REFINE_MAX_STRIP_FRACTION = 0.06
 const REFINE_MIN_LINE_STRENGTH = 0.35

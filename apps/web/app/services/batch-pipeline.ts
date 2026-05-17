@@ -124,7 +124,7 @@ interface WinnerItem {
   back_raw_text?: string | null
 }
 
-const LOW_SIGNAL_MIN_TEXT = 30
+const LOW_SIGNAL_MIN_TEXT = 10
 const BACK_MAX_RAW_CHARS = 60
 const PAIR_MAX_GAP_MS = 3000
 
@@ -137,7 +137,7 @@ export async function processVideoBatch(
   options: BatchOptions = {},
 ): Promise<BatchItem[]> {
   const fps = options.fps ?? 5
-  const minLap = options.minLaplacian ?? 20
+  const minLap = options.minLaplacian ?? 10
   const minConf = options.minConfidence ?? 0.1
   const requestedMode = options.mode ?? 'auto'
   const extractor = options.extractor ?? 'classical'
@@ -324,6 +324,7 @@ export async function processVideoBatch(
       const txt = (f.raw_text ?? '').replace(/\s+/g, '')
       return hasContact || hasIdent || txt.length >= LOW_SIGNAL_MIN_TEXT
     })
+    void filtered // kept for clarity; LOW_SIGNAL_MIN_TEXT now 10
 
     const sortedByFrame = [...filtered].sort((a, b) => a.source_frame_idx - b.source_frame_idx)
     const mergedBackIds = new Set<string>()

@@ -28,8 +28,11 @@ import { newCanvas } from '../canvas-utils.mjs'
 
 // ---- FP filter -------------------------------------------------------------
 
-const VARIANCE_MIN = 200    // gray solid frames sit around 50-150
-const EDGE_DENSITY_MIN = 0.005 // wood texture is < 0.003; cards are 0.01-0.05
+// Phase 2d-A1: relaxed thresholds. Cards with low-contrast text or
+// thin lines previously got dropped at variance ~120-180; bumping the
+// gate down to 80 keeps those legitimate cards.
+const VARIANCE_MIN = 80      // gray solid frames sit around 50-150
+const EDGE_DENSITY_MIN = 0.002 // wood texture is < 0.0015; cards are 0.01-0.05
 
 /**
  * Reject obvious non-documents. Returns
