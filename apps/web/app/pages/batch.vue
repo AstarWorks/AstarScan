@@ -27,6 +27,7 @@ const progress = ref<BatchProgress | null>(null)
 const items = ref<BatchItem[]>([])
 const errorMessage = ref<string | null>(null)
 const extractor = ref<ExtractorKind>('classical')
+const strictness = ref<'balanced' | 'permissive'>('balanced')
 const selectedItem = ref<BatchItem | null>(null)
 let abortController: AbortController | null = null
 
@@ -83,6 +84,9 @@ async function startProcessing() {
       fps: 5,
       mode: 'auto',
       extractor: extractor.value,
+      // permissive: drop the in-pipeline filter floors so more candidates
+      // pass through; rely on LLM dedup (gemma-webgpu) or manual review.
+      minLaplacian: strictness.value === 'permissive' ? 0 : 10,
       onProgress: (p) => {
         progress.value = p
       },
@@ -209,7 +213,18 @@ const stageLabel = computed(() => {
         </label>
         <label>
           <input v-model="extractor" type="radio" value="gemma-webgpu" />
-          Gemma 4 E2B (WebGPU 必須 / 初回 ~3 GB DL / 高精度)
+          Gemma 4 E2B (WebGPU 必須 / 初回 ~3 GB DL / 高精度 / LLM validator + dedup)
+        </label>
+      </fieldset>
+      <fieldset class="extractor-pick" :disabled="isProcessing">
+        <legend>抽出強度:</legend>
+        <label>
+          <input v-model="strictness" type="radio" value="balanced" />
+          balanced (default)
+        </label>
+        <label>
+          <input v-model="strictness" type="radio" value="permissive" />
+          permissive (もっと取る、Gemma 4 で dedup 推奨)
         </label>
       </fieldset>
       <div class="controls">

@@ -46,6 +46,8 @@ import {
   type LlmProgress,
 } from './llm-extractor-gemma'
 import { pickBestFrameByLlm } from './llm-best-frame'
+import { validateFrame } from './llm-frame-validator'
+import { arePairSameCard } from './llm-card-pair'
 
 export interface BatchProgress {
   readonly stage:
@@ -281,11 +283,23 @@ export async function processVideoBatch(
 
       let fields: ReturnType<typeof extractHeuristic>
       if (extractor === 'gemma-webgpu') {
+        // LLM frame validator: skip OCR-failure-as-drop. If Gemma 4
+        // says the image is unusable (quality <2) we skip; otherwise
+        // we trust the LLM extractor below regardless of OCR result.
+        try {
+          const v = await validateFrame(a.warpedDataUrl)
+          if (!v.usable) {
+            console.log(`[batch-pipeline] track ${t.id} LLM validator quality=${v.quality} → drop`)
+            continue
+          }
+        } catch (err) {
+          console.warn('[batch-pipeline] LLM validator failed for track', t.id, err)
+        }
         try {
           const r = await extractWithLlm(a.warpedDataUrl)
           fields = r.fields
         } catch (err) {
-          console.warn('[batch-pipeline] LLM failed for track', t.id, err)
+          console.warn('[batch-pipeline] LLM extract failed for track', t.id, err)
           fields = extractHeuristic([])
         }
       } else {
@@ -352,6 +366,52 @@ export async function processVideoBatch(
     const winnerToCluster = new Map<string, DedupCluster>()
     for (const c of clusters) {
       for (const id of c.member_ids) winnerToCluster.set(id, c)
+    }
+
+    // Phase 2d-C: LLM pair-comparison dedup for gemma-webgpu mode.
+    // After canonical-key dedup, scan remaining items pairwise; if
+    // Gemma 4 says two images are the same physical card, merge them.
+    // Caps at O(items²) pairs but each pair call is ~5-15 s on WebGPU.
+    if (extractor === 'gemma-webgpu') {
+      const candidates = afterPair.filter(
+        (it) => winnerToCluster.get(it.id)?.winner_id === it.id,
+      )
+      const droppedByLlm = new Set<string>()
+      for (let i = 0; i < candidates.length; i++) {
+        if (droppedByLlm.has(candidates[i]!.id)) continue
+        for (let j = i + 1; j < candidates.length; j++) {
+          if (droppedByLlm.has(candidates[j]!.id)) continue
+          try {
+            const r = await arePairSameCard(
+              candidates[i]!.imageDataUrl,
+              candidates[j]!.imageDataUrl,
+            )
+            console.log(
+              `[batch-pipeline] LLM pair ${candidates[i]!.id} ↔ ${candidates[j]!.id}: ` +
+                `same=${r.same} conf=${r.confidence} raw="${r.raw}"`,
+            )
+            if (r.same && r.confidence >= 0.8) {
+              // keep the higher-score one
+              const drop =
+                (candidates[i]!.score ?? 0) >= (candidates[j]!.score ?? 0)
+                  ? candidates[j]!.id
+                  : candidates[i]!.id
+              droppedByLlm.add(drop)
+              if (drop === candidates[i]!.id) break
+            }
+          } catch (err) {
+            console.warn('[batch-pipeline] LLM pair compare failed', err)
+          }
+        }
+      }
+      // Apply to clusters: mark llm-dropped winners as not the winner.
+      for (const id of droppedByLlm) {
+        const c = winnerToCluster.get(id)
+        if (c) {
+          // Crude: set winner_id to anything else in the cluster (or null)
+          ;(c as { winner_id: string }).winner_id = '___llm_dropped___'
+        }
+      }
     }
 
     // Visual dedup for items without canonical contact key (catches event
