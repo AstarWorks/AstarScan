@@ -32,7 +32,10 @@ const selectedItem = ref<BatchItem | null>(null)
 let abortController: AbortController | null = null
 
 function openDetail(item: BatchItem) {
+  console.log('[batch] openDetail', item.id)
   selectedItem.value = item
+  // Scroll to top so the detail view is visible
+  window.scrollTo({ top: 0, behavior: 'smooth' })
 }
 function closeDetail() {
   selectedItem.value = null
@@ -186,10 +189,11 @@ const stageLabel = computed(() => {
 <template>
   <div class="batch-page">
     <header class="page-header">
-      <h1>動画 → 名刺一括抽出</h1>
+      <h1>動画 → 名刺一括抽出 <small style="color:#888;font-size:0.7rem">v2d</small></h1>
       <p class="subtitle">
         名刺を撮影した動画 (mp4) をアップロードすると、ユニークな名刺ごとに
         画像と連絡先情報を抽出します。すべてブラウザ内で処理されます。
+        カードをクリックまたは「詳細を見る」ボタンで詳細画面に切り替わります。
       </p>
     </header>
 
@@ -363,10 +367,9 @@ const stageLabel = computed(() => {
                 </tr>
               </tbody>
             </table>
-            <details v-if="item.fields.raw_text" class="raw">
-              <summary>raw OCR text</summary>
-              <pre>{{ item.fields.raw_text }}</pre>
-            </details>
+            <button class="card-detail-btn primary" @click.stop="openDetail(item)">
+              詳細を見る →
+            </button>
           </div>
         </article>
       </div>
@@ -516,6 +519,14 @@ button:disabled {
 .card:focus-visible {
   outline: 2px solid #001f42;
   outline-offset: 2px;
+}
+.card-detail-btn {
+  margin-top: 12px;
+  width: 100%;
+  padding: 10px;
+  font-size: 0.9rem;
+  font-weight: 600;
+  cursor: pointer;
 }
 
 /* ---- Detail view (in-page, no overlay) ---- */
