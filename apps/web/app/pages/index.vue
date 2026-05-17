@@ -87,6 +87,16 @@ const errorText = ref('')
 const captured = ref<Page[]>([])
 const pdfExporting = ref(false)
 const stripOpen = ref(false)
+const selectedPage = ref<Page | null>(null)
+
+function openPageDetail(p: Page) {
+  console.log('[index] openPageDetail', p.id)
+  selectedPage.value = p
+  window.scrollTo({ top: 0, behavior: 'smooth' })
+}
+function closePageDetail() {
+  selectedPage.value = null
+}
 
 const videoRef = ref<HTMLVideoElement | null>(null)
 const overlayRef = ref<HTMLCanvasElement | null>(null)
@@ -861,8 +871,24 @@ const canExport = computed(
       </div>
     </section>
 
+    <section v-if="selectedPage" class="page-detail">
+      <header class="page-detail__header">
+        <button class="btn btn--secondary" type="button" @click="closePageDetail">
+          ← 一覧に戻る
+        </button>
+        <h2>ページ詳細</h2>
+        <small>
+          {{ new Date(selectedPage.capturedAt).toLocaleString() }}
+          · {{ selectedPage.width }}×{{ selectedPage.height }}px
+        </small>
+      </header>
+      <div class="page-detail__body">
+        <img :src="selectedPage.dataUrl" alt="page detail" class="page-detail__img"/>
+      </div>
+    </section>
+
     <details
-      v-if="captured.length > 0"
+      v-if="captured.length > 0 && !selectedPage"
       class="strip-drawer"
       :open="stripOpen"
       @toggle="stripOpen = ($event.target as HTMLDetailsElement).open"
@@ -878,15 +904,21 @@ const canExport = computed(
           v-for="(page, idx) in captured"
           :key="page.id"
           class="strip__thumb"
+          role="button"
+          tabindex="0"
+          aria-label="詳細を見る"
+          @click="openPageDetail(page)"
+          @keydown.enter.prevent="openPageDetail(page)"
+          @keydown.space.prevent="openPageDetail(page)"
         >
           <img :src="page.dataUrl" :alt="`ページ ${idx + 1}`" />
           <figcaption class="strip__caption">{{ idx + 1 }}</figcaption>
-          <div class="strip__actions">
+          <div class="strip__actions" @click.stop>
             <button
               type="button"
               aria-label="前のページと入れ替え"
               :disabled="idx === 0"
-              @click="movePageUp(idx)"
+              @click.stop="movePageUp(idx)"
             >
               ◀
             </button>
@@ -894,14 +926,14 @@ const canExport = computed(
               type="button"
               aria-label="次のページと入れ替え"
               :disabled="idx === captured.length - 1"
-              @click="movePageDown(idx)"
+              @click.stop="movePageDown(idx)"
             >
               ▶
             </button>
             <button
               type="button"
               aria-label="削除"
-              @click="removePage(page.id)"
+              @click.stop="removePage(page.id)"
             >
               ×
             </button>
@@ -1081,6 +1113,53 @@ const canExport = computed(
   font-size: 1rem;
   white-space: pre-line;
   max-width: 28rem;
+}
+
+.strip__thumb {
+  cursor: pointer;
+}
+.strip__thumb:focus-visible {
+  outline: 2px solid #001f42;
+  outline-offset: 2px;
+}
+.strip__thumb:hover {
+  transform: translateY(-2px);
+  transition: transform 0.1s ease;
+}
+
+.page-detail {
+  background: white;
+  border: 1px solid #e5e7eb;
+  border-radius: 12px;
+  padding: 20px;
+  margin: 16px;
+}
+.page-detail__header {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin-bottom: 16px;
+  padding-bottom: 12px;
+  border-bottom: 1px solid #eee;
+}
+.page-detail__header h2 {
+  margin: 0;
+  font-size: 1.2rem;
+}
+.page-detail__header small {
+  color: #888;
+  font-size: 0.82rem;
+}
+.page-detail__body {
+  display: flex;
+  justify-content: center;
+}
+.page-detail__img {
+  max-width: 100%;
+  max-height: 80vh;
+  object-fit: contain;
+  background: #fafafa;
+  border-radius: 6px;
 }
 
 .strip-drawer {
