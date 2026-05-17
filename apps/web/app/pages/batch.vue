@@ -12,6 +12,7 @@
  */
 
 import { ref, computed } from 'vue'
+import jsPDF from 'jspdf'
 import {
   processVideoBatch,
   type BatchItem,
@@ -82,6 +83,39 @@ async function startProcessing() {
 
 function cancelProcessing() {
   abortController?.abort()
+}
+
+/**
+ * Generate a PDF with one card per page; each page sized to the card's
+ * actual aspect ratio so landscape and portrait both display un-squashed.
+ * Page size derived from the card's pixel dimensions at 96 DPI:
+ *   pxToMm = 25.4 / 96 ≈ 0.2646
+ * For a 1010×600 card → page = 267×159 mm (close to JIS card 91×55 ×3).
+ * Caller can rescale if mm size feels off; aspect is preserved regardless.
+ */
+function downloadPdf() {
+  if (items.value.length === 0) return
+  const PX_TO_MM = 25.4 / 96 / 3  // /3 keeps page sizes reasonable (≈90×60 mm for a 1010×670 card)
+  let pdf: jsPDF | null = null
+  for (let i = 0; i < items.value.length; i++) {
+    const it = items.value[i]
+    if (!it) continue
+    const wmm = Math.max(20, it.width * PX_TO_MM)
+    const hmm = Math.max(20, it.height * PX_TO_MM)
+    if (i === 0) {
+      pdf = new jsPDF({
+        orientation: wmm > hmm ? 'landscape' : 'portrait',
+        unit: 'mm',
+        format: [wmm, hmm],
+      })
+    } else {
+      pdf!.addPage([wmm, hmm], wmm > hmm ? 'landscape' : 'portrait')
+    }
+    pdf!.addImage(it.imageDataUrl, 'JPEG', 0, 0, wmm, hmm)
+  }
+  if (!pdf) return
+  const base = selectedFile.value?.name?.replace(/\.[^.]+$/, '') ?? 'cards'
+  pdf.save(`${base}.pdf`)
 }
 
 function downloadJson() {
@@ -192,7 +226,10 @@ const stageLabel = computed(() => {
     <section v-if="items.length > 0" class="results">
       <header class="results-header">
         <h2>抽出結果 ({{ items.length }} 件 / うち連絡先付き {{ validItemCount }} 件)</h2>
-        <button class="primary" @click="downloadJson">JSON ダウンロード</button>
+        <div class="download-buttons">
+          <button class="primary" @click="downloadJson">JSON</button>
+          <button class="primary" @click="downloadPdf">PDF</button>
+        </div>
       </header>
 
       <div class="card-grid">
@@ -386,6 +423,10 @@ button:disabled {
 .results-header h2 {
   font-size: 1.15rem;
   margin: 0;
+}
+.download-buttons {
+  display: flex;
+  gap: 8px;
 }
 .card-grid {
   display: grid;

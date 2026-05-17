@@ -41,6 +41,7 @@ import { extractHeuristic } from './lib/extractor-heuristic.mjs'
 import { clusterByCanonicalKey } from './lib/canonical-dedup.mjs'
 import { isLikelyDocument, refineCardEdges } from './lib/post-warp-refine.mjs'
 import { visualDedup } from './lib/visual-dedup.mjs'
+import { scoreFrame } from './lib/frame-quality.mjs'
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url))
 const REPO_ROOT = path.resolve(__dirname, '../..')
@@ -213,40 +214,82 @@ async function main() {
     `(drop-other=${frameDropOther} drop-fp=${frameDropFp} drop-blur=${frameDropBlur}) ` +
     `in ${Date.now() - tDetect} ms`)
 
-  // ---- Stage 3: ByteTrack-style identity tracker ----
+  // ---- Stage 3: ByteTrack-style identity tracker (top-K candidates) ----
   const tracker = new DocTracker()
   for (const r of accepted) tracker.step(r)
-  const tracks = tracker.finalize()
-  console.log(`[meishi] tracker → ${tracks.length} tracks (identities)`)
+  const TOPK = 3
+  const tracks = tracker.finalize(TOPK)
+  const totalCandidates = tracks.reduce((s, t) => s + (t.topKItems?.length ?? 1), 0)
+  console.log(`[meishi] tracker → ${tracks.length} tracks, ${totalCandidates} candidates (top-${TOPK})`)
 
-  // ---- Stage 4: persist best-frame warps to items/ for OCR ----
-  // Use a flat "winner-XX.jpg" naming so YomiToku's batch mode produces
-  // predictable JSON filenames.
+  // ---- Stage 4a: write ALL top-K candidates so YomiToku can OCR them ----
+  // Filename pattern "track-{trackId}-cand-{k}.jpg" lets us map OCR JSON
+  // back to (trackId, candidate-index) for the frame-quality scorer.
+  for (let i = 0; i < tracks.length; i++) {
+    const t = tracks[i]
+    const cands = t.topKItems ?? [t.bestItem]
+    for (let k = 0; k < cands.length; k++) {
+      const filename = `track-${String(i).padStart(3, '0')}-cand-${k}.jpg`
+      await fsp.writeFile(path.join(winnersDir, filename), cands[k].warpedBuf)
+    }
+  }
+  console.log(`[meishi] wrote ${totalCandidates} candidate images for OCR`)
+
+  // ---- Stage 4b: batch OCR all candidates ----
+  const tOcr = Date.now()
+  console.log('[meishi] running YomiToku batch (all candidates)…')
+  const ocrMap = await runYomiTokuBatch(winnersDir)
+  console.log(`[meishi] OCR ${ocrMap.size}/${totalCandidates} in ${Date.now() - tOcr} ms`)
+
+  // ---- Stage 4c: per track, re-score top-K with frame-quality ----
+  // Pick the candidate with the highest text-region quality score as
+  // the winner. The previous "score = lap × conf × area" heuristic
+  // didn't look at text sharpness specifically; this does.
   const winners = []
   for (let i = 0; i < tracks.length; i++) {
     const t = tracks[i]
+    const cands = t.topKItems ?? [t.bestItem]
+    let bestK = 0
+    let bestQScore = -Infinity
+    let bestOcr = null
+    for (let k = 0; k < cands.length; k++) {
+      const candStem = `track-${String(i).padStart(3, '0')}-cand-${k}`
+      const ocr = ocrMap.get(candStem)
+      if (!ocr) continue
+      const candCanvas = await jpegToCanvas(cands[k].warpedBuf)
+      const q = scoreFrame({
+        canvas: candCanvas,
+        paragraphs: ocr.paragraphs,
+        areaFraction: cands[k].area_fraction,
+      })
+      if (q.score > bestQScore) {
+        bestQScore = q.score
+        bestK = k
+        bestOcr = ocr
+      }
+    }
+    const chosen = cands[bestK]
     const stem = `winner-${String(i).padStart(3, '0')}`
     const filename = `${stem}.jpg`
-    await fsp.writeFile(path.join(winnersDir, filename), t.bestItem.warpedBuf)
+    await fsp.writeFile(path.join(winnersDir, filename), chosen.warpedBuf)
     winners.push({
       stem,
       filename,
       ...t,
+      bestItem: chosen,
+      cached_ocr: bestOcr,
+      quality_score: bestQScore,
+      picked_k: bestK,
     })
   }
-  console.log(`[meishi] wrote ${winners.length} winner images`)
-
-  // ---- Stage 5: batch OCR via YomiToku ----
-  const tOcr = Date.now()
-  console.log('[meishi] running YomiToku batch…')
-  const ocrMap = await runYomiTokuBatch(winnersDir)
-  console.log(`[meishi] OCR ${ocrMap.size}/${winners.length} in ${Date.now() - tOcr} ms`)
+  console.log(`[meishi] frame-quality picked winners (top-K re-scored)`)
 
   // ---- Stage 6: heuristic field extraction per winner ----
+  // Re-use the cached OCR from Stage 4c (avoids a second YomiToku pass).
   const items = []
   for (let i = 0; i < winners.length; i++) {
     const w = winners[i]
-    const ocr = ocrMap.get(w.stem)
+    const ocr = w.cached_ocr ?? ocrMap.get(w.stem)
     if (!ocr) {
       console.warn(`[meishi] no OCR for ${w.stem}`)
       items.push({
