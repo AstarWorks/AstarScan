@@ -849,6 +849,11 @@ const canExport = computed(
             プライバシーポリシー
           </NuxtLink>
         </p>
+        <p class="splash__privacy" style="margin-top:1rem;font-weight:600">
+          📹 動画から一括で名刺/書類を抽出する場合は
+          <NuxtLink to="/batch" class="splash__link">/batch ページ</NuxtLink>
+          へ
+        </p>
       </div>
 
       <div v-else-if="phase === 'error'" class="splash splash--error">
