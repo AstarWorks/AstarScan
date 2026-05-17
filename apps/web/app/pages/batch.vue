@@ -189,7 +189,7 @@ const stageLabel = computed(() => {
 <template>
   <div class="batch-page">
     <header class="page-header">
-      <h1>動画 → 名刺一括抽出 <small style="color:#888;font-size:0.7rem">v2d</small></h1>
+      <h1>動画 → 名刺一括抽出 <small style="color:#888;font-size:0.7rem">v2e</small></h1>
       <p class="subtitle">
         名刺を撮影した動画 (mp4) をアップロードすると、ユニークな名刺ごとに
         画像と連絡先情報を抽出します。すべてブラウザ内で処理されます。
@@ -298,7 +298,7 @@ const stageLabel = computed(() => {
       </header>
 
       <div class="card-grid">
-        <article
+        <div
           v-for="item in items"
           :key="item.id"
           class="card"
@@ -308,10 +308,12 @@ const stageLabel = computed(() => {
             'card--mode-a4': item.mode === 'a4',
             'card--mode-receipt': item.mode === 'receipt',
           }"
-          @click="openDetail(item)"
-          @keydown.enter="openDetail(item)"
-          tabindex="0"
           role="button"
+          tabindex="0"
+          aria-label="詳細を見る"
+          @click="openDetail(item)"
+          @keydown.enter.prevent="openDetail(item)"
+          @keydown.space.prevent="openDetail(item)"
         >
           <img :src="item.thumbnailDataUrl" :alt="item.id" loading="lazy" />
           <div class="card-body">
@@ -371,7 +373,7 @@ const stageLabel = computed(() => {
               詳細を見る →
             </button>
           </div>
-        </article>
+        </div>
       </div>
     </section>
 
