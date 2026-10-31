@@ -21,7 +21,11 @@ const quad = (dx = 0): Quad => ({
 const PAGE_A = 0n
 const PAGE_B = (1n << 256n) - 1n
 
-function frame(t: number, hash: bigint | null, opts: Partial<LiveFrame<number>> = {}): LiveFrame<number> {
+function frame(
+  t: number,
+  hash: bigint | null,
+  opts: Partial<LiveFrame<number>> = {},
+): LiveFrame<number> {
   return {
     t,
     confidence: 0.8,
@@ -43,9 +47,14 @@ function run(frames: LiveFrame<number>[]): LiveCaptureEvent<number>[] {
 }
 
 /** 10 fps samples over [from, to). */
-const span = (from: number, to: number, mk: (t: number) => LiveFrame<number>) => {
+const span = (
+  from: number,
+  to: number,
+  mk: (t: number) => LiveFrame<number>,
+) => {
   const out: LiveFrame<number>[] = []
-  for (let i = Math.round(from * 10); i < Math.round(to * 10); i += 1) out.push(mk(i / 10))
+  for (let i = Math.round(from * 10); i < Math.round(to * 10); i += 1)
+    out.push(mk(i / 10))
   return out
 }
 
@@ -69,7 +78,11 @@ describe('LiveCaptureJudge', () => {
   })
 
   it('does not capture while the page keeps moving', () => {
-    const ev = run(span(0, 2, (t) => frame(t, PAGE_A, { quad: quad(Math.round(t * 10) % 2 ? 200 : 0) })))
+    const ev = run(
+      span(0, 2, (t) =>
+        frame(t, PAGE_A, { quad: quad(Math.round(t * 10) % 2 ? 200 : 0) }),
+      ),
+    )
     expect(ev.filter((e) => e.type === 'captured')).toHaveLength(0)
     expect(ev.filter((e) => e.type === 'missed')).toHaveLength(1)
   })
@@ -87,7 +100,9 @@ describe('LiveCaptureJudge', () => {
 
   it('reports a page turned away before capture as missed', () => {
     const frames = [
-      ...span(0, 0.4, (t) => frame(t, PAGE_A, { quad: quad(Math.round(t * 10) % 2 ? 200 : 0) })),
+      ...span(0, 0.4, (t) =>
+        frame(t, PAGE_A, { quad: quad(Math.round(t * 10) % 2 ? 200 : 0) }),
+      ),
       ...span(0.4, 0.8, (t) => frame(t, PAGE_A)),
       ...span(0.8, 2.5, (t) => frame(t, PAGE_B)),
     ]
@@ -117,7 +132,10 @@ describe('LiveCaptureJudge', () => {
 describe('quadMotion', () => {
   it('is 0 for identical quads and scales with the frame diagonal', () => {
     expect(quadMotion(quad(), quad(), W, H)).toBe(0)
-    expect(quadMotion(quad(), quad(10), W, H)).toBeCloseTo(10 / Math.hypot(W, H), 6)
+    expect(quadMotion(quad(), quad(10), W, H)).toBeCloseTo(
+      10 / Math.hypot(W, H),
+      6,
+    )
   })
 })
 
@@ -153,7 +171,11 @@ describe('buildCaptureReport', () => {
   })
 
   it('keeps a live page that no cluster contains', () => {
-    const rows = buildCaptureReport([{ pageNo: 1, startT: 3, endT: 4 }], [], [cl(10, 0, 1)])
+    const rows = buildCaptureReport(
+      [{ pageNo: 1, startT: 3, endT: 4 }],
+      [],
+      [cl(10, 0, 1)],
+    )
     expect(rows.map((r) => r.kind)).toEqual(['recovered', 'captured'])
     expect(rows[1]!.livePageNo).toBe(1)
   })

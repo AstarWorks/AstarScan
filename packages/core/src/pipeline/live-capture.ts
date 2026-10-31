@@ -53,7 +53,9 @@ export const LIVE_CAPTURE_DEFAULTS = {
   missMinS: 0.6,
 } as const
 
-export type LiveCaptureOptions = { -readonly [K in keyof typeof LIVE_CAPTURE_DEFAULTS]: number }
+export type LiveCaptureOptions = {
+  -readonly [K in keyof typeof LIVE_CAPTURE_DEFAULTS]: number
+}
 
 export interface LiveFrame<T = unknown> {
   /** Seconds since scan start. */
@@ -74,9 +76,23 @@ export interface LiveFrame<T = unknown> {
 
 export type LiveCaptureEvent<T = unknown> =
   | { type: 'hold'; holdId: number; progress: number; t: number }
-  | { type: 'captured'; holdId: number; pageNo: number; best: LiveFrame<T>; startT: number; t: number }
+  | {
+      type: 'captured'
+      holdId: number
+      pageNo: number
+      best: LiveFrame<T>
+      startT: number
+      t: number
+    }
   | { type: 'resumed'; holdId: number; pageNo: number; t: number }
-  | { type: 'missed'; holdId: number; best: LiveFrame<T>; startT: number; endT: number; t: number }
+  | {
+      type: 'missed'
+      holdId: number
+      best: LiveFrame<T>
+      startT: number
+      endT: number
+      t: number
+    }
 
 /** Time span during which a captured page was on screen. */
 export interface LivePageSpan {
@@ -86,7 +102,12 @@ export interface LivePageSpan {
 }
 
 /** Mean corner displacement between two quads / frame diagonal. */
-export function quadMotion(a: Quad, b: Quad, frameW: number, frameH: number): number {
+export function quadMotion(
+  a: Quad,
+  b: Quad,
+  frameW: number,
+  frameH: number,
+): number {
   const diag = Math.hypot(frameW, frameH) || 1
   const d =
     Math.hypot(a.tl.x - b.tl.x, a.tl.y - b.tl.y) +
@@ -129,7 +150,11 @@ export class LiveCaptureJudge<T = unknown> {
 
   /** Spans of every captured page so far, in capture order. */
   get pages(): LivePageSpan[] {
-    return this.#captured.map(({ pageNo, startT, endT }) => ({ pageNo, startT, endT }))
+    return this.#captured.map(({ pageNo, startT, endT }) => ({
+      pageNo,
+      startT,
+      endT,
+    }))
   }
 
   isPage(f: Pick<LiveFrame, 'confidence' | 'areaFrac' | 'hash'>): boolean {
@@ -145,7 +170,9 @@ export class LiveCaptureJudge<T = unknown> {
     const out: LiveCaptureEvent<T>[] = []
     const o = this.opts
     const motion =
-      f.quad && this.#prevQuad ? quadMotion(f.quad, this.#prevQuad, f.frameW, f.frameH) : Infinity
+      f.quad && this.#prevQuad
+        ? quadMotion(f.quad, this.#prevQuad, f.frameW, f.frameH)
+        : Infinity
     this.#prevQuad = f.quad
     const still = motion <= o.maxMotion
     const h = this.#hold
@@ -195,7 +222,11 @@ export class LiveCaptureJudge<T = unknown> {
     return out
   }
 
-  #open(seed: LiveFrame<T>[], still: boolean, out: LiveCaptureEvent<T>[]): void {
+  #open(
+    seed: LiveFrame<T>[],
+    still: boolean,
+    out: LiveCaptureEvent<T>[],
+  ): void {
     const first = seed[0]!
     const last = seed[seed.length - 1]!
     let best = first
@@ -221,7 +252,12 @@ export class LiveCaptureJudge<T = unknown> {
     ) {
       hold.pageNo = prev.pageNo
       prev.endT = last.t
-      out.push({ type: 'resumed', holdId: hold.id, pageNo: prev.pageNo, t: last.t })
+      out.push({
+        type: 'resumed',
+        holdId: hold.id,
+        pageNo: prev.pageNo,
+        t: last.t,
+      })
       return
     }
     this.#progress(last.t, out)
@@ -240,10 +276,22 @@ export class LiveCaptureJudge<T = unknown> {
       const pageNo = this.#captured.length + 1
       h.pageNo = pageNo
       this.#captured.push({ pageNo, hash: h.ref, startT: h.startT, endT: t })
-      out.push({ type: 'captured', holdId: h.id, pageNo, best: h.best, startT: h.startT, t })
+      out.push({
+        type: 'captured',
+        holdId: h.id,
+        pageNo,
+        best: h.best,
+        startT: h.startT,
+        t,
+      })
       return
     }
-    out.push({ type: 'hold', holdId: h.id, progress: Math.max(0, held / this.opts.holdS), t })
+    out.push({
+      type: 'hold',
+      holdId: h.id,
+      progress: Math.max(0, held / this.opts.holdS),
+      t,
+    })
   }
 
   #close(t: number, out: LiveCaptureEvent<T>[]): void {
@@ -251,7 +299,14 @@ export class LiveCaptureJudge<T = unknown> {
     this.#hold = null
     if (!h || h.pageNo !== null) return
     if (h.lastSeenT - h.startT + EPS >= this.opts.missMinS) {
-      out.push({ type: 'missed', holdId: h.id, best: h.best, startT: h.startT, endT: h.lastSeenT, t })
+      out.push({
+        type: 'missed',
+        holdId: h.id,
+        best: h.best,
+        startT: h.startT,
+        endT: h.lastSeenT,
+        t,
+      })
     }
   }
 }
@@ -327,7 +382,12 @@ export function buildCaptureReport(
     const lives = liveByCluster.get(c.key)
     if (lives?.length) {
       const [first, ...rest] = [...lives].sort((a, b) => a.startT - b.startT)
-      rows.push({ kind: 'captured', t: first!.startT, livePageNo: first!.pageNo, clusterKey: c.key })
+      rows.push({
+        kind: 'captured',
+        t: first!.startT,
+        livePageNo: first!.pageNo,
+        clusterKey: c.key,
+      })
       for (const d of rest) {
         rows.push({
           kind: 'duplicate',
@@ -338,12 +398,17 @@ export function buildCaptureReport(
         })
       }
     } else {
-      const row: CaptureRow = { kind: 'recovered', t: Math.min(...c.memberT), clusterKey: c.key }
+      const row: CaptureRow = {
+        kind: 'recovered',
+        t: Math.min(...c.memberT),
+        clusterKey: c.key,
+      }
       recoveredRows.set(c.key, row)
       rows.push(row)
     }
   }
-  for (const p of unclustered) rows.push({ kind: 'captured', t: p.startT, livePageNo: p.pageNo })
+  for (const p of unclustered)
+    rows.push({ kind: 'captured', t: p.startT, livePageNo: p.pageNo })
 
   for (const m of misses) {
     let hit: ReportCluster | null = null
@@ -355,14 +420,20 @@ export function buildCaptureReport(
         hit = c
       }
     }
-    const coveredByLive = live.some((p) => p.startT <= m.endT + EPS && p.endT >= m.startT - EPS)
+    const coveredByLive = live.some(
+      (p) => p.startT <= m.endT + EPS && p.endT >= m.startT - EPS,
+    )
     if (hit) {
       const rec = recoveredRows.get(hit.key)
       if (rec) rec.missSpan ??= { startT: m.startT, endT: m.endT }
       continue
     }
     if (coveredByLive) continue
-    rows.push({ kind: 'missed', t: m.startT, missSpan: { startT: m.startT, endT: m.endT } })
+    rows.push({
+      kind: 'missed',
+      t: m.startT,
+      missSpan: { startT: m.startT, endT: m.endT },
+    })
   }
 
   return rows.sort((a, b) => a.t - b.t)

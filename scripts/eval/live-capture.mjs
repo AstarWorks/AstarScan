@@ -21,6 +21,7 @@
 
 import path from 'node:path'
 import fs from 'node:fs/promises'
+import process from 'node:process'
 import { fileURLToPath } from 'node:url'
 
 import { computeGtMetrics } from './lib/gt-match.mjs'
@@ -41,8 +42,8 @@ export const TARGET = { minMatched: 21, maxDuplicates: 3, maxNonPage: 0 }
 
 export async function loadGtLogs() {
   const out = []
-  for (const entry of (await fs.readdir(GT_DIR, { withFileTypes: true })).sort((a, b) =>
-    a.name.localeCompare(b.name),
+  for (const entry of (await fs.readdir(GT_DIR, { withFileTypes: true })).sort(
+    (a, b) => a.name.localeCompare(b.name),
   )) {
     if (!entry.isDirectory()) continue
     const dir = path.join(GT_DIR, entry.name)
@@ -52,7 +53,9 @@ export async function loadGtLogs() {
     } catch {
       continue
     }
-    const manifest = JSON.parse(await fs.readFile(path.join(dir, 'manifest.json'), 'utf8'))
+    const manifest = JSON.parse(
+      await fs.readFile(path.join(dir, 'manifest.json'), 'utf8'),
+    )
     const frames = text
       .split('\n')
       .filter(Boolean)
@@ -99,7 +102,9 @@ export function replay(log, opts = {}) {
   }))
   const metrics = computeGtMetrics(log.manifest, assignments)
   const misses = events.filter((e) => e.type === 'missed')
-  const capturedPages = new Set(assignments.map((a) => a.pageId).filter(Boolean))
+  const capturedPages = new Set(
+    assignments.map((a) => a.pageId).filter(Boolean),
+  )
   const missRows = misses.map((e) => {
     const pageId = pageAt(log.manifest, e.best.t)
     return { ...e, pageId, real: pageId !== null && !capturedPages.has(pageId) }
@@ -119,8 +124,14 @@ export function replayAll(logs, opts = {}) {
       falsePositives: sum('falsePositives'),
       winners: sum('winners'),
       missAlerts: per.reduce((s, r) => s + r.misses.length, 0),
-      missAlertsOnPage: per.reduce((s, r) => s + r.misses.filter((m) => m.pageId).length, 0),
-      missAlertsReal: per.reduce((s, r) => s + r.misses.filter((m) => m.real).length, 0),
+      missAlertsOnPage: per.reduce(
+        (s, r) => s + r.misses.filter((m) => m.pageId).length,
+        0,
+      ),
+      missAlertsReal: per.reduce(
+        (s, r) => s + r.misses.filter((m) => m.real).length,
+        0,
+      ),
     },
   }
 }
@@ -134,7 +145,9 @@ export function meetsTarget(total) {
 }
 
 function printTable(res) {
-  console.log('| 動画 | 正解ページ | ✓が出たページ | ✓ 総数 | 重複✓ | ページ以外の✓ | 抜け | 赤（まだ撮れていません） | 赤のうち✓が出なかったページ |')
+  console.log(
+    '| 動画 | 正解ページ | ✓が出たページ | ✓ 総数 | 重複✓ | ページ以外の✓ | 抜け | 赤（まだ撮れていません） | 赤のうち✓が出なかったページ |',
+  )
   console.log('|---|---|---|---|---|---|---|---|---|')
   for (const r of res.per) {
     const m = r.metrics
@@ -188,14 +201,18 @@ if (import.meta.main) {
         a.total.duplicates - b.total.duplicates ||
         a.total.missAlerts - b.total.missAlerts,
     )
-    for (const r of rows.slice(0, 40)) console.log(JSON.stringify(r.opts), JSON.stringify(r.total))
+    for (const r of rows.slice(0, 40))
+      console.log(JSON.stringify(r.opts), JSON.stringify(r.total))
     process.exit(0)
   }
 
   const optsIdx = args.indexOf('--opts')
   const overrides = optsIdx >= 0 ? JSON.parse(args[optsIdx + 1]) : {}
   const res = replayAll(logs, overrides)
-  console.log('options', JSON.stringify({ ...LIVE_CAPTURE_DEFAULTS, ...overrides }))
+  console.log(
+    'options',
+    JSON.stringify({ ...LIVE_CAPTURE_DEFAULTS, ...overrides }),
+  )
   printTable(res)
   if (args.includes('--events')) {
     for (const r of res.per) {
@@ -206,7 +223,9 @@ if (import.meta.main) {
           e.type === 'captured' || e.type === 'missed'
             ? ` best=${e.best.t.toFixed(1)}s page=${pageAt(logs.find((l) => l.id === r.id).manifest, e.best.t) ?? '-'}`
             : ''
-        console.log(`${e.t.toFixed(1)}s ${e.type}${e.pageNo ? ' #' + e.pageNo : ''}${a}`)
+        console.log(
+          `${e.t.toFixed(1)}s ${e.type}${e.pageNo ? ' #' + e.pageNo : ''}${a}`,
+        )
       }
     }
   }
