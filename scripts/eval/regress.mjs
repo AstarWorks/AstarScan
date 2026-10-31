@@ -22,6 +22,7 @@
  * the diff like any code change.
  */
 
+import process from 'node:process'
 import path from 'node:path'
 import fs from 'node:fs/promises'
 import { spawn } from 'node:child_process'

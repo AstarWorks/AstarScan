@@ -11,6 +11,7 @@
  * Quad order: TL, TR, BR, BL (clockwise from top-left).
  */
 
+import process from 'node:process'
 import * as path from 'node:path'
 import * as fs from 'node:fs'
 import ort from 'onnxruntime-node'

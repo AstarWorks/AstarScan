@@ -19,8 +19,7 @@
  * OpenCV.js hot path. Speeds: ~5-10 ms per call on a typical card.
  */
 
-import { newCanvas, newCanvasLike } from './canvas-helpers'
-// newCanvasLike kept available for callers needing same-dim canvases
+import { newCanvas } from './canvas-helpers'
 
 // Phase 2d-A1: relaxed to keep low-contrast / thin-line cards.
 const VARIANCE_MIN = 80

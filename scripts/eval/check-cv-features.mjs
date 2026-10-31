@@ -1,3 +1,4 @@
+import process from 'node:process'
 import { cv } from './cv-shim.mjs'
 
 const features = ['ORB', 'AKAZE', 'BRISK', 'SIFT', 'KAZE', 'DescriptorMatcher', 'BFMatcher']

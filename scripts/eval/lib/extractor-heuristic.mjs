@@ -60,18 +60,9 @@ const DEPT_KEYWORDS = [
   '部', '課', '室', // generic fallback
 ]
 const ADDRESS_PREFIX = /[都道府県市区町村]/
-const NAME_OBVIOUS_KANJI = /^[\p{Script=Han}々ヵヶ]{2,4}(\s|　)?[\p{Script=Han}々ヵヶ]{0,4}$/u
+const NAME_OBVIOUS_KANJI = /^[\p{Script=Han}々ヵヶ]{2,4}(\s|\u3000)?[\p{Script=Han}々ヵヶ]{0,4}$/u
 
-/**
- * Lower numbers = higher up on the card (closer to header / name region).
- * Returns y-centre of bbox.
- */
-function paragraphYCenter(p) {
-  return (p.box[1] + p.box[3]) / 2
-}
-function paragraphXCenter(p) {
-  return (p.box[0] + p.box[2]) / 2
-}
+/** Height of a paragraph's bbox in pixels. */
 function paragraphHeight(p) {
   return p.box[3] - p.box[1]
 }
@@ -117,14 +108,14 @@ function looksLikeSlogan(s) {
   // punctuation often used in marketing copy (♡, !, ?, ❤, …)
   if (/[!！?？♡❤☆★～]/.test(s)) return true
   // bullet list items / event listings
-  if (/^[・·\-]/.test(s)) return true
+  if (/^[・·-]/.test(s)) return true
   // contains many particles → likely a sentence
   const particleCount = (s.match(/[をにはがでとから]/g) || []).length
   if (particleCount >= 2) return true
   return false
 }
 
-const PERSON_NAME_RX = /^[\p{Script=Han}々]{1,4}[\s　]*[\p{Script=Han}々ぁ-んァ-ヶ]{1,5}$/u
+const PERSON_NAME_RX = /^[\p{Script=Han}々]{1,4}[\s\u3000]*[\p{Script=Han}々ぁ-んァ-ヶ]{1,5}$/u
 const PERSON_NAME_FULL_KANJI_RX = /^[\p{Script=Han}々]{2,6}$/u
 
 /** Score a paragraph as a potential name. Higher = more likely a name. */
@@ -134,7 +125,7 @@ function nameScore(p, allHeights) {
   if (looksLikeCompany(s) || looksLikeTitle(s) ||
       looksLikeDepartment(s) || looksLikeAddress(s)) return -Infinity
   if (looksLikeSlogan(s)) return -Infinity
-  if (/[@:\d\-]/.test(s) && !/[\p{Script=Han}]/u.test(s)) return -Infinity
+  if (/[@:\d-]/.test(s) && !/[\p{Script=Han}]/u.test(s)) return -Infinity
   if (!/[\p{Script=Han}\p{Script=Hiragana}\p{Script=Katakana}]/u.test(s)) return -Infinity
   // pure-kana lines are usually labels/captions, not names
   if (!/[\p{Script=Han}]/u.test(s)) return -Infinity

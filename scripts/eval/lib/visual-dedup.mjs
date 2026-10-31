@@ -13,6 +13,7 @@
  * deduper's threshold).
  */
 
+import process from 'node:process'
 import { jpegToCanvas } from '../canvas-utils.mjs'
 import { computePHash, hamming } from '../pipeline.mjs'
 

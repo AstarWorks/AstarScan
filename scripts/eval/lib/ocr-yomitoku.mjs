@@ -18,6 +18,7 @@
  * Per-image runtime: ~5-8s warm on a 16-core CPU.
  */
 
+import process from 'node:process'
 import { spawn } from 'node:child_process'
 import * as path from 'node:path'
 import * as fs from 'node:fs'

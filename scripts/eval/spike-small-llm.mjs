@@ -11,6 +11,7 @@
  * Inputs: 3 sample cards from the actual mp4 (real YomiToku output).
  */
 
+import process from 'node:process'
 import {
   AutoTokenizer,
   AutoModelForCausalLM,

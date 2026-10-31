@@ -14,7 +14,6 @@
 import { cv } from './cv-shim.mjs'
 import {
   newCanvas,
-  jpegToCanvas,
   canvasToJpegBuffer,
 } from './canvas-utils.mjs'
 import {

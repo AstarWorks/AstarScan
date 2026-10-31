@@ -19,6 +19,7 @@
  * tl, tr, br, bl (model channel order). v=2 visible, 1 occluded.
  */
 
+import process from 'node:process'
 import fs from 'node:fs/promises'
 import path from 'node:path'
 import { Canvas } from '@napi-rs/canvas'
@@ -112,14 +113,6 @@ function drawDocument() {
     ctx.fillRect(m + rand(0, colW), m + rand(0, dh * 0.1), dw * 0.18, dw * 0.18)
   }
   return { canvas: c, dw, dh }
-}
-
-function destCorners() {
-  // doc long-side fraction of the frame's SHORT side; up to ~0.98 = fills frame
-  const frac = rand(0.42, 0.98)
-  const target = FW * frac
-  // unrotated half-extents from the doc aspect chosen later — approximate square-ish then scaled by aspect in caller
-  return target
 }
 
 // Build 4 dest corners for a doc of pixel size dw x dh.

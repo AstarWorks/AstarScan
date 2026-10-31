@@ -15,15 +15,15 @@
  */
 
 const RE_EMAIL =
-  /[A-Za-z0-9._%+\-]+@[A-Za-z0-9.\-]+\.[A-Za-z]{2,}/g
+  /[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}/g
 
 // Broken-email indicators: YomiToku often splits "info@offisis.co.jp" into
 // "info@" + "0" + "si" + "is.co.jp" or similar fragments separated by
 // newlines. We detect "<localpart>@" alone and a separate ".tld"-bearing
 // fragment, then attempt to stitch with the domain from a URL or company.
-const RE_EMAIL_LOCALPART_ONLY = /([A-Za-z0-9._%+\-]+)@(?!\S*\.\w{2,})/g
+const RE_EMAIL_LOCALPART_ONLY = /([A-Za-z0-9._%+-]+)@(?!\S*\.\w{2,})/g
 const RE_DOMAIN_FRAGMENT =
-  /\b((?:[A-Za-z0-9\-]+\.){1,3}(?:com|jp|net|org|co\.jp|or\.jp|ne\.jp|ac\.jp|go\.jp|gr\.jp|edu|info|biz|app|dev|io|me))\b/gi
+  /\b((?:[A-Za-z0-9-]+\.){1,3}(?:com|jp|net|org|co\.jp|or\.jp|ne\.jp|ac\.jp|go\.jp|gr\.jp|edu|info|biz|app|dev|io|me))\b/gi
 
 // JP phone forms:
 //   0X-XXXX-XXXX (固定)        e.g. 03-3609-3446
@@ -69,7 +69,7 @@ function normalizeDigits(s) {
 function normalizePhone(raw) {
   if (!raw) return null
   const d = normalizeDigits(raw)
-  const m = d.match(/(\+?\d[\d\-]{7,18}\d)/)
+  const m = d.match(/(\+?\d[\d-]{7,18}\d)/)
   return m ? m[1] : null
 }
 
@@ -128,8 +128,8 @@ export function extractRuleFields(input) {
       // Strategy 2: derive domain from URL hostname
       let urlHost = null
       if (url) {
-        const um = url.match(/https?:\/\/(?:www\.)?([A-Za-z0-9.\-]+\.[A-Za-z]{2,})/) ||
-          url.match(/(?:www\.)?([A-Za-z0-9.\-]+\.[A-Za-z]{2,})/)
+        const um = url.match(/https?:\/\/(?:www\.)?([A-Za-z0-9.-]+\.[A-Za-z]{2,})/) ||
+          url.match(/(?:www\.)?([A-Za-z0-9.-]+\.[A-Za-z]{2,})/)
         if (um) urlHost = um[1].toLowerCase()
       }
       // Prefer the URL host (more reliable) over loose domain fragments

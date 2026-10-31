@@ -21,6 +21,8 @@
  *   model's channel order: tl, tr, br, bl.
  */
 
+import { serve } from 'bun'
+import process from 'node:process'
 import fs from 'node:fs/promises'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -83,7 +85,7 @@ async function removeLabel(file) {
   await fs.rm(labelTxtPath(file), { force: true })
 }
 
-Bun.serve({
+serve({
   port: PORT,
   async fetch(req) {
     const url = new URL(req.url)

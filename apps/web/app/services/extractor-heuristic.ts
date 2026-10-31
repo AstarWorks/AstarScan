@@ -65,7 +65,7 @@ const DEPT_KEYWORDS = [
   '部', '課', '室',
 ]
 const ADDRESS_PREFIX = /[都道府県市区町村]/
-const NAME_OBVIOUS_KANJI = /^[\p{Script=Han}々ヵヶ]{2,4}(\s|　)?[\p{Script=Han}々ヵヶ]{0,4}$/u
+const NAME_OBVIOUS_KANJI = /^[\p{Script=Han}々ヵヶ]{2,4}(\s|\u3000)?[\p{Script=Han}々ヵヶ]{0,4}$/u
 
 const COMPANY_KEYWORDS_SORTED = [...COMPANY_KEYWORDS].sort((a, b) => b.length - a.length)
 const TITLE_KEYWORDS_SORTED = [...TITLE_KEYWORDS].sort((a, b) => b.length - a.length)
@@ -105,13 +105,13 @@ function looksLikeSlogan(s: string): boolean {
   if (/[をにはがでとから]$/.test(s)) return true
   if (/(ます|です|ました|してください|くださる|つなぐ|始まり)/.test(s)) return true
   if (/[!！?？♡❤☆★～]/.test(s)) return true
-  if (/^[・·\-]/.test(s)) return true
+  if (/^[・·-]/.test(s)) return true
   const particleCount = (s.match(/[をにはがでとから]/g) || []).length
   if (particleCount >= 2) return true
   return false
 }
 
-const PERSON_NAME_RX = /^[\p{Script=Han}々]{1,4}[\s　]*[\p{Script=Han}々ぁ-んァ-ヶ]{1,5}$/u
+const PERSON_NAME_RX = /^[\p{Script=Han}々]{1,4}[\s\u3000]*[\p{Script=Han}々ぁ-んァ-ヶ]{1,5}$/u
 const PERSON_NAME_FULL_KANJI_RX = /^[\p{Script=Han}々]{2,6}$/u
 
 function median(arr: readonly number[]): number {
@@ -126,7 +126,7 @@ function nameScore(p: OcrParagraph, allHeights: readonly number[]): number {
   if (s.length === 0 || s.length > 15) return -Infinity
   if (looksLikeCompany(s) || looksLikeTitle(s) || looksLikeDepartment(s) || looksLikeAddress(s)) return -Infinity
   if (looksLikeSlogan(s)) return -Infinity
-  if (/[@:\d\-]/.test(s) && !/[\p{Script=Han}]/u.test(s)) return -Infinity
+  if (/[@:\d-]/.test(s) && !/[\p{Script=Han}]/u.test(s)) return -Infinity
   if (!/[\p{Script=Han}\p{Script=Hiragana}\p{Script=Katakana}]/u.test(s)) return -Infinity
   if (!/[\p{Script=Han}]/u.test(s)) return -Infinity
 

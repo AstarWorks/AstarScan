@@ -6,6 +6,7 @@
  * Usage: bun run scripts/eval/smoke-test.mjs
  */
 
+import process from 'node:process'
 import path from 'node:path'
 import fs from 'node:fs/promises'
 import { fileURLToPath } from 'node:url'

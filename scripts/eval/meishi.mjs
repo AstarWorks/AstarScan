@@ -21,16 +21,13 @@
  *                                     [--keep-frames]
  */
 
-import * as fs from 'node:fs'
+import process from 'node:process'
 import * as fsp from 'node:fs/promises'
 import * as path from 'node:path'
 import { spawn } from 'node:child_process'
 import { fileURLToPath } from 'node:url'
 
-import {
-  warpPerspective,
-  computeLaplacian,
-} from './pipeline.mjs'
+import { computeLaplacian } from './pipeline.mjs'
 import { rotateAndCropQuad } from './lib/rotate-crop.mjs'
 import { jpegToCanvas, canvasToJpegBuffer } from './canvas-utils.mjs'
 import { DocAlignerNodeBackend } from './lib/docaligner-node.mjs'

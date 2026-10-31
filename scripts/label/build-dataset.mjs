@@ -19,6 +19,7 @@
  * to val (~10%), the rest to train. Skipped/unlabeled frames are dropped.
  */
 
+import process from 'node:process'
 import fs from 'node:fs/promises'
 import path from 'node:path'
 import { spawnSync } from 'node:child_process'

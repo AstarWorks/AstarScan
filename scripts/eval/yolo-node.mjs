@@ -13,6 +13,7 @@
  *   bun scripts/eval/yolo-node.mjs --selftest
  */
 
+import process from 'node:process'
 import * as ort from 'onnxruntime-node'
 import { newCanvas } from './canvas-utils.mjs'
 import {

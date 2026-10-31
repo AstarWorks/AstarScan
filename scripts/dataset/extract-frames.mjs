@@ -21,6 +21,7 @@
  * Output names: <videobase>_<frameIdx>.jpg, ready for scripts/label.
  */
 
+import process from 'node:process'
 import fs from 'node:fs/promises'
 import path from 'node:path'
 import { spawn } from 'node:child_process'

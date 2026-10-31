@@ -18,6 +18,7 @@
  * subgraph, ~63 MB). Latency on CPU: ~50-100 ms per image embedding.
  */
 
+import process from 'node:process'
 import { pipeline, RawImage } from '@huggingface/transformers'
 import { fuzzy } from 'fast-fuzzy'
 // fast-fuzzy's `fuzzy(term, candidate)` returns a 0..1 score with

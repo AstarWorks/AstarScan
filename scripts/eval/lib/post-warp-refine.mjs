@@ -22,6 +22,7 @@
  * the interface.
  */
 
+import process from 'node:process'
 import '../pipeline.mjs' // side effect: patches cv.imread / cv.imshow for Node
 import { cv } from '../cv-shim.mjs'
 import { newCanvas } from '../canvas-utils.mjs'
@@ -212,7 +213,6 @@ export function refineCardEdges(canvas) {
 // ---- CLI smoke test --------------------------------------------------------
 if (import.meta.main) {
   const fs = await import('node:fs')
-  const path = await import('node:path')
   const { jpegToCanvas, canvasToJpegBuffer } = await import('../canvas-utils.mjs')
   const imagePath = process.argv[2] ?? '/tmp/winner-021-test.jpg'
   const buf = fs.readFileSync(imagePath)

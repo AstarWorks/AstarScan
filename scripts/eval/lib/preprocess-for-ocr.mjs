@@ -14,6 +14,7 @@
 // Pulling in pipeline.mjs has the side effect of patching cv.imread /
 // cv.imshow with the @napi-rs/canvas ↔ cv.Mat bridge that Node needs (the
 // built-in versions assume HTMLImageElement / HTMLCanvasElement).
+import process from 'node:process'
 import '../pipeline.mjs'
 import { cv } from '../cv-shim.mjs'
 import { newCanvas } from '../canvas-utils.mjs'
