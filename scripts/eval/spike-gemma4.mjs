@@ -10,6 +10,7 @@
  * Run:  bun scripts/eval/spike-gemma4.mjs <imagePath> [E2B|E4B]
  */
 
+import process from 'node:process'
 import {
   AutoProcessor,
   Gemma4ForConditionalGeneration,
@@ -58,10 +59,7 @@ const SCHEMA_INSTRUCTION = `この画像は日本語の名刺です。以下の 
 const messages = [
   {
     role: 'user',
-    content: [
-      { type: 'image' },
-      { type: 'text', text: SCHEMA_INSTRUCTION },
-    ],
+    content: [{ type: 'image' }, { type: 'text', text: SCHEMA_INSTRUCTION }],
   },
 ]
 
@@ -77,7 +75,7 @@ const inputs = await processor(prompt, image, null, {
 
 console.log('[spike-gemma4] generating…')
 const t2 = Date.now()
-const outputs = await model.generate({
+await model.generate({
   ...inputs,
   max_new_tokens: 512,
   do_sample: false,

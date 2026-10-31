@@ -33,7 +33,7 @@
 import '../pipeline.mjs' // cv.imread / imshow bridge patch
 import { cv } from '../cv-shim.mjs'
 
-const HIGHLIGHT_THRESHOLD = 245    // 0-255; pixels ≥ this counted as glare
+const HIGHLIGHT_THRESHOLD = 245 // 0-255; pixels ≥ this counted as glare
 
 /**
  * @param {object} args
@@ -63,10 +63,14 @@ export function scoreFrame({ canvas, paragraphs, areaFraction }) {
     for (const p of paragraphs) {
       const [x1, y1, x2, y2] = p.box ?? []
       if (x2 == null) continue
-      const w = Math.min(canvas.width, Math.round(x2)) - Math.max(0, Math.round(x1))
-      const h = Math.min(canvas.height, Math.round(y2)) - Math.max(0, Math.round(y1))
+      const w =
+        Math.min(canvas.width, Math.round(x2)) - Math.max(0, Math.round(x1))
+      const h =
+        Math.min(canvas.height, Math.round(y2)) - Math.max(0, Math.round(y1))
       if (w < 4 || h < 4) continue
-      const roi = gray.roi(new cv.Rect(Math.max(0, x1 | 0), Math.max(0, y1 | 0), w, h))
+      const roi = gray.roi(
+        new cv.Rect(Math.max(0, x1 | 0), Math.max(0, y1 | 0), w, h),
+      )
       try {
         // Laplacian variance inside the bbox
         const lap = new cv.Mat()
@@ -87,7 +91,8 @@ export function scoreFrame({ canvas, paragraphs, areaFraction }) {
         cv.Sobel(roi, gy, cv.CV_32F, 0, 1, 3, 1, 0, cv.BORDER_DEFAULT)
         let tenLocal = 0
         for (let i = 0; i < gx.data32F.length; i++) {
-          tenLocal += gx.data32F[i] * gx.data32F[i] + gy.data32F[i] * gy.data32F[i]
+          tenLocal +=
+            gx.data32F[i] * gx.data32F[i] + gy.data32F[i] * gy.data32F[i]
         }
         tenSum += tenLocal / Math.max(1, gx.data32F.length)
         gx.delete()
@@ -125,7 +130,8 @@ export function scoreFrame({ canvas, paragraphs, areaFraction }) {
     }
     const ocrConf = ocrConfCount > 0 ? ocrConfSum / ocrConfCount : 1.0
 
-    const score = (lapAvg * 0.4 + tenAvg * 0.3) * ocrConf * Math.max(0.1, 1 - glareFrac)
+    const score =
+      (lapAvg * 0.4 + tenAvg * 0.3) * ocrConf * Math.max(0.1, 1 - glareFrac)
     return {
       score,
       components: {

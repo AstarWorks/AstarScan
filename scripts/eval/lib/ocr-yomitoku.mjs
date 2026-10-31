@@ -18,12 +18,14 @@
  * Per-image runtime: ~5-8s warm on a 16-core CPU.
  */
 
+import process from 'node:process'
 import { spawn } from 'node:child_process'
 import * as path from 'node:path'
 import * as fs from 'node:fs'
 import * as fsp from 'node:fs/promises'
 
-const YOMITOKU_BIN = process.env.YOMITOKU_BIN ??
+const YOMITOKU_BIN =
+  process.env.YOMITOKU_BIN ??
   path.resolve(process.cwd(), '.venv-yomitoku/bin/yomitoku')
 
 /**
@@ -39,8 +41,8 @@ export async function runYomiToku(imagePath) {
   if (!fs.existsSync(YOMITOKU_BIN)) {
     throw new Error(
       `yomitoku binary not found at ${YOMITOKU_BIN}. Install with:\n` +
-      `python3 -m venv .venv-yomitoku && ` +
-      `.venv-yomitoku/bin/pip install yomitoku`,
+        `python3 -m venv .venv-yomitoku && ` +
+        `.venv-yomitoku/bin/pip install yomitoku`,
     )
   }
 
@@ -49,10 +51,14 @@ export async function runYomiToku(imagePath) {
   const outDir = await fsp.mkdtemp(path.join('/tmp', 'yomitoku-'))
   const t0 = Date.now()
   await runProcess(YOMITOKU_BIN, [
-    '-f', 'json',
-    '-o', outDir,
-    '-d', 'cpu',
-    '--reading_order', 'auto',
+    '-f',
+    'json',
+    '-o',
+    outDir,
+    '-d',
+    'cpu',
+    '--reading_order',
+    'auto',
     // --figure + --figure_letter rescue cards where the layout parser
     // misclassifies the whole text area as a "figure" because of a
     // dominant portrait photo (e.g. 中根徹也). Without these flags such
@@ -67,7 +73,9 @@ export async function runYomiToku(imagePath) {
   const entries = await fsp.readdir(outDir)
   const jsonName = entries.find((n) => n.endsWith('.json'))
   if (!jsonName) {
-    throw new Error(`YomiToku produced no JSON in ${outDir}: ${entries.join(',')}`)
+    throw new Error(
+      `YomiToku produced no JSON in ${outDir}: ${entries.join(',')}`,
+    )
   }
   const raw = await fsp.readFile(path.join(outDir, jsonName), 'utf8')
   const data = JSON.parse(raw)
@@ -114,7 +122,9 @@ function runProcess(cmd, args) {
   return new Promise((resolve, reject) => {
     const p = spawn(cmd, args, { stdio: ['ignore', 'ignore', 'pipe'] })
     let err = ''
-    p.stderr.on('data', (b) => { err += b.toString() })
+    p.stderr.on('data', (b) => {
+      err += b.toString()
+    })
     p.on('error', reject)
     p.on('close', (code) => {
       if (code === 0) resolve()
@@ -137,10 +147,14 @@ export async function runYomiTokuBatch(imageDir) {
   }
   const outDir = await fsp.mkdtemp(path.join('/tmp', 'yomitoku-batch-'))
   await runProcess(YOMITOKU_BIN, [
-    '-f', 'json',
-    '-o', outDir,
-    '-d', 'cpu',
-    '--reading_order', 'auto',
+    '-f',
+    'json',
+    '-o',
+    outDir,
+    '-d',
+    'cpu',
+    '--reading_order',
+    'auto',
     '--figure',
     '--figure_letter',
     imageDir,
@@ -170,7 +184,9 @@ if (import.meta.main) {
   const imagePath = process.argv[2] ?? '/tmp/mp4-3-sample/frame-04.jpg'
   console.log(`[ocr-yomitoku] image=${imagePath}`)
   const result = await runYomiToku(imagePath)
-  console.log(`[ocr-yomitoku] ${result.duration_ms} ms, ${result.paragraphs.length} paragraphs`)
+  console.log(
+    `[ocr-yomitoku] ${result.duration_ms} ms, ${result.paragraphs.length} paragraphs`,
+  )
   for (const p of result.paragraphs) {
     console.log(`  [${p.order}] ${p.direction} ${JSON.stringify(p.box)}`)
     for (const line of p.contents.split('\n')) {

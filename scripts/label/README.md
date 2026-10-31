@@ -21,7 +21,7 @@ For each frame, click the 4 paper corners **in this exact order**:
 
 - **Drag** any dot to fine-tune its position.
 - If a corner is hidden by a hand or just off-frame, place it where you
-  *think* it is and mark it **occluded** (keys `1`–`4`, or the checkboxes).
+  _think_ it is and mark it **occluded** (keys `1`–`4`, or the checkboxes).
   The model learns to predict low visibility there and we ignore that corner
   downstream — this is the whole reason we use keypoints over a box.
 - **Skip** (`s`) frames with no document, or with ≥2 corners you can't even
@@ -29,15 +29,15 @@ For each frame, click the 4 paper corners **in this exact order**:
 
 ### Shortcuts
 
-| Key | Action |
-| --- | --- |
-| `Space` / `→` | save & next |
-| `←` | previous |
-| `s` | skip frame |
-| `r` | reset (clear this frame) |
-| `u` | undo last point |
-| `n` | jump to next unlabeled |
-| `1`–`4` | toggle occlusion of corner TL/TR/BR/BL |
+| Key           | Action                                 |
+| ------------- | -------------------------------------- |
+| `Space` / `→` | save & next                            |
+| `←`           | previous                               |
+| `s`           | skip frame                             |
+| `r`           | reset (clear this frame)               |
+| `u`           | undo last point                        |
+| `n`           | jump to next unlabeled                 |
+| `1`–`4`       | toggle occlusion of corner TL/TR/BR/BL |
 
 The progress bar and `labeled / skipped / left` counter track completion.
 

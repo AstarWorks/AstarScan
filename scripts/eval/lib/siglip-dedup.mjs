@@ -18,6 +18,7 @@
  * subgraph, ~63 MB). Latency on CPU: ~50-100 ms per image embedding.
  */
 
+import process from 'node:process'
 import { pipeline, RawImage } from '@huggingface/transformers'
 import { fuzzy } from 'fast-fuzzy'
 // fast-fuzzy's `fuzzy(term, candidate)` returns a 0..1 score with
@@ -154,8 +155,13 @@ export async function siglipDedup(items, opts = {}) {
 if (import.meta.main) {
   const fs = await import('node:fs')
   const path = await import('node:path')
-  const dir = process.argv[2] ?? '/IdeaProjects/AstarScan/eval-out/meishi/20260516_005528-fps5-v11/items'
-  const files = fs.readdirSync(dir).filter((n) => n.endsWith('.jpg')).sort()
+  const dir =
+    process.argv[2] ??
+    '/IdeaProjects/AstarScan/eval-out/meishi/20260516_005528-fps5-v11/items'
+  const files = fs
+    .readdirSync(dir)
+    .filter((n) => n.endsWith('.jpg'))
+    .sort()
   console.log(`[siglip-dedup smoke] ${files.length} candidates from ${dir}`)
   console.log('[siglip-dedup smoke] loading SigLIP-2 (~150 MB on first call)…')
   await ensureSiglipReady()
@@ -169,7 +175,8 @@ if (import.meta.main) {
   for (let i = 0; i < vecs.length; i++) {
     for (let j = i + 1; j < vecs.length; j++) {
       const s = cosine(vecs[i].vec, vecs[j].vec)
-      if (s >= 0.85) console.log(`  ${vecs[i].name} ↔ ${vecs[j].name}: ${s.toFixed(3)}`)
+      if (s >= 0.85)
+        console.log(`  ${vecs[i].name} ↔ ${vecs[j].name}: ${s.toFixed(3)}`)
     }
   }
 }

@@ -17,7 +17,13 @@
  * OCR verifier.
  */
 
-import type { CanvasLike, CvBFMatcher, CvMat, CvOrb, PipelineDeps } from './deps.js'
+import type {
+  CanvasLike,
+  CvBFMatcher,
+  CvMat,
+  CvOrb,
+  PipelineDeps,
+} from './deps.js'
 import { matFromCanvas } from './cv-canvas.js'
 import {
   ORB_CROP_TOP_FRAC,
@@ -58,10 +64,16 @@ export interface OrbOps {
    */
   computeOrbDescriptors(canvas: CanvasLike): OrbResult | null
   /** RANSAC-validated inlier count + 4×4 grid coverage of the inliers. */
-  countOrbMatches(orbA: OrbResult | null, orbB: OrbResult | null, maxDescDist?: number): OrbMatchResult
+  countOrbMatches(
+    orbA: OrbResult | null,
+    orbB: OrbResult | null,
+    maxDescDist?: number,
+  ): OrbMatchResult
   /** Union-find merge of hash clusters whose winners agree on ORB +
    *  tile-distance + grid coverage. */
-  mergeClustersByOrb<T extends { idx: number; score: number; tileHash?: readonly bigint[] }>(
+  mergeClustersByOrb<
+    T extends { idx: number; score: number; tileHash?: readonly bigint[] },
+  >(
     clusters: Array<OrbCluster<T>>,
     getWinnerCanvas: (idx: number) => Promise<CanvasLike>,
     mergeMatchThreshold?: number,
@@ -94,7 +106,12 @@ export function createOrbOps({ cv }: PipelineDeps): OrbOps {
       // Crop to the top fraction of the page (cv.Mat.roi returns a view;
       // we clone so the descriptor extractor reads independent memory
       // without alignment surprises).
-      const rect = new cv.Rect(0, 0, gray.cols, Math.floor(gray.rows * ORB_CROP_TOP_FRAC))
+      const rect = new cv.Rect(
+        0,
+        0,
+        gray.cols,
+        Math.floor(gray.rows * ORB_CROP_TOP_FRAC),
+      )
       cropped = gray.roi(rect).clone()
       getOrb().detectAndCompute(cropped, new cv.Mat(), keypoints, descriptors)
       if (descriptors.rows === 0) {
@@ -126,7 +143,12 @@ export function createOrbOps({ cv }: PipelineDeps): OrbOps {
     orbB: OrbResult | null,
     maxDescDist: number = ORB_MAX_DESC_DIST,
   ): OrbMatchResult {
-    if (!orbA || !orbB || orbA.descriptors.rows === 0 || orbB.descriptors.rows === 0) {
+    if (
+      !orbA ||
+      !orbB ||
+      orbA.descriptors.rows === 0 ||
+      orbB.descriptors.rows === 0
+    ) {
       return { inliers: 0, gridCoverage: 0 }
     }
     const matches = new cv.DMatchVector()
@@ -184,8 +206,14 @@ export function createOrbOps({ cv }: PipelineDeps): OrbOps {
         const pair = goodPairs[i]
         if (!pair) continue
         const [x, y] = pair[0]
-        const cx = Math.min(ORB_GRID - 1, Math.floor(((x - minX) / w) * ORB_GRID))
-        const cy = Math.min(ORB_GRID - 1, Math.floor(((y - minY) / h) * ORB_GRID))
+        const cx = Math.min(
+          ORB_GRID - 1,
+          Math.floor(((x - minX) / w) * ORB_GRID),
+        )
+        const cy = Math.min(
+          ORB_GRID - 1,
+          Math.floor(((y - minY) / h) * ORB_GRID),
+        )
         cellsHit.add(cy * ORB_GRID + cx)
       }
       return { inliers, gridCoverage: cellsHit.size }
@@ -220,7 +248,8 @@ export function createOrbOps({ cv }: PipelineDeps): OrbOps {
 
     // Union-find
     const parent = new Array(n).fill(0).map((_, i) => i)
-    const find = (i: number): number => (parent[i] === i ? i : (parent[i] = find(parent[i]!)))
+    const find = (i: number): number =>
+      parent[i] === i ? i : (parent[i] = find(parent[i]!))
     const union = (i: number, j: number): void => {
       const ri = find(i)
       const rj = find(j)
@@ -236,8 +265,13 @@ export function createOrbOps({ cv }: PipelineDeps): OrbOps {
         const wi = clusters[i]!.winner
         const wj = clusters[j]!.winner
         const tDist =
-          wi.tileHash && wj.tileHash ? tileDistance(wi.tileHash, wj.tileHash) : 0
-        const orbResult = countOrbMatches(descCache[i] ?? null, descCache[j] ?? null)
+          wi.tileHash && wj.tileHash
+            ? tileDistance(wi.tileHash, wj.tileHash)
+            : 0
+        const orbResult = countOrbMatches(
+          descCache[i] ?? null,
+          descCache[j] ?? null,
+        )
         matchCounts.push({
           i,
           j,

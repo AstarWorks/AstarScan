@@ -23,10 +23,10 @@
 import { centroid, iou, quadArea } from './quad-geometry.mjs'
 
 const DEFAULTS = {
-  maxFrameGap: 4,         // frames; at 5 FPS that's 0.8 s
+  maxFrameGap: 4, // frames; at 5 FPS that's 0.8 s
   centroidEpsRatio: 0.15, // a fraction of average quad diameter
-  iouThreshold: 0.4,      // tracks must overlap by ≥ this to associate
-  modeMustMatch: true,    // only merge same-mode (card/a4/...)
+  iouThreshold: 0.4, // tracks must overlap by ≥ this to associate
+  modeMustMatch: true, // only merge same-mode (card/a4/...)
 }
 
 export class DocTracker {
@@ -90,7 +90,9 @@ export class DocTracker {
   /** Return tracks (one per identity), each with bestItem + topK candidates. */
   finalize(k = 3) {
     return [...this.tracks.values()].map((t) => {
-      const sorted = [...t.allItems].sort((a, b) => (b.score ?? 0) - (a.score ?? 0))
+      const sorted = [...t.allItems].sort(
+        (a, b) => (b.score ?? 0) - (a.score ?? 0),
+      )
       return {
         id: t.id,
         mode: t.mode,
@@ -107,12 +109,37 @@ if (import.meta.main) {
   const tr = new DocTracker()
   // 3 frames same card, 2 frames different card
   const inputs = [
-    { frame_idx: 0, mode: 'card', score: 80, quad: mkQuad(100, 100, 660, 100, 660, 460, 100, 460) },
-    { frame_idx: 1, mode: 'card', score: 95, quad: mkQuad(105, 102, 665, 100, 660, 462, 102, 460) },
-    { frame_idx: 2, mode: 'card', score: 70, quad: mkQuad(110, 110, 670, 110, 670, 470, 110, 470) },
+    {
+      frame_idx: 0,
+      mode: 'card',
+      score: 80,
+      quad: mkQuad(100, 100, 660, 100, 660, 460, 100, 460),
+    },
+    {
+      frame_idx: 1,
+      mode: 'card',
+      score: 95,
+      quad: mkQuad(105, 102, 665, 100, 660, 462, 102, 460),
+    },
+    {
+      frame_idx: 2,
+      mode: 'card',
+      score: 70,
+      quad: mkQuad(110, 110, 670, 110, 670, 470, 110, 470),
+    },
     // gap to new card
-    { frame_idx: 10, mode: 'card', score: 60, quad: mkQuad(800, 600, 1400, 600, 1400, 960, 800, 960) },
-    { frame_idx: 11, mode: 'card', score: 88, quad: mkQuad(802, 602, 1402, 600, 1400, 962, 800, 962) },
+    {
+      frame_idx: 10,
+      mode: 'card',
+      score: 60,
+      quad: mkQuad(800, 600, 1400, 600, 1400, 960, 800, 960),
+    },
+    {
+      frame_idx: 11,
+      mode: 'card',
+      score: 88,
+      quad: mkQuad(802, 602, 1402, 600, 1400, 962, 800, 962),
+    },
   ]
   for (const item of inputs) {
     const out = tr.step(item)
@@ -120,7 +147,9 @@ if (import.meta.main) {
   }
   console.log('finalize:')
   for (const t of tr.finalize()) {
-    console.log(`  track ${t.id}: bestScore=${t.bestItem.score} frame=${t.bestItem.frame_idx}`)
+    console.log(
+      `  track ${t.id}: bestScore=${t.bestItem.score} frame=${t.bestItem.frame_idx}`,
+    )
   }
 }
 

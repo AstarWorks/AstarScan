@@ -12,18 +12,17 @@
  */
 
 import { cv } from './cv-shim.mjs'
-import {
-  newCanvas,
-  jpegToCanvas,
-  canvasToJpegBuffer,
-} from './canvas-utils.mjs'
+import { newCanvas, canvasToJpegBuffer } from './canvas-utils.mjs'
 import {
   hamming,
   popcount,
   tileDistance,
 } from '../../packages/core/src/pipeline/hash.ts'
 import { combinedScore } from '../../packages/core/src/pipeline/score.ts'
-import { QuadSmoother, quadArea } from '../../packages/core/src/pipeline/quad-smoother.ts'
+import {
+  QuadSmoother,
+  quadArea,
+} from '../../packages/core/src/pipeline/quad-smoother.ts'
 import { FrameCollector } from '../../packages/core/src/pipeline/frame-collector.ts'
 import { createPipelineOps } from '../../packages/core/src/pipeline/index.ts'
 
@@ -39,7 +38,10 @@ const ops = createPipelineOps({ cv, createCanvas: newCanvas })
 // Constants — shared values live in scan-core pipeline/constants.ts
 // ---------------------------------------------------------------------------
 
-import { EXTRACT_W, EXTRACT_H } from '../../packages/core/src/pipeline/constants.ts'
+import {
+  EXTRACT_W,
+  EXTRACT_H,
+} from '../../packages/core/src/pipeline/constants.ts'
 export { EXTRACT_W, EXTRACT_H }
 
 // ---------------------------------------------------------------------------
@@ -105,7 +107,13 @@ export { combinedScore }
  *
  * `makeCanvas(w, h)` is injected so this stays runtime-agnostic.
  */
-export function rawLinkDistance(prevCanvas, prevQuad, curCanvas, curQuad, makeCanvas) {
+export function rawLinkDistance(
+  prevCanvas,
+  prevQuad,
+  curCanvas,
+  curQuad,
+  makeCanvas,
+) {
   const bbox = (q) => {
     const xs = [q.tl.x, q.tr.x, q.br.x, q.bl.x]
     const ys = [q.tl.y, q.tr.y, q.br.y, q.bl.y]

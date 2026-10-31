@@ -22,10 +22,10 @@ per-cluster jsonl, winner JPEGs, sweep CSV, and a single-file
 
 ## Test data
 
-| File | Length | Frames @ 0.1 s | Content |
-| --- | --- | --- | --- |
-| `20260412_204840.mp4` | ~43 s | 431 | Ergotron monitor-arm manual (multilingual notice repeats every page) |
-| `20260412_212448.mp4` | ~66 s | 663 | Yellow book cover at angles + dental receipt + product packaging |
+| File                  | Length | Frames @ 0.1 s | Content                                                              |
+| --------------------- | ------ | -------------- | -------------------------------------------------------------------- |
+| `20260412_204840.mp4` | ~43 s  | 431            | Ergotron monitor-arm manual (multilingual notice repeats every page) |
+| `20260412_212448.mp4` | ~66 s  | 663            | Yellow book cover at angles + dental receipt + product packaging     |
 
 Both are handheld phone footage, ~30 fps native, with the user holding
 each page for several seconds and turning between pages. The Ergotron
@@ -36,10 +36,10 @@ warning icons) that complicates feature-based dedup.
 
 ### Production (pre-change): pHash centroid clustering at `CLUSTER_THRESHOLD = 55`
 
-| File | Detected | Winners | Notes |
-| --- | --- | --- | --- |
-| mp4-1 | 422 / 431 | 11 | 2 known dup pairs in winners (e.g. page 9, page 15 both captured twice) |
-| mp4-2 | 641 / 663 | 24 | Book cover splits into 6 clusters at varying angles |
+| File  | Detected  | Winners | Notes                                                                   |
+| ----- | --------- | ------- | ----------------------------------------------------------------------- |
+| mp4-1 | 422 / 431 | 11      | 2 known dup pairs in winners (e.g. page 9, page 15 both captured twice) |
+| mp4-2 | 641 / 663 | 24      | Book cover splits into 6 clusters at varying angles                     |
 
 ### Threshold sweep (pHash only)
 
@@ -83,10 +83,10 @@ compiled in.
 `tile-pHash CLUSTER_THRESHOLD=27 + ORB_MERGE_INLIERS=25` (no spatial
 grid filter):
 
-| File | Baseline winners | New winners | Harness | Browser |
-| --- | --- | --- | --- | --- |
-| mp4-1 | 11 (2 dup pairs) | 7 (harness) / 6 (browser) | 7 | 6 |
-| mp4-2 | 24 (book cover ×6) | 12 | 12 | 12 |
+| File  | Baseline winners   | New winners               | Harness | Browser |
+| ----- | ------------------ | ------------------------- | ------- | ------- |
+| mp4-1 | 11 (2 dup pairs)   | 7 (harness) / 6 (browser) | 7       | 6       |
+| mp4-2 | 24 (book cover ×6) | 12                        | 12      | 12      |
 
 mp4-2 sees the dramatic improvement (24 → 12, half the false splits
 gone). mp4-1 drops 11 → 6/7 — 2 are legitimate dup-pair merges, the
@@ -100,22 +100,22 @@ A spatial-distribution gate (4×4 grid coverage of inliers) cleanly
 separates Ergotron false merges (grid coverage 5–7) from genuine
 same-page merges in that footage (grid 9–10):
 
-| Pair | Type | ORB inliers | Grid cells |
-| --- | --- | --- | --- |
-| mp4-1 same-page (page 9 dup) | true merge | 70 | 9 |
-| mp4-1 same-page (page 15 dup) | true merge | 69 | 10 |
-| mp4-1 diff-page boilerplate | **false** merge | 67 | 7 |
-| mp4-1 diff-page boilerplate | **false** merge | 75 | 5 |
+| Pair                          | Type            | ORB inliers | Grid cells |
+| ----------------------------- | --------------- | ----------- | ---------- |
+| mp4-1 same-page (page 9 dup)  | true merge      | 70          | 9          |
+| mp4-1 same-page (page 15 dup) | true merge      | 69          | 10         |
+| mp4-1 diff-page boilerplate   | **false** merge | 67          | 7          |
+| mp4-1 diff-page boilerplate   | **false** merge | 75          | 5          |
 
 But the same gate at `min-grid ≥ 8` blocks book-cover-at-angle merges
 in mp4-2:
 
-| Pair | Type | ORB inliers | Grid cells |
-| --- | --- | --- | --- |
-| mp4-2 same book cover | true merge | 50 | 10 |
-| mp4-2 same book cover | true merge | 52 | 7 ← blocked |
-| mp4-2 same book cover | true merge | 36 | 8 |
-| mp4-2 same book cover | true merge | 33 | **4** ← blocked |
+| Pair                  | Type       | ORB inliers | Grid cells      |
+| --------------------- | ---------- | ----------- | --------------- |
+| mp4-2 same book cover | true merge | 50          | 10              |
+| mp4-2 same book cover | true merge | 52          | 7 ← blocked     |
+| mp4-2 same book cover | true merge | 36          | 8               |
+| mp4-2 same book cover | true merge | 33          | **4** ← blocked |
 
 The empirical ranges overlap. A per-video parameter set works (mp4-1
 likes `min-grid ≥ 8`, mp4-2 likes no grid filter), but production can't
@@ -129,10 +129,10 @@ oriented) silently drops user pages with no UI affordance for recovery.
 ±20 % on `cluster-thr` (22 → 32):
 
 | thr | mp4-1 winners | mp4-1 abs_err | mp4-2 winners | mp4-2 abs_err |
-| --- | --- | --- | --- | --- |
-| 22  | 9 | 1 | 15 | 5 |
-| 27  | **7** | **3** | **12** | **2** |
-| 32  | 3 | 7 | 8 | 2 |
+| --- | ------------- | ------------- | ------------- | ------------- |
+| 22  | 9             | 1             | 15            | 5             |
+| 27  | **7**         | **3**         | **12**        | **2**         |
+| 32  | 3             | 7             | 8             | 2             |
 
 `thr=27` is the local minimum of total absolute error and the only
 value where mp4-2 keeps abs_err ≤ 2. The pipeline is stable within
@@ -174,11 +174,11 @@ pipeline signal), ORB as cross-check/fallback.
 
 **The count-based metrics were lying.** The "recall 1.0" YOLO runs:
 
-| run | count-based | identity recall | duplicates | missed |
-| --- | --- | --- | --- | --- |
-| mp4-1 yolo tile-orb | recall 1.0 / prec 0.69 | **0.64** (7/11) | 7/14 | g02 g05 g11 g12 |
-| mp4-2 yolo tile-orb | recall 1.0 / prec 0.65 | **0.78** (7/9) | 9/16 | h02 h08 |
-| mp4-1 opencv tile-orb | recall 0.64 / prec 1.0 | **0.36** (4/11) | 1/5 | 7 pages |
+| run                   | count-based            | identity recall | duplicates | missed          |
+| --------------------- | ---------------------- | --------------- | ---------- | --------------- |
+| mp4-1 yolo tile-orb   | recall 1.0 / prec 0.69 | **0.64** (7/11) | 7/14       | g02 g05 g11 g12 |
+| mp4-2 yolo tile-orb   | recall 1.0 / prec 0.65 | **0.78** (7/9)  | 9/16       | h02 h08         |
+| mp4-1 opencv tile-orb | recall 0.64 / prec 1.0 | **0.36** (4/11) | 1/5        | 7 pages         |
 
 Duplicates were inflating the winner count past GT, masking that ~4
 pages per video were never captured at all. mp4-2's true face count is
@@ -240,15 +240,16 @@ SPA (mp4 upload → 11 pages, model loads, no CDN traffic).
 Config: `--detector yolo --algorithm segment --min-conf 0.25 --verify ocr`
 (all defaults; this is what `scripts/eval/regress.mjs` freezes).
 
-| video | GT faces | winners | identity recall | duplicates | false positives |
-| --- | --- | --- | --- | --- | --- |
-| mp4-1 (Ergotron) | 12 real + 1 optional | 14 | **1.00** | 1 | **0** |
-| mp4-2 (mixed items) | 10 real | 17 | **1.00** | 5 | 2 |
+| video               | GT faces             | winners | identity recall | duplicates | false positives |
+| ------------------- | -------------------- | ------- | --------------- | ---------- | --------------- |
+| mp4-1 (Ergotron)    | 12 real + 1 optional | 14      | **1.00**        | 1          | **0**           |
+| mp4-2 (mixed items) | 10 real              | 17      | **1.00**        | 5          | 2               |
 
 Starting point (tile-orb, same detector): identity recall 0.64 / 0.78
 with 7-9 duplicates and whole pages silently missing.
 
 Mechanisms that made the difference:
+
 1. **Temporal segmentation** (acceptance gaps = page turns; hash spikes
    at gap<0.5 s are never cuts — physically impossible page swaps).
 2. **Gap rescue with center-weighted recursive pick + NMS** — recovers

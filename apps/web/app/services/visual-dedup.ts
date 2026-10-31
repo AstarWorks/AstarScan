@@ -68,9 +68,6 @@ export function visualDedup(
     }
   }
 
-  const winnerIds = [
-    ...passthrough.map((p) => p.id),
-    ...kept.map((k) => k.id),
-  ]
+  const winnerIds = [...passthrough.map((p) => p.id), ...kept.map((k) => k.id)]
   return { winnerIds, droppedMap }
 }

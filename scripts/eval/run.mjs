@@ -15,6 +15,7 @@
  *   raw/            — extracted frames (deleted unless --keep-frames)
  */
 
+import process from 'node:process'
 import path from 'node:path'
 import fs from 'node:fs/promises'
 import { spawn } from 'node:child_process'
@@ -89,13 +90,27 @@ function parseArgs(argv) {
     const a = argv[i]
     const next = () => argv[++i]
     switch (a) {
-      case '--gt': args.gt = Number(next()); break
-      case '--interval': args.interval = Number(next()); break
-      case '--cluster-thr': args.clusterThr = Number(next()); break
-      case '--min-ten': args.minTen = Number(next()); break
-      case '--min-conf': args.minConf = Number(next()); break
-      case '--out': args.out = next(); break
-      case '--keep-frames': args.keepFrames = true; break
+      case '--gt':
+        args.gt = Number(next())
+        break
+      case '--interval':
+        args.interval = Number(next())
+        break
+      case '--cluster-thr':
+        args.clusterThr = Number(next())
+        break
+      case '--min-ten':
+        args.minTen = Number(next())
+        break
+      case '--min-conf':
+        args.minConf = Number(next())
+        break
+      case '--out':
+        args.out = next()
+        break
+      case '--keep-frames':
+        args.keepFrames = true
+        break
       case '--sweep': {
         const param = next()
         const range = next() // "start:end:step"
@@ -103,26 +118,65 @@ function parseArgs(argv) {
         args.sweep = { param, start: s, end: e, step: st || 1 }
         break
       }
-      case '--algorithm': args.algorithm = next(); break
-      case '--orb-merge': args.orbMerge = Number(next()); break
-      case '--tile-merge-max': args.tileMergeMax = Number(next()); break
-      case '--min-grid': args.minGridCoverage = Number(next()); break
-      case '--detector': args.detector = next(); break
-      case '--model': args.model = next(); break
-      case '--gt-map': args.gtMap = next(); break
-      case '--smooth-quad': args.smoothQuad = Number(next()); break
-      case '--verify': args.verify = next(); break // 'ocr' | 'none'
-      case '--rescue-ten': args.rescueTen = Number(next()); break
-      case '--verify-jaccard': args.verifyJaccard = Number(next()); break
-      case '--seg-gap': args.seg.maxGapFrames = Number(next()); break
-      case '--seg-cut-gap': args.seg.cutGapFrames = Number(next()); break
-      case '--seg-cut-orb': args.seg.cutOrbInliers = Number(next()); break
-      case '--merge-adj-s': args.seg.adjacentGapS = Number(next()); break
-      case '--merge-orb-adj': args.seg.orbAdjacent = Number(next()); break
-      case '--merge-orb-dist': args.seg.orbDistant = Number(next()); break
-      case '--merge-grid': args.seg.minGrid = Number(next()); break
-      case '--merge-tile-lo': args.seg.tileLo = Number(next()); break
-      default: rest.push(a)
+      case '--algorithm':
+        args.algorithm = next()
+        break
+      case '--orb-merge':
+        args.orbMerge = Number(next())
+        break
+      case '--tile-merge-max':
+        args.tileMergeMax = Number(next())
+        break
+      case '--min-grid':
+        args.minGridCoverage = Number(next())
+        break
+      case '--detector':
+        args.detector = next()
+        break
+      case '--model':
+        args.model = next()
+        break
+      case '--gt-map':
+        args.gtMap = next()
+        break
+      case '--smooth-quad':
+        args.smoothQuad = Number(next())
+        break
+      case '--verify':
+        args.verify = next()
+        break // 'ocr' | 'none'
+      case '--rescue-ten':
+        args.rescueTen = Number(next())
+        break
+      case '--verify-jaccard':
+        args.verifyJaccard = Number(next())
+        break
+      case '--seg-gap':
+        args.seg.maxGapFrames = Number(next())
+        break
+      case '--seg-cut-gap':
+        args.seg.cutGapFrames = Number(next())
+        break
+      case '--seg-cut-orb':
+        args.seg.cutOrbInliers = Number(next())
+        break
+      case '--merge-adj-s':
+        args.seg.adjacentGapS = Number(next())
+        break
+      case '--merge-orb-adj':
+        args.seg.orbAdjacent = Number(next())
+        break
+      case '--merge-orb-dist':
+        args.seg.orbDistant = Number(next())
+        break
+      case '--merge-grid':
+        args.seg.minGrid = Number(next())
+        break
+      case '--merge-tile-lo':
+        args.seg.tileLo = Number(next())
+        break
+      default:
+        rest.push(a)
     }
   }
   if (rest.length !== 1) {
@@ -152,7 +206,9 @@ function runFfmpeg(args) {
   return new Promise((resolve, reject) => {
     const p = spawn('ffmpeg', args, { stdio: ['ignore', 'ignore', 'pipe'] })
     let err = ''
-    p.stderr.on('data', (b) => { err += b.toString() })
+    p.stderr.on('data', (b) => {
+      err += b.toString()
+    })
     p.on('error', reject)
     p.on('close', (code) => {
       if (code === 0) resolve()
@@ -168,10 +224,14 @@ async function extractFrames(mp4, interval, frameDir) {
   await runFfmpeg([
     '-y',
     '-hide_banner',
-    '-loglevel', 'error',
-    '-i', mp4,
-    '-vf', `fps=${fps}`,
-    '-q:v', '3',
+    '-loglevel',
+    'error',
+    '-i',
+    mp4,
+    '-vf',
+    `fps=${fps}`,
+    '-q:v',
+    '3',
     path.join(frameDir, 'frame-%05d.jpg'),
   ])
   const entries = (await fs.readdir(frameDir))
@@ -193,7 +253,9 @@ async function main() {
   const args = parseArgs(process.argv.slice(2))
 
   console.log(`[run] mp4=${args.mp4}`)
-  console.log(`[run] params: detector=${args.detector} interval=${args.interval} clusterThr=${args.clusterThr} minTen=${args.minTen} minConf=${args.minConf}`)
+  console.log(
+    `[run] params: detector=${args.detector} interval=${args.interval} clusterThr=${args.clusterThr} minTen=${args.minTen} minConf=${args.minConf}`,
+  )
   console.log(`[run] out=${args.out}`)
 
   await fs.rm(args.out, { recursive: true, force: true })
@@ -223,7 +285,9 @@ async function main() {
     } catch (err) {
       console.error(`[run] failed to load YOLO model: ${args.model}`)
       console.error(`[run]   ${err.message}`)
-      console.error('[run] train it first (docs/training-doc-corners.md) or pass --model <path>.')
+      console.error(
+        '[run] train it first (docs/training-doc-corners.md) or pass --model <path>.',
+      )
       process.exit(1)
     }
     console.log(`[run] detector=yolo model=${args.model}`)
@@ -236,7 +300,8 @@ async function main() {
   console.log('[run] processing frames...')
   const t1 = Date.now()
   const acceptedRecords = []
-  const smoother = args.smoothQuad != null ? new QuadSmoother(args.smoothQuad) : null
+  const smoother =
+    args.smoothQuad != null ? new QuadSmoother(args.smoothQuad) : null
   let prevLink = null
   for (const f of frames) {
     const canvas = await jpegToCanvas(f.path)
@@ -245,14 +310,19 @@ async function main() {
     // With --smooth-quad we precompute the OpenCV detection too, so the
     // smoother sees every detector's raw quad before the warp.
     let detection =
-      args.detector === 'yolo' ? await detectWithYolo(canvas, yoloSession, 0) : undefined
+      args.detector === 'yolo'
+        ? await detectWithYolo(canvas, yoloSession, 0)
+        : undefined
     if (smoother) {
       if (detection === undefined) {
         const q = detectWithOpenCV(canvas)
         detection = q ? { quad: q, confidence: 1.0 } : null
       }
       if (detection?.quad) {
-        detection = { ...detection, quad: smoother.apply(detection.quad, f.idx) }
+        detection = {
+          ...detection,
+          quad: smoother.apply(detection.quad, f.idx),
+        }
       }
     }
     const trace = processFrame({
@@ -268,7 +338,13 @@ async function main() {
     // signal that crop jitter can't poison (see rawLinkDistance docs).
     trace.linkDist =
       prevLink && trace.quad && f.idx - prevLink.idx === 1
-        ? rawLinkDistance(prevLink.canvas, prevLink.quad, canvas, trace.quad, newCanvas)
+        ? rawLinkDistance(
+            prevLink.canvas,
+            prevLink.quad,
+            canvas,
+            trace.quad,
+            newCanvas,
+          )
         : null
     prevLink = trace.quad ? { idx: f.idx, canvas, quad: trace.quad } : prevLink
     if (trace.accepted) {
@@ -345,11 +421,15 @@ async function main() {
     traces.push(trace)
     if ((f.idx + 1) % 50 === 0) {
       const det = traces.filter((t) => t.detected).length
-      console.log(`  [${f.idx + 1}/${frames.length}] det=${det} buf=${collector.size}`)
+      console.log(
+        `  [${f.idx + 1}/${frames.length}] det=${det} buf=${collector.size}`,
+      )
     }
   }
   const procMs = Date.now() - t1
-  console.log(`[run] processed ${frames.length} frames in ${procMs}ms (avg ${(procMs / frames.length).toFixed(1)}ms/frame)`)
+  console.log(
+    `[run] processed ${frames.length} frames in ${procMs}ms (avg ${(procMs / frames.length).toFixed(1)}ms/frame)`,
+  )
 
   // ---------------------------------------------------------------------
   // Stage 2 selection — both via the production FrameCollector (winners
@@ -357,13 +437,17 @@ async function main() {
   // membership for diagnostics. The two MUST agree on winner count;
   // any divergence is a harness bug.
   // ---------------------------------------------------------------------
-  console.log(`[run] clustering algorithm=${args.algorithm} thr=${args.clusterThr}`)
+  console.log(
+    `[run] clustering algorithm=${args.algorithm} thr=${args.clusterThr}`,
+  )
   const useTile = args.algorithm === 'tile' || args.algorithm === 'tile-orb'
   const algoOpts = useTile
     ? { hashKey: 'tileHash', distanceFn: tileDistance }
     : { hashKey: 'hash', distanceFn: (a, b) => hamming(a, b) }
   const loadAcceptedCanvas = (idx) =>
-    jpegToCanvas(path.join(acceptedDir, `frame-${String(idx).padStart(5, '0')}.jpg`))
+    jpegToCanvas(
+      path.join(acceptedDir, `frame-${String(idx).padStart(5, '0')}.jpg`),
+    )
   let clusters
   let segDebug = null
   if (args.algorithm === 'segment') {
@@ -387,12 +471,17 @@ async function main() {
       let ocrDisk = {}
       try {
         ocrDisk = JSON.parse(await fs.readFile(ocrCachePath, 'utf8'))
-      } catch { /* first run */ }
+      } catch {
+        /* first run */
+      }
       const ocrCache = new Map()
       const ocrText = async (idx) => {
         if (ocrDisk[idx] !== undefined) return ocrDisk[idx]
         if (!ocrCache.has(idx)) {
-          const p = path.join(acceptedDir, `frame-${String(idx).padStart(5, '0')}.jpg`)
+          const p = path.join(
+            acceptedDir,
+            `frame-${String(idx).padStart(5, '0')}.jpg`,
+          )
           ocrCache.set(
             idx,
             runYomiToku(p)
@@ -414,7 +503,9 @@ async function main() {
         const [ta, tb] = await Promise.all([ocrText(aIdx), ocrText(bIdx)])
         // Jaccard / containment judgment lives in scan-core
         // (pipeline/text-similarity.ts) — shared with the browser verifier.
-        const v = verifySameText(ta, tb, gapS, { jaccardThreshold: args.verifyJaccard })
+        const v = verifySameText(ta, tb, gapS, {
+          jaccardThreshold: args.verifyJaccard,
+        })
         if (v == null) return null
         console.log(
           `  [verify-ocr] ${aIdx}↔${bIdx}: jaccard=${v.jaccard.toFixed(3)} containment=${v.containment.toFixed(3)} gap=${gapS.toFixed(1)}s → ${v.same ? 'same' : 'diff'}`,
@@ -438,10 +529,14 @@ async function main() {
         `${clusters.length} clusters in ${Date.now() - t}ms`,
     )
     for (const r of segDebug.rescues) {
-      console.log(`  rescue idx=${r.idx} t=${r.t_s.toFixed(1)}s ten=${Math.round(r.ten)} score=${r.score.toFixed(3)}`)
+      console.log(
+        `  rescue idx=${r.idx} t=${r.t_s.toFixed(1)}s ten=${Math.round(r.ten)} score=${r.score.toFixed(3)}`,
+      )
     }
     for (const c of segDebug.cuts) {
-      console.log(`  cut ${c.a}→${c.b}: phash=${c.phash} gap=${c.gap} orb=${c.orb}`)
+      console.log(
+        `  cut ${c.a}→${c.b}: phash=${c.phash} gap=${c.gap} orb=${c.orb}`,
+      )
     }
     for (const m of segDebug.merges.filter((m) => m.verdict)) {
       console.log(
@@ -474,7 +569,9 @@ async function main() {
     )
     clusters = result.merged
     orbMatchCounts = result.matchCounts
-    console.log(`[run] ORB-merge produced ${clusters.length} clusters in ${Date.now() - t}ms`)
+    console.log(
+      `[run] ORB-merge produced ${clusters.length} clusters in ${Date.now() - t}ms`,
+    )
   }
   // Production FrameCollector uses 256-bit pHash always; only run it when
   // the chosen algorithm is the same so we can sanity-check parity.
@@ -533,7 +630,10 @@ async function main() {
       return {
         idx,
         t_s: idx * args.interval,
-        jpegPath: path.join(acceptedDir, `frame-${String(idx).padStart(5, '0')}.jpg`),
+        jpegPath: path.join(
+          acceptedDir,
+          `frame-${String(idx).padStart(5, '0')}.jpg`,
+        ),
       }
     })
     gtMatch = await matchWinnersToGt({
@@ -546,7 +646,8 @@ async function main() {
         ` dupRate=${m.duplicateRate} (${m.duplicates}) fpRate=${m.falsePositiveRate}` +
         ` (${m.falsePositives}) mergeSuspects=${m.mergeErrors}`,
     )
-    if (m.missedPages.length) console.log(`[run]   missed pages: ${m.missedPages.join(', ')}`)
+    if (m.missedPages.length)
+      console.log(`[run]   missed pages: ${m.missedPages.join(', ')}`)
     for (const f of m.flags) console.log(`[run]   flag idx=${f.idx}: ${f.flag}`)
     await fs.writeFile(
       path.join(args.out, 'gt-match.json'),
@@ -612,8 +713,16 @@ async function main() {
   }
   const consecHash = {
     pairs: consecP.length,
-    phash: { p25: pct(consecP, 0.25), median: pct(consecP, 0.5), p75: pct(consecP, 0.75) },
-    tile: { p25: pct(consecT, 0.25), median: pct(consecT, 0.5), p75: pct(consecT, 0.75) },
+    phash: {
+      p25: pct(consecP, 0.25),
+      median: pct(consecP, 0.5),
+      p75: pct(consecP, 0.75),
+    },
+    tile: {
+      p25: pct(consecT, 0.25),
+      median: pct(consecT, 0.5),
+      p75: pct(consecT, 0.75),
+    },
   }
 
   const areaFracs = acceptedRecords.map((r) => r.areaFrac).sort((a, b) => a - b)
@@ -645,7 +754,9 @@ async function main() {
     winners: winners.length,
     gt: args.gt,
     recall: args.gt ? Math.min(1, winners.length / args.gt) : null,
-    precision: args.gt ? Math.min(1, args.gt / Math.max(1, winners.length)) : null,
+    precision: args.gt
+      ? Math.min(1, args.gt / Math.max(1, winners.length))
+      : null,
     absError: args.gt != null ? Math.abs(winners.length - args.gt) : null,
     // Identity-matched metrics (null until a GT manifest exists for the
     // video). These supersede the count-based recall/precision proxies
@@ -687,7 +798,9 @@ async function main() {
           : null,
       },
       inter_winner_dist: clusters.map((c2, cj) =>
-        cj === ci ? null : Number(distFn(c.winner[distKey], c2.winner[distKey])),
+        cj === ci
+          ? null
+          : Number(distFn(c.winner[distKey], c2.winner[distKey])),
       ),
     })
   })
@@ -729,7 +842,9 @@ async function main() {
   if (args.sweep) {
     const sw = args.sweep
     if (sw.param !== 'cluster-thr') {
-      console.warn(`[run] sweep only supports --sweep cluster-thr; got ${sw.param}`)
+      console.warn(
+        `[run] sweep only supports --sweep cluster-thr; got ${sw.param}`,
+      )
     } else {
       const rows = []
       rows.push('cluster_thr,n_clusters,gt,abs_error')
@@ -747,11 +862,19 @@ async function main() {
   }
 
   console.log('[run] SUMMARY:')
-  console.log(`  detector=${args.detector} sampled=${summary.sampled} detected=${summary.detected} accepted=${summary.accepted} winners=${summary.winners}`)
-  console.log(`  quad tightness: median areaFrac=${summary.medianAreaFrac}  over-coverage(≥0.85)=${summary.overCoverQuads}/${summary.accepted} (${(summary.overCoverFrac * 100).toFixed(0)}%)`)
-  console.log(`  consec-hash: phash median=${consecHash.phash.median} (p25=${consecHash.phash.p25} p75=${consecHash.phash.p75})  tile median=${consecHash.tile.median} over ${consecHash.pairs} pairs`)
+  console.log(
+    `  detector=${args.detector} sampled=${summary.sampled} detected=${summary.detected} accepted=${summary.accepted} winners=${summary.winners}`,
+  )
+  console.log(
+    `  quad tightness: median areaFrac=${summary.medianAreaFrac}  over-coverage(≥0.85)=${summary.overCoverQuads}/${summary.accepted} (${(summary.overCoverFrac * 100).toFixed(0)}%)`,
+  )
+  console.log(
+    `  consec-hash: phash median=${consecHash.phash.median} (p25=${consecHash.phash.p25} p75=${consecHash.phash.p75})  tile median=${consecHash.tile.median} over ${consecHash.pairs} pairs`,
+  )
   if (args.gt != null) {
-    console.log(`  GT=${args.gt} → abs_error=${summary.absError} (recall_proxy=${summary.recall.toFixed(2)}, precision_proxy=${summary.precision.toFixed(2)})`)
+    console.log(
+      `  GT=${args.gt} → abs_error=${summary.absError} (recall_proxy=${summary.recall.toFixed(2)}, precision_proxy=${summary.precision.toFixed(2)})`,
+    )
   }
   if (gtMatch) {
     const m = gtMatch.metrics

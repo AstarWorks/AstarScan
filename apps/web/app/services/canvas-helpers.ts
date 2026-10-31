@@ -33,7 +33,10 @@ export function downscaleToLongSide(
   if (current <= longSide) return source
 
   const scale = longSide / current
-  const out = newCanvas(Math.round(source.width * scale), Math.round(source.height * scale))
+  const out = newCanvas(
+    Math.round(source.width * scale),
+    Math.round(source.height * scale),
+  )
   out.getContext('2d')?.drawImage(source, 0, 0, out.width, out.height)
   return out
 }

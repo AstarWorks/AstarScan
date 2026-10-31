@@ -28,24 +28,25 @@
 
 ## Emotional Register
 
-| Context | Register | 具体 |
-|---|---|---|
-| Camera capture (メイン) | **calm-neutral** (平時) → **confidence-boost** (ページ確定時) | 緑枠 flash、カウンター +1 の即時 feedback で「取れた」を可視化 |
-| Quality warning (blur / glare) | **urgency** (短時間) | 角 2 秒までの赤 tint、panic させず「動かさないで」の事実告知 |
-| Export / 完了 | **celebration** (ほのか) | 進捗 bar 満了 → tick アイコン → PDF download。効果音 / confetti 禁止 |
-| Error (camera 拒否 / storage full) | **calm-neutral** | 事故風 error 演出禁止。次の action (権限再申請 / 削除) を提示 |
+| Context                            | Register                                                      | 具体                                                                 |
+| ---------------------------------- | ------------------------------------------------------------- | -------------------------------------------------------------------- |
+| Camera capture (メイン)            | **calm-neutral** (平時) → **confidence-boost** (ページ確定時) | 緑枠 flash、カウンター +1 の即時 feedback で「取れた」を可視化       |
+| Quality warning (blur / glare)     | **urgency** (短時間)                                          | 角 2 秒までの赤 tint、panic させず「動かさないで」の事実告知         |
+| Export / 完了                      | **celebration** (ほのか)                                      | 進捗 bar 満了 → tick アイコン → PDF download。効果音 / confetti 禁止 |
+| Error (camera 拒否 / storage full) | **calm-neutral**                                              | 事故風 error 演出禁止。次の action (権限再申請 / 削除) を提示        |
 
 **禁止**:
+
 - Camera 画面で装飾 (角飾り / ネオン frame / gradient overlay) — viewport を邪魔する
 - 現場 register で長時間 urgency 継続 — 疲労源になる (2 秒以内に calm に戻す)
 
 ## Inspiration Anchors
 
-| Priority | Brand | What to borrow |
-|---|---|---|
-| ★★★ Primary | **Apple Camera / Notes Scan** | Camera-first UI の defacto。chrome 最小、viewport が全画面、capture feedback の即時性、余計な mode 切替なし |
-| ★★ Secondary | **Notion** — `../AstarManagement/.claude/skills/ui-review/references/inspirations/notion.md` | 撮影後のページ一覧 / 整理画面。drag 並び替え、やさしい borders、dense でない |
-| ★ Tertiary | **Linear** — `../AstarManagement/.claude/skills/ui-review/references/inspirations/linear.md` | 設定画面 / embedding 統合 docs のクリーンさ |
+| Priority     | Brand                                                                                        | What to borrow                                                                                              |
+| ------------ | -------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------- |
+| ★★★ Primary  | **Apple Camera / Notes Scan**                                                                | Camera-first UI の defacto。chrome 最小、viewport が全画面、capture feedback の即時性、余計な mode 切替なし |
+| ★★ Secondary | **Notion** — `../AstarManagement/.claude/skills/ui-review/references/inspirations/notion.md` | 撮影後のページ一覧 / 整理画面。drag 並び替え、やさしい borders、dense でない                                |
+| ★ Tertiary   | **Linear** — `../AstarManagement/.claude/skills/ui-review/references/inspirations/linear.md` | 設定画面 / embedding 統合 docs のクリーンさ                                                                 |
 
 **原則**: **capture / preview 画面 = Apple**、**整理 / export 画面 = Notion**、**設定 / docs = Linear**。
 
@@ -69,13 +70,13 @@
 
 ### Density Philosophy
 
-| Screen | Inspiration | Density |
-|---|---|---|
-| `/scan` (camera viewport) | Apple | **Chrome ゼロ** — top に 1 行 status、bottom に capture button + counter のみ |
-| `/review` (撮影ページ一覧) | Notion | 中密度、grid 2-3 column、drag 並び替え |
-| `/export` | Notion × Stripe | セクション化、PDF 設定 (名前 / ページ順 / 画質) |
-| `/settings` | Linear | dense 設定表、shortcut 一覧、権限 status |
-| embed demo (`<astar-scan>`) | Apple | ホスト画面に溶け込む中立 chrome、host theme を尊重 |
+| Screen                      | Inspiration     | Density                                                                       |
+| --------------------------- | --------------- | ----------------------------------------------------------------------------- |
+| `/scan` (camera viewport)   | Apple           | **Chrome ゼロ** — top に 1 行 status、bottom に capture button + counter のみ |
+| `/review` (撮影ページ一覧)  | Notion          | 中密度、grid 2-3 column、drag 並び替え                                        |
+| `/export`                   | Notion × Stripe | セクション化、PDF 設定 (名前 / ページ順 / 画質)                               |
+| `/settings`                 | Linear          | dense 設定表、shortcut 一覧、権限 status                                      |
+| embed demo (`<astar-scan>`) | Apple           | ホスト画面に溶け込む中立 chrome、host theme を尊重                            |
 
 ## Do
 

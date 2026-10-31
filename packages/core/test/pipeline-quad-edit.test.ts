@@ -28,7 +28,12 @@ const square: Quad = {
 
 describe('quadCornerList', () => {
   it('emits the four corners in the clockwise order Quad declares', () => {
-    expect(quadCornerList(square).map((c) => c.corner)).toEqual(['tl', 'tr', 'br', 'bl'])
+    expect(quadCornerList(square).map((c) => c.corner)).toEqual([
+      'tl',
+      'tr',
+      'br',
+      'bl',
+    ])
   })
 
   it('carries each corner point through unchanged', () => {
@@ -73,12 +78,21 @@ describe('nearestQuadCorner', () => {
 
 describe('clampPointToFrame', () => {
   it('leaves an interior point alone', () => {
-    expect(clampPointToFrame({ x: 50, y: 60 }, 640, 480)).toEqual({ x: 50, y: 60 })
+    expect(clampPointToFrame({ x: 50, y: 60 }, 640, 480)).toEqual({
+      x: 50,
+      y: 60,
+    })
   })
 
   it('clamps past both bounds on both axes', () => {
-    expect(clampPointToFrame({ x: -10, y: 900 }, 640, 480)).toEqual({ x: 0, y: 480 })
-    expect(clampPointToFrame({ x: 700, y: -5 }, 640, 480)).toEqual({ x: 640, y: 0 })
+    expect(clampPointToFrame({ x: -10, y: 900 }, 640, 480)).toEqual({
+      x: 0,
+      y: 480,
+    })
+    expect(clampPointToFrame({ x: 700, y: -5 }, 640, 480)).toEqual({
+      x: 640,
+      y: 0,
+    })
   })
 })
 

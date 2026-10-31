@@ -11,17 +11,22 @@
  * Inputs: 3 sample cards from the actual mp4 (real YomiToku output).
  */
 
-import {
-  AutoTokenizer,
-  AutoModelForCausalLM,
-} from '@huggingface/transformers'
+import process from 'node:process'
+import { AutoTokenizer, AutoModelForCausalLM } from '@huggingface/transformers'
 
 const modelId = process.argv[2] ?? 'onnx-community/Qwen2.5-0.5B-Instruct'
 
 const SAMPLE_CARDS = [
   {
     name: 'komida (込田友紀子)',
-    expected: { name: '込田友紀子', mobile: '090-5516-1153', tel: '03-3609-3446', fax: '03-3609-3454', postal: '125-0042', company_must_contain: '中野組商事' },
+    expected: {
+      name: '込田友紀子',
+      mobile: '090-5516-1153',
+      tel: '03-3609-3446',
+      fax: '03-3609-3454',
+      postal: '125-0042',
+      company_must_contain: '中野組商事',
+    },
     text: `一般社団法人 倫理研究所
 葛飾区倫理法人会
 幹 事/青年委員
@@ -37,7 +42,11 @@ TEL : 03-3609-3446 FAX : 03-3609-3454
   },
   {
     name: 'shindo (進藤みゆき / Offisis — has slogan as biggest text)',
-    expected: { name: '進藤みゆき', email: 'info@offisis.co.jp', company_must_contain: 'Offisis' },
+    expected: {
+      name: '進藤みゆき',
+      email: 'info@offisis.co.jp',
+      company_must_contain: 'Offisis',
+    },
     text: `あなたのオフィスにオアシスを
 Offisis
 https://www.offisis.co.jp/
@@ -60,7 +69,9 @@ Email:akionoguchi7@gmail.com`,
   },
 ]
 
-const PROMPT_TEMPLATE = (text) => `次は日本語の名刺画像から OCR で抽出したテキストです。各 paragraph は読み順に並んでいます。
+const PROMPT_TEMPLATE = (
+  text,
+) => `次は日本語の名刺画像から OCR で抽出したテキストです。各 paragraph は読み順に並んでいます。
 
 ${text}
 
@@ -117,7 +128,9 @@ for (const sample of SAMPLE_CARDS) {
 
   const promptLen = inputs.input_ids.dims[1]
   const generated = outputs.slice(null, [promptLen, null])
-  const text = tokenizer.batch_decode(generated, { skip_special_tokens: true })[0]
+  const text = tokenizer.batch_decode(generated, {
+    skip_special_tokens: true,
+  })[0]
   console.log(`[spike-llm] generation ${dt} ms`)
   console.log(text)
 

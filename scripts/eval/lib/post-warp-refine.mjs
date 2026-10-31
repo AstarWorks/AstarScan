@@ -22,6 +22,7 @@
  * the interface.
  */
 
+import process from 'node:process'
 import '../pipeline.mjs' // side effect: patches cv.imread / cv.imshow for Node
 import { cv } from '../cv-shim.mjs'
 import { newCanvas } from '../canvas-utils.mjs'
@@ -31,7 +32,7 @@ import { newCanvas } from '../canvas-utils.mjs'
 // Phase 2d-A1: relaxed thresholds. Cards with low-contrast text or
 // thin lines previously got dropped at variance ~120-180; bumping the
 // gate down to 80 keeps those legitimate cards.
-const VARIANCE_MIN = 80      // gray solid frames sit around 50-150
+const VARIANCE_MIN = 80 // gray solid frames sit around 50-150
 const EDGE_DENSITY_MIN = 0.002 // wood texture is < 0.0015; cards are 0.01-0.05
 
 /**
@@ -77,7 +78,7 @@ export function isLikelyDocument(canvas) {
 // ---- Edge refinement -------------------------------------------------------
 
 const REFINE_MAX_STRIP_FRACTION = 0.06 // search up to 6 % of each side
-const REFINE_MIN_LINE_STRENGTH = 0.35   // fraction of strip-width pixels that must be an edge
+const REFINE_MIN_LINE_STRENGTH = 0.35 // fraction of strip-width pixels that must be an edge
 
 /**
  * Find the row (for top/bottom) or column (for left/right) with the
@@ -212,8 +213,8 @@ export function refineCardEdges(canvas) {
 // ---- CLI smoke test --------------------------------------------------------
 if (import.meta.main) {
   const fs = await import('node:fs')
-  const path = await import('node:path')
-  const { jpegToCanvas, canvasToJpegBuffer } = await import('../canvas-utils.mjs')
+  const { jpegToCanvas, canvasToJpegBuffer } =
+    await import('../canvas-utils.mjs')
   const imagePath = process.argv[2] ?? '/tmp/winner-021-test.jpg'
   const buf = fs.readFileSync(imagePath)
   const src = await jpegToCanvas(buf)

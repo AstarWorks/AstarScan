@@ -15,7 +15,10 @@ import fs from 'node:fs/promises'
 import { createRequire } from 'node:module'
 import { fileURLToPath } from 'node:url'
 
-const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..')
+const repoRoot = path.resolve(
+  path.dirname(fileURLToPath(import.meta.url)),
+  '..',
+)
 const webRequire = createRequire(path.join(repoRoot, 'apps/web/package.json'))
 const ortPkg = webRequire.resolve('onnxruntime-web/package.json')
 const distDir = path.join(path.dirname(ortPkg), 'dist')
@@ -39,4 +42,6 @@ for (const f of FILES) {
   await fs.copyFile(path.join(distDir, f), path.join(outDir, f))
 }
 await fs.writeFile(path.join(outDir, 'VERSION'), version + '\n')
-console.log(`[copy-ort-assets] onnxruntime-web@${version} → apps/web/public/ort/`)
+console.log(
+  `[copy-ort-assets] onnxruntime-web@${version} → apps/web/public/ort/`,
+)
