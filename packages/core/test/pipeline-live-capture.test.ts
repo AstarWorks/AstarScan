@@ -98,18 +98,63 @@ describe('LiveCaptureJudge', () => {
     expect(caps).toHaveLength(2)
   })
 
-  it('reports a page turned away before capture as missed', () => {
+  const moving = (t: number) =>
+    frame(t, PAGE_A, { quad: quad(Math.round(t * 10) % 2 ? 200 : 0) })
+  const gone = (t: number) => frame(t, null, { confidence: 0.05 })
+
+  it('reports a page that left the view without ✓ as missed, once it has left', () => {
+    const { leaveS } = LIVE_CAPTURE_DEFAULTS
     const frames = [
-      ...span(0, 0.4, (t) =>
-        frame(t, PAGE_A, { quad: quad(Math.round(t * 10) % 2 ? 200 : 0) }),
+      ...span(0, 1.0, moving),
+      ...span(1.0, 1.0 + leaveS + 0.3, gone),
+      ...span(1.0 + leaveS + 0.3, 3.5 + leaveS, (t) => frame(t, PAGE_B)),
+    ]
+    const j = new LiveCaptureJudge<number>()
+    const timed = frames.flatMap((f) => j.push(f).map((e) => ({ e, at: f.t })))
+    const missed = timed.filter((x) => x.e.type === 'missed')
+    expect(missed).toHaveLength(1)
+    // Not while the page is still in view: only after leaveS without it.
+    expect(missed[0]!.at).toBeGreaterThan(0.9 + leaveS)
+    const m = missed[0]!.e
+    if (m.type !== 'missed') throw new Error('unreachable')
+    expect(m.startT).toBe(0)
+    expect(m.endT).toBeCloseTo(0.9, 5)
+    expect(timed.filter((x) => x.e.type === 'captured')).toHaveLength(1)
+  })
+
+  it('does not flag a page that settles and is then captured (picture flicker while placing)', () => {
+    const frames = [
+      ...span(0, 1.0, moving),
+      // pHash jumps while the page is still being placed …
+      ...span(1.0, 1.3, (t) =>
+        frame(t, PAGE_B, { quad: quad(Math.round(t * 3000)) }),
       ),
-      ...span(0.4, 0.8, (t) => frame(t, PAGE_A)),
-      ...span(0.8, 2.5, (t) => frame(t, PAGE_B)),
+      // … then it settles and gets its ✓.
+      ...span(1.3, 3.0, (t) => frame(t, PAGE_B)),
     ]
     const ev = run(frames)
-    const missed = ev.filter((e) => e.type === 'missed')
-    expect(missed).toHaveLength(1)
     expect(ev.filter((e) => e.type === 'captured')).toHaveLength(1)
+    expect(ev.filter((e) => e.type === 'missed')).toHaveLength(0)
+  })
+
+  it('does not flag a captured page that is re-gripped (picture flicker after ✓)', () => {
+    const frames = [
+      ...span(0, 1.2, (t) => frame(t, PAGE_A)),
+      // Re-grip: the picture drifts away from the captured one and the
+      // page keeps moving, so this part is never captured itself.
+      ...span(1.2, 2.5, (t) =>
+        frame(t, PAGE_B, { quad: quad(Math.round(t * 10) % 2 ? 200 : 0) }),
+      ),
+      ...span(2.5, 5.0, gone),
+    ]
+    const ev = run(frames)
+    expect(ev.filter((e) => e.type === 'captured')).toHaveLength(1)
+    expect(ev.filter((e) => e.type === 'missed')).toHaveLength(0)
+  })
+
+  it('a stretch shorter than missMinS is not a miss', () => {
+    const ev = run([...span(0, 0.4, moving), ...span(0.4, 3.0, gone)])
+    expect(ev.filter((e) => e.type === 'missed')).toHaveLength(0)
   })
 
   it('continues the same page across a short detection gap', () => {
