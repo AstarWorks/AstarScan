@@ -105,6 +105,7 @@ jobs:
           command: versions upload --preview-alias ${{ steps.alias.outputs.alias }}
 
       - name: Write preview URL to job summary
+        id: summary
         env:
           OUTPUT: ${{ steps.upload.outputs.command-output }}
           ALIAS: ${{ steps.alias.outputs.alias }}
@@ -125,9 +126,49 @@ jobs:
             echo ""
             echo "Uploaded with \`wrangler versions upload\`; production keeps serving the version last deployed from main."
           } >> "$GITHUB_STEP_SUMMARY"
+          echo "alias_url=$alias_url" >> "$GITHUB_OUTPUT"
           if [ -z "$alias_url" ]; then
             echo "::warning::Preview alias URL not found in wrangler output"
             printf '%s\n' "$OUTPUT"
+          fi
+
+      - name: Check preview opens and differs from production
+        if: steps.summary.outputs.alias_url != ''
+        env:
+          ALIAS_URL: ${{ steps.summary.outputs.alias_url }}
+          PROD_URL: https://scan.astarworks.com
+        run: |
+          local_build=$(jq -r '.id' apps/web/.output/public/_nuxt/builds/latest.json)
+          status=000
+          for i in 1 2 3 4 5 6; do
+            status=$(curl -sS -o page.html -w '%{http_code}' "$ALIAS_URL/" || echo 000)
+            [ "$status" = 200 ] && break
+            sleep 5
+          done
+          preview_build=$(curl -sS "$ALIAS_URL/_nuxt/builds/latest.json" | jq -r '.id' || echo unknown)
+          prod_build=$(curl -sS "$PROD_URL/_nuxt/builds/latest.json" | jq -r '.id' || echo unknown)
+          has_app=no
+          grep -q 'id="__nuxt"' page.html && has_app=yes
+          {
+            echo ""
+            echo "### Check"
+            echo ""
+            echo "| | |"
+            echo "|---|---|"
+            echo "| Preview HTTP status | $status |"
+            echo "| Preview serves the Nuxt app shell | $has_app |"
+            echo "| Build ID of this commit | \`$local_build\` |"
+            echo "| Build ID served by preview | \`$preview_build\` |"
+            echo "| Build ID served by production ($PROD_URL) | \`$prod_build\` |"
+          } >> "$GITHUB_STEP_SUMMARY"
+          echo "status=$status app=$has_app local=$local_build preview=$preview_build prod=$prod_build"
+          if [ "$status" != 200 ] || [ "$has_app" != yes ] || [ "$preview_build" != "$local_build" ]; then
+            echo "::error::Preview does not serve this commit's build"
+            exit 1
+          fi
+          if [ "$prod_build" = "$local_build" ]; then
+            echo "::error::Production serves this preview build — production was changed"
+            exit 1
           fi
 
   android:
