@@ -17,73 +17,55 @@
  * Threshold tuned on the AstarScan eval MP4 (11 unique pages handheld).
  */
 
-/** 16×16 = 256-bit hash. 8×8 (64-bit) is the classical pHash size, but at
- *  1200×1600 document resolution with lots of per-page text detail, 64 bits
- *  is too coarse — two distinct manual pages with similar layout alias to
- *  near-identical hashes. Doubling to 256 bits gives the hash enough
- *  resolution to separate visually distinct pages while still collapsing
- *  near-duplicate captures of the same page. */
-const HASH_SIZE = 16
+// Hash math is unified in @astarworks/scan-core (pipeline/hash.ts), shared
+// with the eval harness. This file binds it to DOM canvases and keeps the
+// legacy PHashDedupManager.
 
-/** Hamming distance ≤ this means same page. Empirical 256-bit distance
- *  distribution on the eval MP4: same-page captures spread from ~20 to ~45
- *  (hand repositioning + tilt changes move a lot of bits), distinct pages
- *  start around ~55 with a long tail to ~100. 60 is the best split — it
- *  collapses ~90% of near-duplicates while still separating genuinely
- *  different pages of the same multilingual manual. */
+import {
+  createHashOps,
+  popcount,
+  tileDistance as coreTileDistance,
+} from '@astarworks/scan-core/pipeline'
+import type { CanvasLike } from '@astarworks/scan-core/pipeline'
+
+/** Hamming distance ≤ this means same page. At 256 bits: same-page
+ *  captures spread 20-45, distinct pages start around 55. 60 is the
+ *  practical split for the legacy PHashDedupManager. The batch
+ *  collector passes its own, separately-tuned threshold. */
 const DEFAULT_DISTANCE_THRESHOLD = 60
 
-let thumbCanvas: HTMLCanvasElement | null = null
-
-function getThumbContext(): CanvasRenderingContext2D {
-  if (!thumbCanvas) {
-    thumbCanvas = document.createElement('canvas')
-    thumbCanvas.width = HASH_SIZE
-    thumbCanvas.height = HASH_SIZE
-  }
-  const ctx = thumbCanvas.getContext('2d', { willReadFrequently: true })
-  if (!ctx) throw new Error('Failed to get 2D context for pHash thumb')
-  return ctx
-}
+const hashOps = createHashOps((w, h) => {
+  const c = document.createElement('canvas')
+  c.width = w
+  c.height = h
+  // DOM canvas satisfies the structural contract; the cast crosses the
+  // lib.dom ↔ scan-core structural-type boundary in one place.
+  return c as unknown as CanvasLike
+})
 
 /**
- * Compute a 64-bit average-hash from an image source. The returned bigint
- * has bit `i` set when pixel `i` (row-major, 8×8) is brighter than the mean
- * of the thumbnail.
+ * Compute a 256-bit average-hash from an image source. The returned bigint
+ * has bit `i` set when pixel `i` (row-major, 16×16) is brighter than the
+ * mean of the thumbnail.
  */
 export function computePHash(
   source: HTMLCanvasElement | HTMLImageElement,
 ): bigint {
-  const ctx = getThumbContext()
-  ctx.drawImage(source, 0, 0, HASH_SIZE, HASH_SIZE)
-  const { data } = ctx.getImageData(0, 0, HASH_SIZE, HASH_SIZE)
-  const count = HASH_SIZE * HASH_SIZE
-  const gray = new Float64Array(count)
-  let sum = 0
-  for (let i = 0, j = 0; j < count; i += 4, j += 1) {
-    const v =
-      0.2126 * (data[i] ?? 0) +
-      0.7152 * (data[i + 1] ?? 0) +
-      0.0722 * (data[i + 2] ?? 0)
-    gray[j] = v
-    sum += v
-  }
-  const mean = sum / count
-  let hash = 0n
-  for (let j = 0; j < count; j += 1) {
-    if ((gray[j] ?? 0) > mean) hash |= 1n << BigInt(j)
-  }
-  return hash
+  return hashOps.computePHash(source as unknown as CanvasLike)
 }
 
-function popcount(x: bigint): number {
-  let n = 0
-  while (x) {
-    n += Number(x & 1n)
-    x >>= 1n
-  }
-  return n
+/**
+ * Tile-pHash: split the image into a 4×4 grid and compute an 8×8 = 64-bit
+ * average-hash per tile. Returns 16 bigints — input to `tileDistance`.
+ */
+export function computeTilePHash(
+  source: HTMLCanvasElement | HTMLImageElement,
+): bigint[] {
+  return hashOps.computeTilePHash(source as unknown as CanvasLike)
 }
+
+/** 80th-percentile per-tile Hamming distance — see scan-core hash.ts. */
+export const tileDistance = coreTileDistance
 
 /**
  * Dedup manager storing a 64-bit pHash per accepted page. `isDuplicate`

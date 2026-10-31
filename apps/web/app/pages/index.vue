@@ -4,35 +4,60 @@
  *
  * Stage 1 (during scan):
  *   - Sample every SAMPLE_INTERVAL_S of video/camera
- *   - `detectDocument` returns `{quad, confidence}` using DocAligner ONNX
+ *   - `detectDocument` returns `{quad, confidence}` using YOLOv8n-pose
  *     (primary) or OpenCV Otsu+minAreaRect (fallback on load failure).
- *   - Warp, compute pHash + sharpness + quad-area-fraction + score
- *   - Push into `FrameCollector`. No dedup, no commit.
+ *   - Warp, compute pHash + tile-pHash + sharpness + score
+ *   - Accepted frames go to `acceptedRecords`; sharp-but-low-texture
+ *     frames that fail the blur gate go to `candidateRecords` (the gap-
+ *     rescue pool — the blur gate is content-biased and silently drops
+ *     illustration-heavy pages otherwise).
  *
- * Stage 2 (on video end / stop):
- *   - `collector.selectBest(CLUSTER_THRESHOLD)` runs Union-Find on the
- *     frame list using pHash Hamming distance — each component is one
- *     physical page. One frame per component wins by composite score.
- *   - Winners become `captured[]` pages.
- *
- * The previous streaming "pending + commit on page change" approach kept
- * picking the first-seen frame of each page (often blurry) and split one
- * physical page into multiple captures when handheld motion pushed pHash
- * past the same-page threshold between adjacent frames. Batch selection
- * sees the whole history at once and fixes both.
+ * Stage 2 (on video end / stop): `clusterBySegments` from scan-core —
+ * the SAME segment-first algorithm the eval harness froze at identity
+ * recall 1.0 on both GT videos:
+ *   L1  temporal runs (acceptance gap > 1 s = page turn; hash spikes at
+ *       gap < 0.5 s are NEVER cuts — crop jitter, not page swaps)
+ *   →   gap rescue (> 2.5 s gaps hide blur-gated sparse pages)
+ *   →   L2 merge cascade: tile ≤ 18 → ORB+grid → OCR 3-gram Jaccard
+ *       (NDLOCR-Lite here; YomiToku in the eval harness — judgment is
+ *       shared in scan-core text-similarity)
+ * One frame per cluster wins by composite score → `captured[]` pages.
  */
 
 import { ref, computed, onMounted } from 'vue'
 import { useRoute } from 'vue-router'
 import jsPDF from 'jspdf'
 import type { Quad } from '@astarworks/scan-core'
+import {
+  RESCUE_MIN_AREA_FRAC,
+  RESCUE_MIN_CONFIDENCE,
+  RESCUE_MIN_TENENGRAD,
+  clusterBySegments,
+  combinedScore,
+  mergeClusters,
+  quadArea,
+  removeCluster,
+  scaleQuad,
+  setClusterWinner,
+  splitCluster,
+  updateClusterCrop,
+  verifySameText,
+  type CanvasLike,
+  type SegmentCluster,
+  type SegmentHooks,
+} from '@astarworks/scan-core/pipeline'
 
 import { detectDocument, ensureDocDetector, getDetectorSource } from '~/services/doc-detector'
 import { rotateAndCropQuad } from '~/services/rotate-crop'
+import { downscaleToLongSide } from '~/services/canvas-helpers'
 import { classifyQuad } from '~/services/quad-classify'
 import { computePHash, computeTilePHash } from '~/services/phash-dedup'
-import { FrameCollector, type DetectedFrame } from '~/services/frame-collector'
-import { mergeClustersByOrb } from '~/services/orb-merge'
+import { type DetectedFrame } from '~/services/frame-collector'
+import { getPipelineOps } from '~/services/pipeline-ops'
+import { initOcr, runOcr } from '~/services/ocr-service'
+import { validateFrame, type ValidationResult } from '~/services/llm-frame-validator'
+import { pickBestFrameByLlm, type PickResult } from '~/services/llm-best-frame'
+import { arePairSameCard } from '~/services/llm-card-pair'
 import {
   clearSession,
   loadSession,
@@ -40,12 +65,37 @@ import {
   type StoredPage,
 } from '~/services/session-store'
 
+interface PairDebug {
+  readonly otherPageId: string
+  readonly same: boolean
+  readonly confidence: number
+  readonly reasoning: string
+  readonly raw: string
+}
+
+interface LlmDebug {
+  validator?: ValidationResult
+  bestFramePick?: PickResult
+  pairResults?: PairDebug[]
+}
+
 interface Page {
   id: string
   dataUrl: string
   width: number
   height: number
   capturedAt: number
+  /** In-memory debug data from the LLM pipeline. Not persisted to
+   *  session-store — survives until page reload only. */
+  llmDebug?: LlmDebug
+  /** Winner frame index of the cluster this page came from — the handle
+   *  the repair controls address it by. Absent on pages restored from a
+   *  previous session (their clusters are long gone), which is exactly
+   *  the set that cannot be merged, split, or re-picked. */
+  clusterKey?: number
+  /** Candidate frames behind this page. 1 means nothing to split or
+   *  re-pick from. */
+  memberCount?: number
 }
 
 const LONG_SIDE_DEFAULT = 1200   // mode 別: card 1010 / a4 1696 / receipt 1500
@@ -55,30 +105,35 @@ const LONG_SIDE_DEFAULT = 1200   // mode 別: card 1010 / a4 1696 / receipt 1500
  *  page into the collector, so there's almost always a sharp one per
  *  cluster. OpenCV detection is ~5 ms so we stay well within budget. */
 const SAMPLE_INTERVAL_S = 0.1
-/** Tile-pHash 80th-percentile distance cutoff for first-pass centroid
- *  clustering. Same physical page (handheld angle changes): 5-25;
- *  different pages: 28+. We sit at 27 to be recall-oriented — over-
- *  splitting is fine because `mergeClustersByOrb` collapses same-page
- *  clusters in the second pass via ORB+RANSAC inlier matching.
- *
- *  See docs/eval-results.md for the empirical sweep that picked this. */
-const CLUSTER_THRESHOLD = 27
-/** ORB inlier threshold for the post-hoc cluster merger. Two clusters
- *  merge if their winners share at least this many RANSAC-validated
- *  ORB inlier matches (top-60 % crop, descriptor distance < 35). 25 is
- *  the empirical sweet spot for the eval mp4s; raising it costs
- *  recall, lowering it merges visually different pages with shared
- *  boilerplate. */
-const ORB_MERGE_INLIERS = 25
-/** Minimum detector confidence to accept a frame into the collector.
- *  OpenCV always returns 1.0, so this is currently a no-op. Kept so the
- *  slot exists for when the ML detector is re-enabled. */
-const MIN_CONFIDENCE = 0.1
+/** Minimum detector confidence to accept a frame. Matches the frozen
+ *  eval config (`--min-conf 0.25`, regress.mjs PROD_PARAMS) so browser
+ *  results track the eval baselines. OpenCV fallback returns 1.0. */
+const MIN_CONFIDENCE = 0.25
 /** Pre-cluster blur floor. Empirically the handheld MP4s peak around
  *  ten=60-80 on the sharpest frames (the whole video is moderately
  *  blurry); a gate at 30 keeps the worst transitions out without
- *  nuking entire page clusters. Set to 0 to disable. */
+ *  nuking entire page clusters. Frames failing this gate but clearing
+ *  the rescue floors land in `candidateRecords` instead of vanishing. */
 const MIN_TENENGRAD = 30
+/** Memory caps. Accepted frames: same valve FrameCollector used.
+ *  Candidates: full-res JPEGs are kept because a rescued candidate
+ *  becomes a real output page; lowest-score eviction keeps the pool
+ *  bounded (~200 × ~250 KB worst case). */
+const ACCEPTED_MAX = 400
+const CANDIDATE_POOL_MAX = 200
+/** Retained source frames (for manual corner correction). Sized down
+ *  before encoding for two reasons: a full-resolution JPEG encode at 10
+ *  FPS eats the per-frame budget, and every accepted AND candidate frame
+ *  carries one, so the constant sets the memory ceiling.
+ *
+ *  1280 covers the re-warp output sizes classifyQuad asks for (card 1010,
+ *  a4 1696 — a4 corrections come out slightly softer than the original
+ *  capture, which is the accepted cost of being able to fix them at all).
+ *  Measured warped crops average ~85 KB, so the pair of buffers already
+ *  holds ~50 MB; these roughly double that. `?debug=1` reports the live
+ *  totals — shrink these two if a real device says to. */
+const SRC_LONG_SIDE = 1280
+const SRC_JPEG_Q = 0.6
 
 type Phase = 'idle' | 'loading' | 'scanning' | 'done' | 'error'
 const phase = ref<Phase>('idle')
@@ -89,6 +144,25 @@ const pdfExporting = ref(false)
 const stripOpen = ref(false)
 const selectedPage = ref<Page | null>(null)
 
+// ---- LLM observability state ----
+/** WebGPU adapter probe result. False = LLM disabled regardless of toggle. */
+const llmAvailable = ref(false)
+/** User toggle. Defaults ON when WebGPU is available; only honored for the
+ *  startFromFile path. The live-camera loop skips LLM unconditionally
+ *  because per-frame Gemma 4 inference is 5-10 s on WebGPU. */
+const useLlm = ref(true)
+/** Progress bar for the LLM phases of finalizeScan. */
+interface LlmProgressInfo {
+  done: number
+  total: number
+  phase: string
+}
+const llmProgress = ref<LlmProgressInfo | null>(null)
+/** Side map: each `DetectedFrame` that survived the validator carries
+ *  its result here, looked up at finalize time to attach to the resulting
+ *  Page.llmDebug. WeakMap so clearing the record arrays drops entries. */
+const validatorByFrame = new WeakMap<DetectedFrame, ValidationResult>()
+
 function openPageDetail(p: Page) {
   console.log('[index] openPageDetail', p.id)
   selectedPage.value = p
@@ -96,6 +170,248 @@ function openPageDetail(p: Page) {
 }
 function closePageDetail() {
   selectedPage.value = null
+}
+
+// ---------------------------------------------------------------------------
+// Repair state
+//
+// The clustering output is kept alive after finalizeScan so the review
+// screen can act on it. Residual pipeline error on the frozen eval config
+// is duplicates and junk (docs/eval-results.md) — fixable in one tap, but
+// only if the clusters still exist. Holding them also holds every accepted
+// frame's warped JPEG in memory until the next scan or clearAll.
+//
+// Repairs rebuild the page list from clusters, so pages land back in scan
+// order (winner index ascending). Manual reordering is best done after the
+// repairs, not before.
+// ---------------------------------------------------------------------------
+
+/** Clustering output of the current scan, mutated only via cluster-repair. */
+const repairClusters = ref<SegmentCluster<ScanRecord>[]>([])
+/** Pages that predate the current scan (restored session). Not repairable. */
+const preScanPages = ref<Page[]>([])
+/** Cluster keys ticked for merging. */
+const mergeSelection = ref<number[]>([])
+/** Cluster whose candidate frames are open in the filmstrip. */
+const detailKey = ref<number | null>(null)
+const membersLoading = ref(false)
+/** True once the accepted-frame ring buffer evicted anything: the early
+ *  pages of a long scan then have no candidates left to split or re-pick. */
+const bufferTruncated = ref(false)
+
+interface MemberView {
+  idx: number
+  t_s: number
+  dataUrl: string
+  isWinner: boolean
+}
+const detailMembers = ref<MemberView[]>([])
+
+/** LLM best-frame picks, keyed by frame so a repair rebuild keeps them. */
+const bestFrameByFrame = new WeakMap<DetectedFrame, PickResult>()
+
+/** Bumped per scan. Frame indices restart at 0 every scan, so the winner
+ *  index alone is not unique across two scans in one session — page ids
+ *  would collide in the strip and `removePage` would hit the wrong page. */
+const scanId = ref(0)
+
+/**
+ * Strip the repair handles from a page. Once a new scan installs its own
+ * cluster array, pages from the previous scan can no longer be addressed:
+ * their keys would resolve against the wrong scan's clusters.
+ */
+function detachRepair(p: Page): Page {
+  const next: Page = {
+    id: p.id,
+    dataUrl: p.dataUrl,
+    width: p.width,
+    height: p.height,
+    capturedAt: p.capturedAt,
+  }
+  if (p.llmDebug) next.llmDebug = p.llmDebug
+  return next
+}
+
+async function buildPagesFromClusters(
+  cs: readonly SegmentCluster<ScanRecord>[],
+): Promise<Page[]> {
+  const pages: Page[] = []
+  for (const c of cs) {
+    const w = c.winner
+    // Derived from the scan and the winner frame, so a page keeps its
+    // identity across repairs that don't touch it (stable Vue key, stable
+    // open detail) and never collides with an earlier scan's page.
+    const page: Page = {
+      id: `s${scanId.value}-c${w.idx}`,
+      dataUrl: await blobToDataUrl(w.warpedBlob),
+      width: w.warpedWidth,
+      height: w.warpedHeight,
+      capturedAt: w.capturedAt,
+      clusterKey: w.idx,
+      memberCount: c.members.length,
+    }
+    const validator = validatorByFrame.get(w)
+    const bestFramePick = bestFrameByFrame.get(w)
+    if (validator || bestFramePick) {
+      const dbg: LlmDebug = {}
+      if (validator) dbg.validator = validator
+      if (bestFramePick) dbg.bestFramePick = bestFramePick
+      page.llmDebug = dbg
+    }
+    pages.push(page)
+  }
+  return pages
+}
+
+async function loadMembers(key: number): Promise<void> {
+  const c = repairClusters.value.find((x) => x.winner.idx === key)
+  if (!c) {
+    detailMembers.value = []
+    return
+  }
+  membersLoading.value = true
+  try {
+    detailMembers.value = await Promise.all(
+      c.members.map(async (m) => ({
+        idx: m.idx,
+        t_s: m.t_s,
+        dataUrl: await blobToDataUrl(m.warpedBlob),
+        isWinner: m.idx === c.winner.idx,
+      })),
+    )
+  } finally {
+    membersLoading.value = false
+  }
+}
+
+/** Commit a repaired cluster array and rebuild the visible page list. */
+async function applyRepair(next: SegmentCluster<ScanRecord>[]): Promise<void> {
+  repairClusters.value = next
+  mergeSelection.value = []
+  captured.value = [...preScanPages.value, ...(await buildPagesFromClusters(next))]
+  // The open detail view holds a Page object that the rebuild just
+  // replaced. Re-resolve it by id, or close it if the repair removed it.
+  if (selectedPage.value) {
+    const stillThere = captured.value.find((p) => p.id === selectedPage.value?.id)
+    selectedPage.value = stillThere ?? null
+  }
+  if (detailKey.value !== null) {
+    if (next.some((c) => c.winner.idx === detailKey.value)) {
+      await loadMembers(detailKey.value)
+    } else {
+      closeMembers()
+    }
+  }
+  // A repair can retire the key the editor is holding (merge/split/remove
+  // re-elect winners). Its source URL would then point at a frame that no
+  // longer represents any page.
+  if (quadEditKey.value !== null && !next.some((c) => c.winner.idx === quadEditKey.value)) {
+    closeQuadEdit()
+  }
+  void saveSession(captured.value.map(pageToStored))
+}
+
+function toggleMergeSelection(key: number): void {
+  mergeSelection.value = mergeSelection.value.includes(key)
+    ? mergeSelection.value.filter((k) => k !== key)
+    : [...mergeSelection.value, key]
+}
+
+async function repairMerge(): Promise<void> {
+  await applyRepair(mergeClusters(repairClusters.value, mergeSelection.value))
+}
+
+async function repairRemove(key: number): Promise<void> {
+  await applyRepair(removeCluster(repairClusters.value, key))
+}
+
+async function repairSplit(key: number, atIdx: number): Promise<void> {
+  await applyRepair(splitCluster(repairClusters.value, key, atIdx))
+}
+
+async function repairSetWinner(key: number, memberIdx: number): Promise<void> {
+  const next = setClusterWinner(repairClusters.value, key, memberIdx)
+  // Re-electing the winner moves the cluster's key onto the chosen frame.
+  detailKey.value = memberIdx
+  await applyRepair(next)
+}
+
+async function openMembers(key: number): Promise<void> {
+  detailKey.value = key
+  await loadMembers(key)
+}
+
+function closeMembers(): void {
+  detailKey.value = null
+  detailMembers.value = []
+}
+
+// ---- manual corner correction ----------------------------------------
+
+/** Cluster whose winner is open in the corner editor. */
+const quadEditKey = ref<number | null>(null)
+/** Object URL of that winner's source frame; revoked on close. */
+const quadEditUrl = ref('')
+
+/** The winner record behind the open editor, or null. */
+const quadEditFrame = computed(() =>
+  quadEditKey.value === null
+    ? null
+    : (repairClusters.value.find((c) => c.winner.idx === quadEditKey.value)?.winner ?? null),
+)
+
+function openQuadEdit(key: number): void {
+  const frame = repairClusters.value.find((c) => c.winner.idx === key)?.winner
+  if (!frame) return
+  closeQuadEdit()
+  quadEditKey.value = key
+  quadEditUrl.value = URL.createObjectURL(frame.srcBlob)
+}
+
+function closeQuadEdit(): void {
+  if (quadEditUrl.value) URL.revokeObjectURL(quadEditUrl.value)
+  quadEditUrl.value = ''
+  quadEditKey.value = null
+}
+
+/**
+ * Re-crop the winner from its retained source using the corrected quad.
+ *
+ * `updatePageQuad` in types.ts requires the warped image and the pHash be
+ * regenerated; the long side comes from `classifyQuad` exactly as it does
+ * during capture, so a corrected page is sized by the same rule as an
+ * auto-detected one. `score` is deliberately NOT recomputed — it decides
+ * winner election on a later merge, and fixing a crop must not silently
+ * change which frame represents a page.
+ */
+async function saveQuadEdit(quad: Quad): Promise<void> {
+  const key = quadEditKey.value
+  const w = quadEditFrame.value
+  if (key === null || !w) {
+    closeQuadEdit()
+    return
+  }
+  try {
+    const src = await blobToCanvas(w.srcBlob, w.srcW, w.srcH)
+    const cls = classifyQuad(quad, w.srcW, w.srcH)
+    const longSide = cls.target
+      ? Math.max(cls.target.width, cls.target.height)
+      : LONG_SIDE_DEFAULT
+    const warped = rotateAndCropQuad(src, quad, longSide, 0.03)
+    const patch = {
+      quad,
+      warpedBlob: await canvasToJpegBlob(warped, 0.75),
+      warpedWidth: warped.width,
+      warpedHeight: warped.height,
+      hash: computePHash(warped),
+      tileHash: computeTilePHash(warped),
+    }
+    closeQuadEdit()
+    await applyRepair(updateClusterCrop(repairClusters.value, key, patch))
+  } catch (err) {
+    console.warn('[saveQuadEdit] re-crop failed', err)
+    closeQuadEdit()
+  }
 }
 
 const videoRef = ref<HTMLVideoElement | null>(null)
@@ -106,7 +422,32 @@ const route = useRoute()
 const debugMode = computed(() => route.query.debug === '1')
 
 let detectorReady = false
-const collector = new FrameCollector()
+
+/** A frame in the segment pipeline: DetectedFrame payload + the temporal
+ *  identity (`idx` = sample counter, `t_s` = idx × SAMPLE_INTERVAL_S)
+ *  that clusterBySegments reasons over. */
+interface ScanRecord extends DetectedFrame {
+  idx: number
+  t_s: number
+  tileHash: bigint[]
+  ten: number
+  /** Reduced source frame, pre-warp. Manual corner correction re-warps
+   *  from this; the warped crop cannot be un-warped. */
+  srcBlob: Blob
+  /** Pixel size of `srcBlob` — NOT of the capture canvas it came from. */
+  srcW: number
+  srcH: number
+  /** Detected quad, expressed in `srcBlob` pixel space so the editor and
+   *  the re-warp share one coordinate system. */
+  quad: Quad
+}
+
+/** Frames that cleared every gate (conf + blur). */
+let acceptedRecords: ScanRecord[] = []
+/** Blur-gate rejects that cleared the rescue floors — the gap-rescue
+ *  pool. Sharp illustration-heavy pages live here (Tenengrad measures
+ *  texture, not blur). */
+let candidateRecords: ScanRecord[] = []
 let sampledFrames = 0
 let detectedFrames = 0
 let lastOverlayInfo: OverlayInfo | null = null
@@ -128,6 +469,21 @@ onMounted(async () => {
   if (saved?.pages?.length) {
     captured.value = saved.pages.map(storedToPage)
   }
+
+  // WebGPU probe. Failing requestAdapter() (Firefox / Safari < 26 / older
+  // Chrome on non-supported GPUs) disables LLM features without breaking
+  // the heuristic path. Stays off in non-secure contexts too.
+  try {
+    if (typeof navigator !== 'undefined' && 'gpu' in navigator) {
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const adapter = await (navigator as any).gpu?.requestAdapter()
+      llmAvailable.value = !!adapter
+    }
+  } catch (err) {
+    console.warn('[index] WebGPU probe failed:', err)
+    llmAvailable.value = false
+  }
+  if (!llmAvailable.value) useLlm.value = false
 })
 
 // ---------------------------------------------------------------------------
@@ -141,152 +497,19 @@ async function ensureDetector(): Promise<void> {
 }
 
 /**
- * Minimal typed surface of the OpenCV.js Laplacian / Sobel / mean API
- * used by the sharpness helpers. Shadow-interface pattern per
- * perspective-warper.ts — we avoid bloating globals.d.ts with the full
- * cv namespace.
- */
-interface CvSharpnessApi {
-  imread(canvas: HTMLCanvasElement): CvMat
-  cvtColor(src: CvMat, dst: CvMat, code: number): void
-  Laplacian(
-    src: CvMat,
-    dst: CvMat,
-    ddepth: number,
-    ksize: number,
-    scale: number,
-    delta: number,
-    borderType: number,
-  ): void
-  Sobel(
-    src: CvMat,
-    dst: CvMat,
-    ddepth: number,
-    dx: number,
-    dy: number,
-    ksize: number,
-    scale: number,
-    delta: number,
-    borderType: number,
-  ): void
-  multiply(src1: CvMat, src2: CvMat, dst: CvMat): void
-  add(src1: CvMat, src2: CvMat, dst: CvMat): void
-  mean(src: CvMat): CvScalar
-  meanStdDev(src: CvMat, mean: CvMat, stddev: CvMat): void
-  Mat: new () => CvMat
-  readonly COLOR_RGBA2GRAY: number
-  readonly CV_64F: number
-  readonly CV_32F: number
-  readonly BORDER_DEFAULT: number
-}
-interface CvMat {
-  delete(): void
-  readonly data64F: Float64Array
-}
-interface CvScalar {
-  readonly [index: number]: number
-}
-
-/**
- * Laplacian variance on a grayscale version of `canvas`. Higher = sharper.
- * Typical values on warped 1200×1600 document frames: ~50 for blurry
- * handheld, ~800–3000 for well-focused text. Good at defocus, weaker at
- * motion blur — that's what `computeTenengrad` complements below.
+ * Sharpness metrics — implementation unified in scan-core
+ * (pipeline/sharpness.ts), bound to OpenCV.js via pipeline-ops. Returns 0
+ * while OpenCV is still loading, matching the old window.cv probes.
+ * Laplacian variance catches defocus; Tenengrad catches motion blur.
  */
 function computeLaplacian(canvas: HTMLCanvasElement): number {
-  const cv = (window as unknown as { cv?: CvSharpnessApi }).cv
-  if (!cv?.Laplacian) return 0
-  const src = cv.imread(canvas)
-  const gray = new cv.Mat()
-  const lap = new cv.Mat()
-  const mean = new cv.Mat()
-  const stddev = new cv.Mat()
-  try {
-    cv.cvtColor(src, gray, cv.COLOR_RGBA2GRAY)
-    cv.Laplacian(gray, lap, cv.CV_64F, 1, 1, 0, cv.BORDER_DEFAULT)
-    cv.meanStdDev(lap, mean, stddev)
-    const sd = stddev.data64F[0] ?? 0
-    return sd * sd
-  } finally {
-    src.delete()
-    gray.delete()
-    lap.delete()
-    mean.delete()
-    stddev.delete()
-  }
+  const ops = getPipelineOps()
+  return ops ? ops.computeLaplacian(canvas as unknown as CanvasLike) : 0
 }
 
-/**
- * Tenengrad focus measure — sqrt of mean squared Sobel gradient magnitude.
- * Unlike Laplacian variance this is direct edge strength, which collapses
- * hard on motion blur (blurred edges produce smaller Sobel responses).
- * Used alongside Laplacian so the score penalizes defocus AND handheld
- * motion. Typical values: ~20-60 on motion blur, ~150-500 on a still.
- */
 function computeTenengrad(canvas: HTMLCanvasElement): number {
-  const cv = (window as unknown as { cv?: CvSharpnessApi }).cv
-  if (!cv?.Sobel || !cv?.multiply || !cv?.add) return 0
-  const src = cv.imread(canvas)
-  const gray = new cv.Mat()
-  const gx = new cv.Mat()
-  const gy = new cv.Mat()
-  const gx2 = new cv.Mat()
-  const gy2 = new cv.Mat()
-  const mag = new cv.Mat()
-  try {
-    cv.cvtColor(src, gray, cv.COLOR_RGBA2GRAY)
-    cv.Sobel(gray, gx, cv.CV_32F, 1, 0, 3, 1, 0, cv.BORDER_DEFAULT)
-    cv.Sobel(gray, gy, cv.CV_32F, 0, 1, 3, 1, 0, cv.BORDER_DEFAULT)
-    cv.multiply(gx, gx, gx2)
-    cv.multiply(gy, gy, gy2)
-    cv.add(gx2, gy2, mag)
-    const m = cv.mean(mag)
-    return Math.sqrt(m[0] ?? 0)
-  } finally {
-    src.delete()
-    gray.delete()
-    gx.delete()
-    gy.delete()
-    gx2.delete()
-    gy2.delete()
-    mag.delete()
-  }
-}
-
-/** Shoelace area of an ordered 4-vertex quad. */
-function quadArea(q: Quad): number {
-  const xs = [q.tl.x, q.tr.x, q.br.x, q.bl.x]
-  const ys = [q.tl.y, q.tr.y, q.br.y, q.bl.y]
-  let s = 0
-  for (let i = 0; i < 4; i += 1) {
-    const j = (i + 1) % 4
-    s += (xs[i] ?? 0) * (ys[j] ?? 0) - (xs[j] ?? 0) * (ys[i] ?? 0)
-  }
-  return Math.abs(s) / 2
-}
-
-/**
- * Composite score used both for overlay display and as the per-cluster
- * ranking key inside FrameCollector. Weights:
- *   Laplacian  0.30 (defocus) — normalized by /2000, saturated at 1.0
- *   Tenengrad  0.30 (motion blur) — normalized by /400, saturated at 1.0
- *   area       0.20 (quad size / source frame)
- *   confidence 0.20 (detector's self-rated quality)
- *
- * With OpenCV primary, confidence is a constant 1.0, so the real work is
- * done by the two sharpness metrics and area. Having both blur metrics
- * matters because they fail in different regimes — Laplacian misses
- * handheld motion, Tenengrad misses global defocus.
- */
-function combinedScore(
-  laplacian: number,
-  tenengrad: number,
-  confidence: number,
-  areaFrac: number,
-): number {
-  const normLap = Math.min(1, laplacian / 2000)
-  const normTen = Math.min(1, tenengrad / 400)
-  return 0.3 * normLap + 0.3 * normTen + 0.2 * areaFrac + 0.2 * confidence
+  const ops = getPipelineOps()
+  return ops ? ops.computeTenengrad(canvas as unknown as CanvasLike) : 0
 }
 
 function canvasToJpegBlob(
@@ -315,41 +538,196 @@ function blobToDataUrl(blob: Blob): Promise<string> {
 }
 
 /**
- * Commit the winners to the persisted `captured[]`. Two-stage selection:
- *   1. `selectBestByTile` does centroid clustering on the 4×4 tile-pHash
- *      at threshold 27 — recall-oriented (intentionally over-splits;
- *      same-physical-page captures often drift to tile-distance 28-35).
- *   2. `mergeClustersByOrb` collapses over-split pairs whose winners
- *      share ≥25 RANSAC-validated ORB inlier matches. Same physical
- *      page is a planar surface so legitimate matches lie on a single
- *      transform; spurious matches (random feature collisions, shared
- *      boilerplate) are filtered by RANSAC.
+ * Commit the winners to the persisted `captured[]` via the segment-first
+ * pipeline — scan-core `clusterBySegments`, the SAME algorithm and
+ * thresholds the eval harness froze at identity recall 1.0 / zero missed
+ * pages on both GT videos (`bun scripts/eval/regress.mjs`):
  *
- * Falls back to the pre-merge tile clusters if OpenCV.js doesn't expose
- * the ORB API (graceful degradation — see `isOrbAvailable`).
+ *   L1  temporal runs over accepted frames (acceptance gap > 1 s = page
+ *       turn); suspicious in-run gaps verified by ORB, then the verifier
+ *   →   gap rescue: > 2.5 s gaps are scanned in `candidateRecords` for
+ *       blur-gated sparse pages (center-weighted best pick, NMS)
+ *   →   L2 union-find merge: tile ≤ 18 unconditional → ORB ≥ 25/50 with
+ *       grid ≥ 8 → OCR 3-gram Jaccard for adjacent text pairs that defeat
+ *       every classical signal
+ *
+ * verifySame = NDLOCR-Lite OCR text + scan-core text-similarity (the eval
+ * harness uses YomiToku for the OCR half; the judgment is identical).
+ * When OCR abstains (graphics / occlusion) and LLM is enabled, the VLM
+ * pair-compare is the fallback verifier.
  */
-async function finalizeScan(): Promise<void> {
-  const tileClusters = collector.selectBestByTile(CLUSTER_THRESHOLD)
-  const merged = await mergeClustersByOrb(
-    tileClusters,
-    async (winner) => blobToCanvas(winner.warpedBlob, winner.warpedWidth, winner.warpedHeight),
-    ORB_MERGE_INLIERS,
+async function finalizeScan(
+  opts: { enableLlm: boolean } = { enableLlm: false },
+): Promise<void> {
+  const llmOn = opts.enableLlm && llmAvailable.value
+  const records = [...acceptedRecords].sort((a, b) => a.idx - b.idx)
+  const candidates = [...candidateRecords].sort((a, b) => a.idx - b.idx)
+  const byIdx = new Map<number, ScanRecord>()
+  for (const r of records) byIdx.set(r.idx, r)
+  for (const r of candidates) byIdx.set(r.idx, r)
+
+  const canvasCache = new Map<number, Promise<HTMLCanvasElement>>()
+  const loadCanvas = (idx: number): Promise<CanvasLike> => {
+    let p = canvasCache.get(idx)
+    if (!p) {
+      const r = byIdx.get(idx)
+      if (!r) return Promise.reject(new Error(`finalizeScan: no record for idx ${idx}`))
+      p = blobToCanvas(r.warpedBlob, r.warpedWidth, r.warpedHeight)
+      canvasCache.set(idx, p)
+    }
+    return p as unknown as Promise<CanvasLike>
+  }
+
+  // ORB ops from scan-core (bound to OpenCV.js). If OpenCV failed to
+  // load, fall back to an abstaining stub — cuts then rely on the
+  // verifier and merges on tile distance + verifier.
+  const ops = getPipelineOps()
+  const orb: SegmentHooks['orb'] = ops ?? {
+    computeOrbDescriptors: () => null,
+    countOrbMatches: () => ({ inliers: 0, gridCoverage: 0 }),
+  }
+
+  // NDLOCR-Lite loads lazily on the FIRST ambiguous pair (~147 MB models,
+  // IndexedDB-cached after the first download) — scans without dense-text
+  // ambiguity never pay for it.
+  let ocrInit: Promise<boolean> | null = null
+  const ensureOcr = (): Promise<boolean> =>
+    (ocrInit ??= initOcr()
+      .then(() => true)
+      .catch((err) => {
+        console.warn('[finalizeScan] OCR init failed — text verifier off:', err)
+        return false
+      }))
+  const ocrTexts = new Map<number, Promise<string | null>>()
+  const ocrTextOf = (idx: number): Promise<string | null> => {
+    let p = ocrTexts.get(idx)
+    if (!p) {
+      p = (async (): Promise<string | null> => {
+        if (!(await ensureOcr())) return null
+        const r = byIdx.get(idx)
+        if (!r) return null
+        const result = await runOcr(await blobToDataUrl(r.warpedBlob))
+        return result.text.replace(/\s+/g, '')
+      })().catch((err) => {
+        console.warn(`[finalizeScan] OCR failed for idx=${idx}:`, err)
+        return null
+      })
+      ocrTexts.set(idx, p)
+    }
+    return p
+  }
+  const verifySame = async (
+    aIdx: number,
+    bIdx: number,
+    gapS: number,
+  ): Promise<boolean | null> => {
+    const [ta, tb] = await Promise.all([ocrTextOf(aIdx), ocrTextOf(bIdx)])
+    const v = verifySameText(ta, tb, gapS)
+    if (v != null) {
+      console.log(
+        `[verify-ocr] ${aIdx}↔${bIdx}: jaccard=${v.jaccard.toFixed(3)} containment=${v.containment.toFixed(3)} gap=${gapS.toFixed(1)}s → ${v.same ? 'same' : 'diff'}`,
+      )
+      return v.same
+    }
+    // OCR abstained (graphics page / too little text). Optional VLM rescue.
+    if (llmOn) {
+      try {
+        const ra = byIdx.get(aIdx)
+        const rb = byIdx.get(bIdx)
+        if (!ra || !rb) return null
+        const [aUrl, bUrl] = await Promise.all([
+          blobToDataUrl(ra.warpedBlob),
+          blobToDataUrl(rb.warpedBlob),
+        ])
+        const r = await arePairSameCard(aUrl, bUrl)
+        console.log(`[verify-llm] ${aIdx}↔${bIdx}: ${r.same ? 'same' : 'diff'} (conf ${r.confidence})`)
+        return r.same
+      } catch (err) {
+        console.warn('[verify-llm] pair compare failed:', err)
+        return null
+      }
+    }
+    return null
+  }
+
+  statusText.value = `クラスタリング中… (採用 ${records.length} / 救済候補 ${candidates.length})`
+  const { clusters, debug } = await clusterBySegments(
+    records,
+    loadCanvas,
+    {},
+    { orb, verifySame },
+    candidates,
   )
-  const winners = merged.map((c) => c.winner)
-  const existing = captured.value
-  const fresh: Page[] = []
-  for (const w of winners) {
-    fresh.push({
-      id: crypto.randomUUID(),
-      dataUrl: await blobToDataUrl(w.warpedBlob),
-      width: w.warpedWidth,
-      height: w.warpedHeight,
-      capturedAt: w.capturedAt,
+  console.log(
+    `[finalizeScan] ${clusters.length} clusters (${debug.rescues.length} rescued, ${debug.cuts.length} cuts)`,
+    debug,
+  )
+
+  // ---- Winner per cluster: composite score (eval-aligned default);
+  //      LLM best-frame re-pick only when enabled. The pick is applied as
+  //      a winner override on the cluster array, which from here on is the
+  //      single source of truth for the review screen — repairs rebuild
+  //      the page list from it rather than editing pages directly. ----
+  let working: SegmentCluster<ScanRecord>[] = [...clusters]
+  if (llmOn) {
+    const clustersToPick = clusters.filter((c) => c.members.length > 1)
+    llmProgress.value = {
+      done: 0,
+      total: clustersToPick.length,
+      phase: 'ベストフレーム選定',
+    }
+    for (const cluster of clustersToPick) {
+      const K = Math.min(4, cluster.members.length)
+      const topK = [...cluster.members]
+        .sort((a, b) => b.score - a.score)
+        .slice(0, K)
+      const llmCandidates = await Promise.all(
+        topK.map(async (m, i) => ({
+          id: `${i}`,
+          imageDataUrl: await blobToDataUrl(m.warpedBlob),
+          score: m.score,
+        })),
+      )
+      const pick = await pickBestFrameByLlm(llmCandidates)
+      const picked = topK[pick.pickedIndex]
+      if (picked) {
+        bestFrameByFrame.set(picked, pick)
+        working = setClusterWinner(working, cluster.winner.idx, picked.idx)
+      }
+      if (llmProgress.value) {
+        llmProgress.value = {
+          ...llmProgress.value,
+          done: llmProgress.value.done + 1,
+        }
+      }
+    }
+  }
+
+  // ---- Build Pages from clusters ----
+  llmProgress.value = null
+  scanId.value += 1
+  preScanPages.value = captured.value.map(detachRepair)
+  repairClusters.value = working
+  mergeSelection.value = []
+  closeMembers()
+  closeQuadEdit()
+  captured.value = [
+    ...preScanPages.value,
+    ...(await buildPagesFromClusters(working)),
+  ]
+  acceptedRecords = []
+  candidateRecords = []
+  void saveSession(captured.value.map(pageToStored))
+
+  // Auto-dump to dev server so debug state is on disk without the
+  // user clicking anything. Dev-only: production/static builds have no
+  // /api/debug-export, and even a silently-failing fetch shows up as a
+  // console 404.
+  if (import.meta.dev) {
+    void postDebugJson(false).then((r) => {
+      if (r?.latestPath) console.log('[finalizeScan] auto-saved:', r.latestPath)
     })
   }
-  captured.value = [...existing, ...fresh]
-  collector.clear()
-  void saveSession(captured.value.map(pageToStored))
 }
 
 function blobToCanvas(blob: Blob, width: number, height: number): Promise<HTMLCanvasElement> {
@@ -377,10 +755,17 @@ function blobToCanvas(blob: Blob, width: number, height: number): Promise<HTMLCa
   })
 }
 
-async function processFrame(video: HTMLVideoElement): Promise<void> {
+async function processFrame(
+  video: HTMLVideoElement,
+  opts: { enableLlm: boolean } = { enableLlm: false },
+): Promise<void> {
   if (!detectorReady) return
   if (video.readyState < 2 || video.videoWidth === 0) return
 
+  // Temporal identity for the segment pipeline: the sample counter is the
+  // frame index (10 fps → idx gap of 10 ≈ 1 s), matching the eval harness.
+  const idx = sampledFrames
+  const t_s = idx * SAMPLE_INTERVAL_S
   sampledFrames += 1
 
   const work = document.createElement('canvas')
@@ -437,11 +822,68 @@ async function processFrame(video: HTMLVideoElement): Promise<void> {
   const areaFrac = quadArea(detection.quad) / (work.width * work.height)
   const score = combinedScore(lap, ten, detection.confidence, areaFrac)
 
-  // Pre-cluster blur gate. The collector is supposed to hold candidates
-  // a human would want; obviously-blurry frames would otherwise compete
-  // for "best in cluster" and occasionally win if a page turn had no
-  // sharp frames at all (better to drop the page than ship blur).
+  /** Reduced source frame + the detected quad mapped into its pixel space
+   *  — the only inputs a later corner correction can re-warp from. The
+   *  warped crop alone cannot be un-warped.
+   *
+   *  Called at the push sites rather than here so a frame that clears
+   *  neither the blur gate nor the rescue floors never pays for the
+   *  encode. */
+  const snapshotSource = async () => {
+    const src = downscaleToLongSide(work, SRC_LONG_SIDE)
+    return {
+      srcBlob: await canvasToJpegBlob(src, SRC_JPEG_Q),
+      srcW: src.width,
+      srcH: src.height,
+      quad: scaleQuad(detection.quad, work.width, work.height, src.width, src.height),
+    }
+  }
+
+  // Pre-cluster blur gate. Obviously-blurry frames would otherwise compete
+  // for "best in cluster" and occasionally win. BUT the gate is content-
+  // biased (Tenengrad ∝ texture): sharp illustration-heavy pages fail it
+  // too. Rejects that clear the rescue floors go to `candidateRecords` so
+  // the gap-rescue pass can recover whole pages instead of dropping them
+  // silently (measured: 4/11 pages lost on mp4-1 without this).
   if (ten < MIN_TENENGRAD) {
+    if (
+      ten >= RESCUE_MIN_TENENGRAD &&
+      detection.confidence >= RESCUE_MIN_CONFIDENCE &&
+      areaFrac >= RESCUE_MIN_AREA_FRAC
+    ) {
+      try {
+        const blob = await canvasToJpegBlob(warped, 0.75)
+        candidateRecords.push({
+          idx,
+          t_s,
+          hash,
+          tileHash,
+          ten,
+          sharpness: lap,
+          confidence: detection.confidence,
+          areaFrac,
+          score,
+          warpedBlob: blob,
+          warpedWidth: warped.width,
+          warpedHeight: warped.height,
+          capturedAt: performance.now(),
+          // Rescued frames are exactly the marginal pages a user is most
+          // likely to want to re-crop, so they carry a source too.
+          ...(await snapshotSource()),
+        })
+        if (candidateRecords.length > CANDIDATE_POOL_MAX) {
+          // Evict the lowest score — rescue always picks per-gap maxima,
+          // so globally weak candidates are the safest to drop.
+          let worst = 0
+          for (let i = 1; i < candidateRecords.length; i += 1) {
+            if (candidateRecords[i]!.score < candidateRecords[worst]!.score) worst = i
+          }
+          candidateRecords.splice(worst, 1)
+        }
+      } catch (err) {
+        console.warn('[processFrame] failed to snapshot rescue candidate', err)
+      }
+    }
     lastOverlayInfo = {
       quad: detection.quad,
       laplacian: lap,
@@ -457,11 +899,51 @@ async function processFrame(video: HTMLVideoElement): Promise<void> {
     return
   }
 
+  // LLM frame validator (startFromFile path only; live camera skips).
+  // Runs *before* enqueueing into the collector so quality<2 frames are
+  // dropped at the source — they shouldn't compete for "best in cluster"
+  // and they shouldn't show up in the strip drawer at all.
+  let validatorResult: ValidationResult | undefined
+  if (opts.enableLlm && llmAvailable.value) {
+    try {
+      const dataUrl = warped.toDataURL('image/jpeg', 0.75)
+      validatorResult = await validateFrame(dataUrl)
+      if (llmProgress.value) {
+        llmProgress.value = {
+          ...llmProgress.value,
+          done: llmProgress.value.done + 1,
+        }
+      }
+      if (validatorResult.quality < 2) {
+        // drop unusable frame, but still update overlay so the user sees
+        // detection happened
+        lastOverlayInfo = {
+          quad: detection.quad,
+          laplacian: lap,
+          tenengrad: ten,
+          area: areaFrac,
+          confidence: detection.confidence,
+          score,
+          source: detection.source,
+          srcW: work.width,
+          srcH: work.height,
+        }
+        renderOverlay()
+        return
+      }
+    } catch (err) {
+      console.warn('[processFrame] LLM validator failed, fail-open:', err)
+    }
+  }
+
   try {
     const blob = await canvasToJpegBlob(warped, 0.75)
-    const frame: DetectedFrame = {
+    const frame: ScanRecord = {
+      idx,
+      t_s,
       hash,
       tileHash,
+      ten,
       sharpness: lap,
       confidence: detection.confidence,
       areaFrac,
@@ -470,8 +952,19 @@ async function processFrame(video: HTMLVideoElement): Promise<void> {
       warpedWidth: warped.width,
       warpedHeight: warped.height,
       capturedAt: performance.now(),
+      ...(await snapshotSource()),
     }
-    collector.add(frame)
+    acceptedRecords.push(frame)
+    // Safety valve for very long live-camera sessions (same policy the
+    // old FrameCollector had): drop oldest first.
+    if (acceptedRecords.length > ACCEPTED_MAX) {
+      acceptedRecords.splice(0, acceptedRecords.length - ACCEPTED_MAX)
+      // Evicted frames are gone for good, so the earliest pages of this
+      // scan will have fewer (or no) candidates to split or re-pick from.
+      // The review screen says so rather than silently offering less.
+      bufferTruncated.value = true
+    }
+    if (validatorResult) validatorByFrame.set(frame, validatorResult)
   } catch (err) {
     console.warn('[processFrame] failed to snapshot warped canvas', err)
   }
@@ -493,6 +986,25 @@ async function processFrame(video: HTMLVideoElement): Promise<void> {
 // ---------------------------------------------------------------------------
 // Debug overlay
 // ---------------------------------------------------------------------------
+
+/**
+ * Live blob footprint of the two ring buffers, in MB.
+ *
+ * Retaining a source frame per record (for manual corner correction)
+ * roughly doubles what a scan holds, and the ceiling is set by
+ * `SRC_LONG_SIDE` / `SRC_JPEG_Q` — constants picked without a real device
+ * to measure on. This is the readout that settles them.
+ */
+function bufferedMb(): string {
+  let warp = 0
+  let src = 0
+  for (const r of [...acceptedRecords, ...candidateRecords]) {
+    warp += r.warpedBlob.size
+    src += r.srcBlob.size
+  }
+  const mb = (n: number) => (n / 1024 / 1024).toFixed(1)
+  return `mem warp=${mb(warp)}MB  src=${mb(src)}MB`
+}
 
 function renderOverlay(): void {
   if (!debugMode.value) return
@@ -540,25 +1052,33 @@ function renderOverlay(): void {
   }
 
   ctx.fillStyle = 'rgba(15, 23, 42, 0.75)'
-  ctx.fillRect(8, canvas.height - 96, 340, 88)
+  ctx.fillRect(8, canvas.height - 114, 340, 106)
   ctx.fillStyle = '#e2e8f0'
   ctx.font = '13px ui-monospace, SFMono-Regular, Menlo, monospace'
   const lines = [
     `lap=${info.laplacian.toFixed(0)}  ten=${info.tenengrad.toFixed(0)}  area=${info.area.toFixed(2)}`,
     `conf=${info.confidence.toFixed(2)}  score=${info.score.toFixed(2)}`,
-    `src=${info.source}  buf=${collector.size}`,
+    `src=${info.source}  buf=${acceptedRecords.length}+${candidateRecords.length}`,
     `det=${detectedFrames}/${sampledFrames}  captured=${captured.value.length}`,
+    bufferedMb(),
   ]
   lines.forEach((line, i) => {
-    ctx.fillText(line, 16, canvas.height - 76 + i * 18)
+    ctx.fillText(line, 16, canvas.height - 94 + i * 18)
   })
 }
 
 function resetPipelineState(): void {
-  collector.clear()
+  acceptedRecords = []
+  candidateRecords = []
   sampledFrames = 0
   detectedFrames = 0
   lastOverlayInfo = null
+  repairClusters.value = []
+  preScanPages.value = []
+  mergeSelection.value = []
+  bufferTruncated.value = false
+  closeMembers()
+  closeQuadEdit()
   if (overlayRef.value) {
     const ctx = overlayRef.value.getContext('2d')
     ctx?.clearRect(0, 0, overlayRef.value.width, overlayRef.value.height)
@@ -601,6 +1121,10 @@ async function startFromFile(): Promise<void> {
     const detectorP = ensureDetector()
 
     phase.value = 'scanning'
+    const enableLlm = useLlm.value && llmAvailable.value
+    if (enableLlm) {
+      llmProgress.value = { done: 0, total: 0, phase: 'フレーム検証' }
+    }
     const duration = video.duration
     let lastSampleT = -999
     await video.play()
@@ -618,8 +1142,15 @@ async function startFromFile(): Promise<void> {
             duration > 0
               ? Math.round((video.currentTime / duration) * 100)
               : 0
-          statusText.value = `解析中 ${pct}% (検出 ${detectedFrames}/${sampledFrames} / 候補 ${collector.size})`
-          await processFrame(video)
+          statusText.value = `解析中 ${pct}% (検出 ${detectedFrames}/${sampledFrames} / 候補 ${acceptedRecords.length})`
+          if (enableLlm && llmProgress.value) {
+            // bump total estimate so the bar reflects upcoming work
+            llmProgress.value = {
+              ...llmProgress.value,
+              total: sampledFrames,
+            }
+          }
+          await processFrame(video, { enableLlm })
         }
         if (!video.ended) video.requestVideoFrameCallback(step)
         else resolve()
@@ -628,8 +1159,8 @@ async function startFromFile(): Promise<void> {
       video.onended = () => resolve()
     })
 
-    statusText.value = `選抜中… (候補 ${collector.size})`
-    await finalizeScan()
+    statusText.value = `選抜中… (候補 ${acceptedRecords.length})`
+    await finalizeScan({ enableLlm })
 
     URL.revokeObjectURL(objectUrl)
     objectUrl = null
@@ -695,7 +1226,7 @@ async function startCamera(): Promise<void> {
       if (now - lastSampleT >= SAMPLE_INTERVAL_S * 1000) {
         lastSampleT = now
         await processFrame(video)
-        statusText.value = `検出 ${detectedFrames}/${sampledFrames} / 候補 ${collector.size}`
+        statusText.value = `検出 ${detectedFrames}/${sampledFrames} / 候補 ${acceptedRecords.length}`
       }
       video.requestVideoFrameCallback(loop)
     }
@@ -715,9 +1246,11 @@ async function stopCamera(): Promise<void> {
   if (video) video.srcObject = null
 
   // Run Stage 2 selection on whatever the user captured this session.
+  // Live camera path intentionally skips LLM — per-frame Gemma 4 would
+  // make stop→done feel unresponsive (10+ s per cluster).
   phase.value = 'loading'
-  statusText.value = `選抜中… (候補 ${collector.size})`
-  await finalizeScan()
+  statusText.value = `選抜中… (候補 ${acceptedRecords.length})`
+  await finalizeScan({ enableLlm: false })
 
   phase.value = captured.value.length > 0 ? 'done' : 'idle'
   statusText.value = captured.value.length > 0
@@ -730,6 +1263,13 @@ async function stopCamera(): Promise<void> {
 // ---------------------------------------------------------------------------
 
 function removePage(id: string): void {
+  // A page backed by a cluster must be removed through the cluster, or the
+  // next repair would rebuild it from clusters that still contain it.
+  const page = captured.value.find((p) => p.id === id)
+  if (page?.clusterKey !== undefined) {
+    void repairRemove(page.clusterKey)
+    return
+  }
   captured.value = captured.value.filter((p) => p.id !== id)
   void saveSession(captured.value.map(pageToStored))
 }
@@ -794,6 +1334,94 @@ async function exportPdf(): Promise<void> {
   }
 }
 
+/**
+ * Build the debug payload (captured pages + meta + LLM judgments).
+ * `withImages=false` strips base64 thumbnails — the resulting file is
+ * 30-50× smaller and still has everything needed to diagnose LLM
+ * behaviour.
+ */
+function buildDebugPayload(withImages: boolean): unknown {
+  return {
+    meta: {
+      exportedAt: new Date().toISOString(),
+      detectorSource: getDetectorSource(),
+      sampledFrames,
+      detectedFrames,
+      llmAvailable: llmAvailable.value,
+      useLlm: useLlm.value,
+      pageCount: captured.value.length,
+      userAgent: navigator.userAgent,
+    },
+    pages: captured.value.map((p, idx) => ({
+      index: idx,
+      id: p.id,
+      width: p.width,
+      height: p.height,
+      aspect: (p.width / p.height).toFixed(3),
+      capturedAt: p.capturedAt,
+      capturedAtIso: new Date(p.capturedAt + performance.timeOrigin).toISOString(),
+      llmDebug: p.llmDebug,
+      ...(withImages ? { dataUrl: p.dataUrl } : {}),
+    })),
+  }
+}
+
+/**
+ * POST the payload to the dev server (`/api/debug-export`). Returns
+ * the server's reply on success, null on any failure (caller decides
+ * fallback). Silent — caller logs.
+ */
+async function postDebugJson(
+  withImages: boolean,
+): Promise<{ latestPath?: string; bytes?: number } | null> {
+  if (captured.value.length === 0) return null
+  const json = JSON.stringify(buildDebugPayload(withImages), null, 2)
+  try {
+    const res = await fetch('/api/debug-export', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: json,
+    })
+    if (!res.ok) {
+      console.warn('[postDebugJson] server returned', res.status)
+      return null
+    }
+    return await res.json()
+  } catch (err) {
+    console.warn('[postDebugJson] post failed:', err)
+    return null
+  }
+}
+
+/**
+ * Manual trigger from the footer button. Prompts whether to include
+ * base64 images; tries server save first, falls back to a download.
+ */
+async function exportDebugJson(): Promise<void> {
+  if (captured.value.length === 0) return
+  const withImages = window.confirm(
+    '画像 (base64) も含めますか?\n\nOK: 画像込み (数十 MB 級)\nキャンセル: メタ + LLM 判定のみ (推奨、数百 KB)',
+  )
+  const result = await postDebugJson(withImages)
+  if (result) {
+    statusText.value = `サーバ保存: ${result.latestPath} (${result.bytes} bytes)`
+    console.log('[exportDebugJson] saved on server:', result)
+    return
+  }
+  // Fallback: download as a file (production static build path).
+  const blob = new Blob([JSON.stringify(buildDebugPayload(withImages), null, 2)], {
+    type: 'application/json',
+  })
+  const url = URL.createObjectURL(blob)
+  const a = document.createElement('a')
+  a.href = url
+  a.download = `astarscan-debug-${Date.now()}.json`
+  document.body.appendChild(a)
+  a.click()
+  a.remove()
+  setTimeout(() => URL.revokeObjectURL(url), 1000)
+}
+
 async function clearAll(): Promise<void> {
   captured.value = []
   resetPipelineState()
@@ -829,6 +1457,12 @@ function storedToPage(s: StoredPage): Page {
 const canExport = computed(
   () => captured.value.length > 0 && !pdfExporting.value,
 )
+
+/** Map other-page id → captured-list 1-based index, for the pair debug
+ *  display. Cheap O(N) lookup; the captured list is small (<= 50). */
+function pageIndexById(id: string): number {
+  return captured.value.findIndex((p) => p.id === id) + 1
+}
 </script>
 
 <template>
@@ -836,7 +1470,25 @@ const canExport = computed(
     <header class="app__header">
       <h1 class="app__title">AstarScan</h1>
       <span v-if="statusText" class="app__status">{{ statusText }}</span>
+      <label class="app__toggle" :title="llmAvailable ? 'Gemma 4 で文書品質 / 重複判定を行う (WebGPU)' : 'WebGPU 非対応 — LLM 機能を使えません'">
+        <input
+          v-model="useLlm"
+          type="checkbox"
+          :disabled="!llmAvailable || phase === 'scanning' || phase === 'loading'"
+        />
+        LLM 判定{{ llmAvailable ? '' : ' (非対応)' }}
+      </label>
     </header>
+
+    <div v-if="llmProgress" class="llm-progress">
+      <span class="llm-progress__label">{{ llmProgress.phase }}</span>
+      <progress
+        class="llm-progress__bar"
+        :max="Math.max(1, llmProgress.total)"
+        :value="llmProgress.done"
+      />
+      <span class="llm-progress__count">{{ llmProgress.done }} / {{ llmProgress.total }}</span>
+    </div>
 
     <section class="viewport">
       <video
@@ -866,6 +1518,56 @@ const canExport = computed(
           {{ selectedPage.width }}×{{ selectedPage.height }}px
           · {{ new Date(selectedPage.capturedAt).toLocaleString() }}
         </small>
+        <details v-if="selectedPage.llmDebug" class="viewport__preview-debug">
+          <summary class="viewport__preview-debug-summary">
+            LLM 判定
+            <span v-if="selectedPage.llmDebug.validator">
+              · 品質 {{ selectedPage.llmDebug.validator.quality }}/5
+            </span>
+            <span v-if="selectedPage.llmDebug.bestFramePick">
+              · {{ selectedPage.llmDebug.bestFramePick.candidateCount }} 候補から選定
+            </span>
+            <span v-if="selectedPage.llmDebug.pairResults?.length">
+              · ペア比較 {{ selectedPage.llmDebug.pairResults.length }} 件
+            </span>
+          </summary>
+          <div class="viewport__preview-debug-body">
+            <section v-if="selectedPage.llmDebug.validator" class="dbg-section">
+              <h4>Frame validator</h4>
+              <p class="dbg-reason">{{ selectedPage.llmDebug.validator.reasoning || '(理由出力なし)' }}</p>
+              <small class="dbg-meta">
+                quality {{ selectedPage.llmDebug.validator.quality }}/5 ·
+                {{ selectedPage.llmDebug.validator.duration_ms.toFixed(0) }} ms ·
+                {{ selectedPage.llmDebug.validator.prompt_version }}
+              </small>
+              <pre class="dbg-raw">raw: {{ selectedPage.llmDebug.validator.raw }}</pre>
+            </section>
+            <section v-if="selectedPage.llmDebug.bestFramePick" class="dbg-section">
+              <h4>Best-frame pick</h4>
+              <p class="dbg-reason">{{ selectedPage.llmDebug.bestFramePick.reasoning || '(理由出力なし)' }}</p>
+              <small class="dbg-meta">
+                picked index {{ selectedPage.llmDebug.bestFramePick.pickedIndex }} /
+                {{ selectedPage.llmDebug.bestFramePick.candidateCount }} ·
+                {{ selectedPage.llmDebug.bestFramePick.duration_ms.toFixed(0) }} ms ·
+                {{ selectedPage.llmDebug.bestFramePick.prompt_version }}
+              </small>
+              <pre v-if="selectedPage.llmDebug.bestFramePick.raw" class="dbg-raw">raw: {{ selectedPage.llmDebug.bestFramePick.raw }}</pre>
+            </section>
+            <section v-if="selectedPage.llmDebug.pairResults?.length" class="dbg-section">
+              <h4>Pair comparison</h4>
+              <ul class="dbg-pairs">
+                <li v-for="(r, ri) in selectedPage.llmDebug.pairResults" :key="ri">
+                  <strong :class="r.same ? 'dbg-same' : 'dbg-diff'">
+                    {{ r.same ? 'SAME' : 'DIFF' }}
+                  </strong>
+                  vs ページ {{ pageIndexById(r.otherPageId) || '?' }}
+                  (conf {{ r.confidence.toFixed(1) }})
+                  — {{ r.reasoning }}
+                </li>
+              </ul>
+            </section>
+          </div>
+        </details>
       </div>
 
       <div v-if="phase === 'idle' && !selectedPage" class="splash">
@@ -940,6 +1642,36 @@ const canExport = computed(
           </div>
         </figure>
       </div>
+
+      <ReviewRepair
+        v-if="repairClusters.length > 0"
+        class="strip-repair"
+        :pages="captured"
+        :selected="mergeSelection"
+        :detail-key="detailKey"
+        :members="detailMembers"
+        :members-loading="membersLoading"
+        :buffer-truncated="bufferTruncated"
+        @toggle="toggleMergeSelection"
+        @merge="repairMerge"
+        @remove="repairRemove"
+        @open-members="openMembers"
+        @close-members="closeMembers"
+        @set-winner="repairSetWinner"
+        @split="repairSplit"
+        @edit-quad="openQuadEdit"
+      />
+
+      <QuadEditor
+        v-if="quadEditFrame"
+        class="strip-repair"
+        :src="quadEditUrl"
+        :src-w="quadEditFrame.srcW"
+        :src-h="quadEditFrame.srcH"
+        :quad="quadEditFrame.quad"
+        @save="saveQuadEdit"
+        @cancel="closeQuadEdit"
+      />
     </details>
 
     <footer class="controls">
@@ -981,6 +1713,15 @@ const canExport = computed(
         </button>
         <button class="btn btn--secondary" type="button" @click="startFromFile">
           動画から追加
+        </button>
+        <button
+          class="btn btn--ghost"
+          type="button"
+          :disabled="captured.length === 0"
+          title="LLM 判定・メタを JSON でダウンロード"
+          @click="exportDebugJson"
+        >
+          デバッグ JSON
         </button>
         <button class="btn btn--ghost" type="button" @click="clearAll">
           すべて削除
@@ -1032,6 +1773,48 @@ const canExport = computed(
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+  flex: 1;
+  min-width: 0;
+}
+
+.app__toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.375rem;
+  font-size: 0.75rem;
+  color: #cbd5e1;
+  cursor: pointer;
+  user-select: none;
+  white-space: nowrap;
+}
+.app__toggle input[type='checkbox'] {
+  accent-color: #0284c7;
+  cursor: pointer;
+}
+.app__toggle input[type='checkbox']:disabled {
+  cursor: not-allowed;
+}
+
+.llm-progress {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  padding: 0.375rem 1rem;
+  background: rgba(2, 132, 199, 0.15);
+  border-bottom: 1px solid rgba(2, 132, 199, 0.3);
+  font-size: 0.75rem;
+  color: #bae6fd;
+}
+.llm-progress__label {
+  flex: 0 0 auto;
+}
+.llm-progress__bar {
+  flex: 1;
+  height: 0.5rem;
+}
+.llm-progress__count {
+  flex: 0 0 auto;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
 }
 
 .viewport {
@@ -1171,6 +1954,77 @@ const canExport = computed(
   font-size: 0.75rem;
 }
 
+.viewport__preview-debug {
+  position: absolute;
+  top: 0.75rem;
+  left: 0.75rem;
+  max-width: min(28rem, calc(100% - 5rem));
+  max-height: calc(100% - 4rem);
+  overflow-y: auto;
+  background: rgba(2, 6, 23, 0.92);
+  color: #e2e8f0;
+  border: 1px solid rgba(125, 211, 252, 0.35);
+  border-radius: 0.5rem;
+  font-size: 0.75rem;
+  line-height: 1.4;
+}
+.viewport__preview-debug-summary {
+  padding: 0.5rem 0.75rem;
+  cursor: pointer;
+  list-style: none;
+  font-weight: 600;
+  color: #7dd3fc;
+}
+.viewport__preview-debug-summary::-webkit-details-marker {
+  display: none;
+}
+.viewport__preview-debug-body {
+  padding: 0 0.75rem 0.75rem;
+  display: flex;
+  flex-direction: column;
+  gap: 0.75rem;
+}
+.dbg-section h4 {
+  font-size: 0.75rem;
+  margin: 0 0 0.25rem;
+  color: #fbbf24;
+}
+.dbg-reason {
+  margin: 0 0 0.25rem;
+  white-space: pre-wrap;
+}
+.dbg-meta {
+  display: block;
+  color: #94a3b8;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  margin-bottom: 0.25rem;
+}
+.dbg-raw {
+  margin: 0;
+  padding: 0.375rem 0.5rem;
+  background: rgba(0, 0, 0, 0.4);
+  border-radius: 0.25rem;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 0.6875rem;
+  white-space: pre-wrap;
+  word-break: break-word;
+  max-height: 8rem;
+  overflow-y: auto;
+}
+.dbg-pairs {
+  margin: 0;
+  padding-left: 1rem;
+  display: flex;
+  flex-direction: column;
+  gap: 0.375rem;
+}
+.dbg-same {
+  color: #4ade80;
+}
+.dbg-diff {
+  color: #f87171;
+}
+
 .strip-drawer {
   background: #101a2d;
   border-top: 1px solid rgba(255, 255, 255, 0.08);
@@ -1203,6 +2057,11 @@ const canExport = computed(
   overflow-x: auto;
   overflow-y: hidden;
   scrollbar-width: thin;
+}
+
+.strip-repair {
+  padding: 0.75rem;
+  border-top: 1px solid rgba(255, 255, 255, 0.1);
 }
 
 .strip__thumb {

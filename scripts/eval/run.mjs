@@ -23,15 +23,30 @@ import { fileURLToPath } from 'node:url'
 import {
   FrameCollector,
   processFrame,
+  detectWithOpenCV,
   EXTRACT_W,
   EXTRACT_H,
   clusterAccepted,
   hamming,
   tileDistance,
   mergeClustersByOrb,
+  QuadSmoother,
+  rawLinkDistance,
 } from './pipeline.mjs'
-import { jpegToCanvas } from './canvas-utils.mjs'
-import { renderSummaryHtml } from './render-html.mjs'
+import {
+  jpegToCanvas,
+  drawQuadsOverlay,
+  canvasToJpegBuffer,
+  newCanvas,
+} from './canvas-utils.mjs'
+import { renderSummaryHtml, renderOverlayHtml } from './render-html.mjs'
+import { resolveGtManifest, matchWinnersToGt } from './lib/gt-match.mjs'
+import {
+  clusterBySegments,
+  SEGMENT_DEFAULTS,
+} from '../../packages/core/src/pipeline/segment-cluster.ts'
+import { verifySameText } from '../../packages/core/src/pipeline/text-similarity.ts'
+import { computeOrbDescriptors, countOrbMatches } from './pipeline.mjs'
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url))
 const REPO_ROOT = path.resolve(__dirname, '../..')
@@ -55,6 +70,19 @@ function parseArgs(argv) {
     orbMerge: 80, // ORB match-count threshold for cluster merging
     tileMergeMax: Infinity, // dual-criterion: tile-pHash distance ≤ this for ORB merge to apply
     minGridCoverage: 0, // minimum 4×4 grid cells covered by inliers
+    detector: 'opencv', // 'opencv' | 'yolo' (corner detection backend)
+    model: null, // path to doc-corners.onnx (defaults under public/models when --detector yolo)
+    gtMap: null, // page-identity GT manifest (dir or manifest.json path);
+    // auto-discovered at test/fixtures/gt/<video-id>/manifest.json when omitted
+    smoothQuad: null, // EMA alpha for per-track quad smoothing (e.g. 0.6); off when null
+    seg: { ...SEGMENT_DEFAULTS }, // knobs for --algorithm segment
+    verify: 'none', // content verifier for segment mode: 'ocr' | 'none'
+    // OCR 3-gram Jaccard ≥ this → same page. Measured on labeled mp4-1
+    // pairs: same-page 0.249–0.329, different-page 0.000–0.166 (even the
+    // near-identical multilingual safety pages separate). 0.20 splits the
+    // bands with margin on both sides.
+    verifyJaccard: 0.2,
+    rescueTen: 10, // candidate floor for the long-gap rescue pass (0 = off)
   }
   const rest = []
   for (let i = 0; i < argv.length; i += 1) {
@@ -79,6 +107,21 @@ function parseArgs(argv) {
       case '--orb-merge': args.orbMerge = Number(next()); break
       case '--tile-merge-max': args.tileMergeMax = Number(next()); break
       case '--min-grid': args.minGridCoverage = Number(next()); break
+      case '--detector': args.detector = next(); break
+      case '--model': args.model = next(); break
+      case '--gt-map': args.gtMap = next(); break
+      case '--smooth-quad': args.smoothQuad = Number(next()); break
+      case '--verify': args.verify = next(); break // 'ocr' | 'none'
+      case '--rescue-ten': args.rescueTen = Number(next()); break
+      case '--verify-jaccard': args.verifyJaccard = Number(next()); break
+      case '--seg-gap': args.seg.maxGapFrames = Number(next()); break
+      case '--seg-cut-gap': args.seg.cutGapFrames = Number(next()); break
+      case '--seg-cut-orb': args.seg.cutOrbInliers = Number(next()); break
+      case '--merge-adj-s': args.seg.adjacentGapS = Number(next()); break
+      case '--merge-orb-adj': args.seg.orbAdjacent = Number(next()); break
+      case '--merge-orb-dist': args.seg.orbDistant = Number(next()); break
+      case '--merge-grid': args.seg.minGrid = Number(next()); break
+      case '--merge-tile-lo': args.seg.tileLo = Number(next()); break
       default: rest.push(a)
     }
   }
@@ -92,6 +135,11 @@ function parseArgs(argv) {
     args.out = path.join(REPO_ROOT, 'eval-out', base)
   } else {
     args.out = path.resolve(args.out)
+  }
+  if (args.detector === 'yolo') {
+    args.model = args.model
+      ? path.resolve(args.model)
+      : path.join(REPO_ROOT, 'apps/web/public/models/doc-corners.onnx')
   }
   return args
 }
@@ -145,30 +193,68 @@ async function main() {
   const args = parseArgs(process.argv.slice(2))
 
   console.log(`[run] mp4=${args.mp4}`)
-  console.log(`[run] params: interval=${args.interval} clusterThr=${args.clusterThr} minTen=${args.minTen} minConf=${args.minConf}`)
+  console.log(`[run] params: detector=${args.detector} interval=${args.interval} clusterThr=${args.clusterThr} minTen=${args.minTen} minConf=${args.minConf}`)
   console.log(`[run] out=${args.out}`)
 
   await fs.rm(args.out, { recursive: true, force: true })
   await fs.mkdir(args.out, { recursive: true })
   const winnersDir = path.join(args.out, 'winners')
   const acceptedDir = path.join(args.out, 'accepted')
+  const overlayDir = path.join(args.out, 'overlay')
   const rawDir = path.join(args.out, 'raw')
   await fs.mkdir(winnersDir, { recursive: true })
   await fs.mkdir(acceptedDir, { recursive: true })
+  await fs.mkdir(overlayDir, { recursive: true })
 
   console.log('[run] extracting frames...')
   const t0 = Date.now()
   const frames = await extractFrames(args.mp4, args.interval, rawDir)
   console.log(`[run] extracted ${frames.length} frames in ${Date.now() - t0}ms`)
 
+  // Optional YOLOv8-pose detector (Node). Loaded lazily so OpenCV runs
+  // don't pay the onnxruntime-node native-module cost.
+  let yoloSession = null
+  let detectWithYolo = null
+  if (args.detector === 'yolo') {
+    const mod = await import('./yolo-node.mjs')
+    detectWithYolo = mod.detectWithYolo
+    try {
+      yoloSession = await mod.createYoloSession(args.model)
+    } catch (err) {
+      console.error(`[run] failed to load YOLO model: ${args.model}`)
+      console.error(`[run]   ${err.message}`)
+      console.error('[run] train it first (docs/training-doc-corners.md) or pass --model <path>.')
+      process.exit(1)
+    }
+    console.log(`[run] detector=yolo model=${args.model}`)
+  }
+
   const collector = new FrameCollector()
   const traces = []
+  const candidateRecords = [] // sub-gate frames eligible for gap rescue
 
   console.log('[run] processing frames...')
   const t1 = Date.now()
   const acceptedRecords = []
+  const smoother = args.smoothQuad != null ? new QuadSmoother(args.smoothQuad) : null
+  let prevLink = null
   for (const f of frames) {
     const canvas = await jpegToCanvas(f.path)
+    // YOLO mode: precompute the (async) detection; minConf=0 so the
+    // collector's confidence gate in processFrame labels low-conf frames.
+    // With --smooth-quad we precompute the OpenCV detection too, so the
+    // smoother sees every detector's raw quad before the warp.
+    let detection =
+      args.detector === 'yolo' ? await detectWithYolo(canvas, yoloSession, 0) : undefined
+    if (smoother) {
+      if (detection === undefined) {
+        const q = detectWithOpenCV(canvas)
+        detection = q ? { quad: q, confidence: 1.0 } : null
+      }
+      if (detection?.quad) {
+        detection = { ...detection, quad: smoother.apply(detection.quad, f.idx) }
+      }
+    }
     const trace = processFrame({
       canvas,
       idx: f.idx,
@@ -176,10 +262,27 @@ async function main() {
       collector,
       minConfidence: args.minConf,
       minTenengrad: args.minTen,
+      detection,
     })
+    // Raw-frame link distance vs the previous sampled frame: the page-turn
+    // signal that crop jitter can't poison (see rawLinkDistance docs).
+    trace.linkDist =
+      prevLink && trace.quad && f.idx - prevLink.idx === 1
+        ? rawLinkDistance(prevLink.canvas, prevLink.quad, canvas, trace.quad, newCanvas)
+        : null
+    prevLink = trace.quad ? { idx: f.idx, canvas, quad: trace.quad } : prevLink
     if (trace.accepted) {
       const fname = `frame-${String(f.idx).padStart(5, '0')}.jpg`
       await fs.writeFile(path.join(acceptedDir, fname), trace.warpedBuf)
+      // Diagnostic overlay: raw frame + detected quad, so we can see
+      // whether the corners track the real paper edge (Stage 0).
+      const overlay = drawQuadsOverlay(canvas, [
+        { quad: trace.quad, color: '#ff3b30' },
+      ])
+      await fs.writeFile(
+        path.join(overlayDir, fname),
+        canvasToJpegBuffer(overlay, 0.8),
+      )
       acceptedRecords.push({
         idx: f.idx,
         t_s: f.t_s,
@@ -193,10 +296,52 @@ async function main() {
         confidence: trace.confidence,
       })
     }
-    // Strip Buffer/bigint[] from trace before logging (jsonl-unfriendly).
+    // Rescue candidates: detected + confident but below the blur gate.
+    // Their crops are written alongside accepted ones so the segment
+    // rescue pass / verifier / winner export can read them by idx.
+    // Geometric floors (measured on labeled rescues): every TRUE rescue
+    // had conf ≥ 0.52 and areaFrac ≥ 0.12, while the junk picks were a
+    // desk-edge sliver (area 0.004) and a half-out-of-frame corner
+    // (conf 0.26, area 0.07). Content gates (lap/OCR-length) are NOT
+    // usable here — the Lean-Startup cover rescued at lap=2.
+    if (
+      args.algorithm === 'segment' &&
+      args.rescueTen > 0 &&
+      !trace.accepted &&
+      trace.rejectReason === 'blur-gate' &&
+      trace.ten >= args.rescueTen &&
+      trace.confidence >= 0.4 &&
+      trace.areaFrac >= 0.08 &&
+      trace.warped
+    ) {
+      const fname = `frame-${String(f.idx).padStart(5, '0')}.jpg`
+      await fs.writeFile(
+        path.join(acceptedDir, fname),
+        canvasToJpegBuffer(trace.warped, 0.75),
+      )
+      candidateRecords.push({
+        idx: f.idx,
+        t_s: f.t_s,
+        hash: BigInt('0x' + trace.hashHex),
+        tileHash: trace.tileHash,
+        score: trace.score,
+        lap: trace.lap,
+        ten: trace.ten,
+        areaFrac: trace.areaFrac,
+        confidence: trace.confidence,
+      })
+    }
+    // Strip Buffer/bigint[]/canvas from trace before logging
+    // (jsonl-unfriendly). Keep `quad` (rounded) so corner geometry is
+    // inspectable per frame.
     delete trace.warpedBuf
-    delete trace.quad
     delete trace.tileHash
+    delete trace.warped
+    if (trace.quad) {
+      const q = trace.quad
+      const r = (p) => ({ x: Math.round(p.x), y: Math.round(p.y) })
+      trace.quad = { tl: r(q.tl), tr: r(q.tr), br: r(q.br), bl: r(q.bl) }
+    }
     traces.push(trace)
     if ((f.idx + 1) % 50 === 0) {
       const det = traces.filter((t) => t.detected).length
@@ -217,7 +362,99 @@ async function main() {
   const algoOpts = useTile
     ? { hashKey: 'tileHash', distanceFn: tileDistance }
     : { hashKey: 'hash', distanceFn: (a, b) => hamming(a, b) }
-  let clusters = clusterAccepted(acceptedRecords, args.clusterThr, algoOpts)
+  const loadAcceptedCanvas = (idx) =>
+    jpegToCanvas(path.join(acceptedDir, `frame-${String(idx).padStart(5, '0')}.jpg`))
+  let clusters
+  let segDebug = null
+  if (args.algorithm === 'segment') {
+    const t = Date.now()
+    // ORB ops are injected — clusterBySegments itself is cv-free in core.
+    const hooks = { orb: { computeOrbDescriptors, countOrbMatches } }
+    if (args.verify === 'ocr') {
+      const { runYomiToku } = await import('./lib/ocr-yomitoku.mjs')
+      // Disk-backed OCR cache, keyed by video basename so re-runs with
+      // different thresholds don't pay YomiToku's ~30 s model init per
+      // image again. Lives next to the eval outputs, gitignored.
+      const videoBase = path.basename(args.mp4, path.extname(args.mp4))
+      // Detector is part of the key: a different detector yields different
+      // crops for the same frame idx. (Warp params don't — same quad,
+      // same crop.)
+      const ocrCachePath = path.join(
+        REPO_ROOT,
+        'eval-out',
+        `.ocr-cache-${videoBase}-${args.detector}.json`,
+      )
+      let ocrDisk = {}
+      try {
+        ocrDisk = JSON.parse(await fs.readFile(ocrCachePath, 'utf8'))
+      } catch { /* first run */ }
+      const ocrCache = new Map()
+      const ocrText = async (idx) => {
+        if (ocrDisk[idx] !== undefined) return ocrDisk[idx]
+        if (!ocrCache.has(idx)) {
+          const p = path.join(acceptedDir, `frame-${String(idx).padStart(5, '0')}.jpg`)
+          ocrCache.set(
+            idx,
+            runYomiToku(p)
+              .then((r) => r.raw_text.replace(/\s+/g, ''))
+              .catch((err) => {
+                console.warn(`[run] OCR failed for idx=${idx}: ${err.message}`)
+                return null
+              })
+              .then(async (text) => {
+                ocrDisk[idx] = text
+                await fs.writeFile(ocrCachePath, JSON.stringify(ocrDisk))
+                return text
+              }),
+          )
+        }
+        return ocrCache.get(idx)
+      }
+      hooks.verifySame = async (aIdx, bIdx, gapS = Infinity) => {
+        const [ta, tb] = await Promise.all([ocrText(aIdx), ocrText(bIdx)])
+        // Jaccard / containment judgment lives in scan-core
+        // (pipeline/text-similarity.ts) — shared with the browser verifier.
+        const v = verifySameText(ta, tb, gapS, { jaccardThreshold: args.verifyJaccard })
+        if (v == null) return null
+        console.log(
+          `  [verify-ocr] ${aIdx}↔${bIdx}: jaccard=${v.jaccard.toFixed(3)} containment=${v.containment.toFixed(3)} gap=${gapS.toFixed(1)}s → ${v.same ? 'same' : 'diff'}`,
+        )
+        return v.same
+      }
+    }
+    const result = await clusterBySegments(
+      acceptedRecords,
+      loadAcceptedCanvas,
+      args.seg,
+      hooks,
+      candidateRecords,
+    )
+    clusters = result.clusters
+    segDebug = result.debug
+    console.log(
+      `[run] segment clustering: ${segDebug.segments.length} segments ` +
+        `(${segDebug.rescues.length} rescued), ${segDebug.cuts.length} cuts, ` +
+        `${segDebug.merges.filter((m) => m.verdict).length} merges → ` +
+        `${clusters.length} clusters in ${Date.now() - t}ms`,
+    )
+    for (const r of segDebug.rescues) {
+      console.log(`  rescue idx=${r.idx} t=${r.t_s.toFixed(1)}s ten=${Math.round(r.ten)} score=${r.score.toFixed(3)}`)
+    }
+    for (const c of segDebug.cuts) {
+      console.log(`  cut ${c.a}→${c.b}: phash=${c.phash} gap=${c.gap} orb=${c.orb}`)
+    }
+    for (const m of segDebug.merges.filter((m) => m.verdict)) {
+      console.log(
+        `  merge S${m.i + 1}(${m.aIdx}) ↔ S${m.j + 1}(${m.bIdx}): ${m.verdict} tile=${m.tile} orb=${m.orb ?? '-'} grid=${m.grid ?? '-'}`,
+      )
+    }
+    await fs.writeFile(
+      path.join(args.out, 'segments.json'),
+      JSON.stringify(segDebug, null, 2),
+    )
+  } else {
+    clusters = clusterAccepted(acceptedRecords, args.clusterThr, algoOpts)
+  }
 
   // ORB post-hoc merge: pHash/tile-pHash leave book-cover-style same-page
   // pairs split because their hash distance exceeds the threshold (the
@@ -230,10 +467,7 @@ async function main() {
     const t = Date.now()
     const result = await mergeClustersByOrb(
       clusters,
-      async (idx) =>
-        jpegToCanvas(
-          path.join(acceptedDir, `frame-${String(idx).padStart(5, '0')}.jpg`),
-        ),
+      loadAcceptedCanvas,
       args.orbMerge,
       args.tileMergeMax,
       args.minGridCoverage,
@@ -283,6 +517,46 @@ async function main() {
   console.log(`[run] ${winners.length} winners selected`)
 
   // ---------------------------------------------------------------------
+  // Page-identity GT matching (temporal-first, ORB cross-check). Auto-
+  // discovers test/fixtures/gt/<video-id>/manifest.json unless --gt-map.
+  // ---------------------------------------------------------------------
+  let gtMatch = null
+  const gtManifestPath = await resolveGtManifest({
+    gtMapArg: args.gtMap,
+    repoRoot: REPO_ROOT,
+    mp4Path: args.mp4,
+  })
+  if (gtManifestPath) {
+    console.log(`[run] GT manifest: ${gtManifestPath}`)
+    const winnerInputs = winners.map((w) => {
+      const idx = w.idx ?? w.capturedAt
+      return {
+        idx,
+        t_s: idx * args.interval,
+        jpegPath: path.join(acceptedDir, `frame-${String(idx).padStart(5, '0')}.jpg`),
+      }
+    })
+    gtMatch = await matchWinnersToGt({
+      manifestPath: gtManifestPath,
+      winners: winnerInputs,
+    })
+    const m = gtMatch.metrics
+    console.log(
+      `[run] GT identity: recall=${m.perPageRecall} (${m.matchedPages}/${m.gtPages})` +
+        ` dupRate=${m.duplicateRate} (${m.duplicates}) fpRate=${m.falsePositiveRate}` +
+        ` (${m.falsePositives}) mergeSuspects=${m.mergeErrors}`,
+    )
+    if (m.missedPages.length) console.log(`[run]   missed pages: ${m.missedPages.join(', ')}`)
+    for (const f of m.flags) console.log(`[run]   flag idx=${f.idx}: ${f.flag}`)
+    await fs.writeFile(
+      path.join(args.out, 'gt-match.json'),
+      JSON.stringify(gtMatch, null, 2),
+    )
+  } else {
+    console.log('[run] no GT manifest found (identity metrics skipped)')
+  }
+
+  // ---------------------------------------------------------------------
   // Emit outputs
   // ---------------------------------------------------------------------
   const framesPath = path.join(args.out, 'frames.jsonl')
@@ -313,25 +587,70 @@ async function main() {
 
   const detected = traces.filter((t) => t.detected).length
   const accepted = traces.filter((t) => t.accepted).length
+  // Corner-tightness diagnostic: areaFrac = quad area / frame area. A
+  // detector that grabs the whole bright region (page + desk) rather than
+  // hugging the page yields high areaFrac. Lower median = tighter to the
+  // document; over-coverage = accepted frames with areaFrac ≥ 0.85. This is
+  // the headline OpenCV-vs-YOLO comparator for symptom ① (枠ズレ).
+  // Consecutive-frame hash stability: distance between temporally adjacent
+  // accepted frames (gap ≤ 3 samples ≈ same page, same hold). High medians
+  // mean crop jitter is masquerading as content change — the over-split
+  // root cause. Track it in every run so smoothing regressions are visible.
+  const consecP = []
+  const consecT = []
+  for (let i = 1; i < acceptedRecords.length; i += 1) {
+    const a = acceptedRecords[i - 1]
+    const b = acceptedRecords[i]
+    if (b.idx - a.idx > 3) continue
+    consecP.push(Number(hamming(a.hash, b.hash)))
+    consecT.push(Number(tileDistance(a.tileHash, b.tileHash)))
+  }
+  const pct = (arr, p) => {
+    if (!arr.length) return null
+    const s = [...arr].sort((x, y) => x - y)
+    return s[Math.min(s.length - 1, Math.floor(s.length * p))]
+  }
+  const consecHash = {
+    pairs: consecP.length,
+    phash: { p25: pct(consecP, 0.25), median: pct(consecP, 0.5), p75: pct(consecP, 0.75) },
+    tile: { p25: pct(consecT, 0.25), median: pct(consecT, 0.5), p75: pct(consecT, 0.75) },
+  }
+
+  const areaFracs = acceptedRecords.map((r) => r.areaFrac).sort((a, b) => a - b)
+  const medianAreaFrac = areaFracs.length
+    ? +areaFracs[Math.floor(areaFracs.length / 2)].toFixed(3)
+    : 0
+  const overCoverQuads = areaFracs.filter((v) => v >= 0.85).length
   const summary = {
     mp4: args.mp4,
     params: {
+      detector: args.detector,
       interval: args.interval,
       algorithm: args.algorithm,
       clusterThr: args.clusterThr,
       minTen: args.minTen,
       minConf: args.minConf,
+      smoothQuad: args.smoothQuad,
+      seg: args.algorithm === 'segment' ? args.seg : undefined,
       extractW: EXTRACT_W,
       extractH: EXTRACT_H,
     },
+    consecHash,
     sampled: frames.length,
     detected,
     accepted,
+    medianAreaFrac,
+    overCoverQuads,
+    overCoverFrac: accepted ? +(overCoverQuads / accepted).toFixed(3) : 0,
     winners: winners.length,
     gt: args.gt,
     recall: args.gt ? Math.min(1, winners.length / args.gt) : null,
     precision: args.gt ? Math.min(1, args.gt / Math.max(1, winners.length)) : null,
     absError: args.gt != null ? Math.abs(winners.length - args.gt) : null,
+    // Identity-matched metrics (null until a GT manifest exists for the
+    // video). These supersede the count-based recall/precision proxies
+    // above, which can be inflated by duplicates masking missed pages.
+    gtIdentity: gtMatch ? gtMatch.metrics : null,
     extractMs: Date.now() - t0,
     processMs: procMs,
     provenance: {
@@ -388,6 +707,21 @@ async function main() {
   await fs.writeFile(htmlPath, html)
   console.log(`[run] wrote ${htmlPath}`)
 
+  // Overlay diagnostic gallery: raw frame + detected quad → warped crop,
+  // for inspecting corner-detection accuracy (Stage 0). Winner idxs come
+  // from `.idx` (tile modes) or `.capturedAt` (phash collector winners).
+  const winnerIds = new Set(winners.map((w) => w.idx ?? w.capturedAt))
+  const overlayHtml = renderOverlayHtml({
+    mp4: args.mp4,
+    accepted: acceptedRecords.map((r) => ({ idx: r.idx, score: r.score })),
+    overlayRelDir: 'overlay',
+    warpRelDir: 'accepted',
+    winnerIds,
+  })
+  const overlayHtmlPath = path.join(args.out, 'overlay.html')
+  await fs.writeFile(overlayHtmlPath, overlayHtml)
+  console.log(`[run] wrote ${overlayHtmlPath}`)
+
   // ---------------------------------------------------------------------
   // Sweep mode (re-cluster the same accepted records at each value;
   // detection / warp / hashing are NOT re-run — that's the whole point)
@@ -413,9 +747,17 @@ async function main() {
   }
 
   console.log('[run] SUMMARY:')
-  console.log(`  sampled=${summary.sampled} detected=${summary.detected} accepted=${summary.accepted} winners=${summary.winners}`)
+  console.log(`  detector=${args.detector} sampled=${summary.sampled} detected=${summary.detected} accepted=${summary.accepted} winners=${summary.winners}`)
+  console.log(`  quad tightness: median areaFrac=${summary.medianAreaFrac}  over-coverage(≥0.85)=${summary.overCoverQuads}/${summary.accepted} (${(summary.overCoverFrac * 100).toFixed(0)}%)`)
+  console.log(`  consec-hash: phash median=${consecHash.phash.median} (p25=${consecHash.phash.p25} p75=${consecHash.phash.p75})  tile median=${consecHash.tile.median} over ${consecHash.pairs} pairs`)
   if (args.gt != null) {
     console.log(`  GT=${args.gt} → abs_error=${summary.absError} (recall_proxy=${summary.recall.toFixed(2)}, precision_proxy=${summary.precision.toFixed(2)})`)
+  }
+  if (gtMatch) {
+    const m = gtMatch.metrics
+    console.log(
+      `  IDENTITY: recall=${m.perPageRecall} dup=${m.duplicateRate} fp=${m.falsePositiveRate} mergeSuspects=${m.mergeErrors} missed=[${m.missedPages.join(',')}]`,
+    )
   }
 
   if (!args.keepFrames) {

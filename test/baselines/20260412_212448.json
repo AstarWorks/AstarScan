@@ -1,0 +1,10 @@
+{
+  "perPageRecall": 1,
+  "matchedPages": 10,
+  "gtPages": 10,
+  "winners": 17,
+  "duplicates": 5,
+  "falsePositives": 2,
+  "mergeErrors": 0,
+  "missedPages": []
+}

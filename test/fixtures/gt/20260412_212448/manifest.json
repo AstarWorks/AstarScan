@@ -1,0 +1,84 @@
+{
+  "schemaVersion": 1,
+  "video": "20260412_212448.mp4",
+  "description": "Mixed items placed on desk one at a time: books, pamphlet, Japanese forms. GT curated 2026-06-11 by 1.5fps filmstrip review + zoom verification.",
+  "sampleIntervalS": 0.1,
+  "pages": [
+    {
+      "id": "h01",
+      "ref": "pages/h01.jpg",
+      "refKind": "crop",
+      "label": "Yellow book cover: Kigyouka wa doko de sentaku wo ayamaru no ka",
+      "timeRangeS": [1.3, 5.7]
+    },
+    {
+      "id": "h02",
+      "ref": "pages/h02.jpg",
+      "refKind": "fullframe",
+      "label": "Blue book cover: The Lean Startup (Japanese edition)",
+      "timeRangeS": [7.3, 10.2],
+      "notes": "Missed by yolo2 run: sharp, conf 0.67, but minimal-texture cover, Tenengrad median 12 < gate 30"
+    },
+    {
+      "id": "h03",
+      "ref": "pages/h03.jpg",
+      "refKind": "crop",
+      "label": "White book cover with red obi: Ippo fumidasu hito no shin bible",
+      "timeRangeS": [11.7, 13.4]
+    },
+    {
+      "id": "h04",
+      "ref": "pages/h04.jpg",
+      "refKind": "crop",
+      "label": "Monitor stand install sheet (steps 2-3, B&W diagrams + multilingual text)",
+      "timeRangeS": [13.6, 17.6]
+    },
+    {
+      "id": "h05",
+      "ref": "pages/h05.jpg",
+      "refKind": "crop",
+      "label": "Japanese certificate form, dense table layout (shomeisho)",
+      "timeRangeS": [20.6, 23.6]
+    },
+    {
+      "id": "h06",
+      "ref": "pages/h06.jpg",
+      "refKind": "crop",
+      "label": "Dark training-tube package back (ALL OUT, barcode + push-kei label)",
+      "timeRangeS": [28.6, 31.4]
+    },
+    {
+      "id": "h07",
+      "ref": "pages/h07.jpg",
+      "refKind": "crop",
+      "label": "Dental exam result document (tooth circle chart, B&W)",
+      "timeRangeS": [52.2, 54.2]
+    },
+    {
+      "id": "h08",
+      "ref": "pages/h08.jpg",
+      "refKind": "crop",
+      "label": "Koku eisei kanri document (tooth chart with red/blue marks)",
+      "timeRangeS": [58.5, 62.0]
+    },
+    {
+      "id": "h09",
+      "ref": "pages/h09.jpg",
+      "refKind": "crop",
+      "label": "Itemized billing form with red stamp (meisai/ryoshusho)",
+      "timeRangeS": [64.2, 66.0]
+    },
+    {
+      "id": "h10",
+      "ref": "pages/h10.jpg",
+      "refKind": "crop",
+      "label": "Calorie Mate box (chocolate flavor, yellow package, nutrition table)",
+      "timeRangeS": [34.8, 38.5],
+      "notes": "Originally miscatalogued as 'yellow sticky notes / non-page' during GT curation; the rescue pass (idx 355) captured it sharp and fully legible. Second GT omission found by the pipeline itself."
+    }
+  ],
+  "nonPages": [
+    "Empty desk frames (large fraction of the video)"
+  ],
+  "notes": "10 real items (h10 Calorie Mate box added 2026-06-12 after the rescue pass exposed a curation error — it had been dismissed as sticky notes). Earlier verbal GT of 11 was an overcount. yolo2 winners: h01 split into 8 duplicates, h03 and h06 into 2 each; h02 missed entirely (blur gate)."
+}

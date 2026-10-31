@@ -125,3 +125,66 @@ th { background: #334155; }
   lines.push(`</body></html>`)
   return lines.join('\n')
 }
+
+/**
+ * Render `overlay.html` — a before/after gallery for corner-detection
+ * diagnosis (Stage 0). Each accepted frame is shown as
+ *   [ raw frame + detected quad ]  →  [ warped crop ]
+ * so we can see at a glance whether the detected corners track the real
+ * paper edge and whether the resulting warp is square or skewed.
+ *
+ * @param accepted     Array<{ idx, score }> in capture order
+ * @param overlayRelDir relative dir holding overlay/frame-NNNNN.jpg
+ * @param warpRelDir    relative dir holding the warped frame-NNNNN.jpg
+ * @param winnerIds     Set<number> of idxs that became cluster winners
+ */
+export function renderOverlayHtml({
+  mp4,
+  accepted,
+  overlayRelDir,
+  warpRelDir,
+  winnerIds = new Set(),
+}) {
+  const css = `
+body { font-family: ui-sans-serif, system-ui, sans-serif; background: #0f172a; color: #e2e8f0; padding: 16px; max-width: 1400px; margin: 0 auto; }
+h1 { font-size: 18px; margin: 0 0 4px; }
+.legend { font-size: 12px; color: #94a3b8; margin: 4px 0 16px; line-height: 1.6; }
+.swatch { display: inline-block; width: 10px; height: 10px; border-radius: 2px; vertical-align: middle; margin: 0 2px 0 8px; }
+.pair { display: flex; align-items: center; gap: 10px; background: #1e293b; padding: 10px; border-radius: 8px; margin-bottom: 10px; }
+.pair.winner { outline: 2px solid #4ade80; }
+.pair img.overlay { height: 240px; border-radius: 4px; display: block; }
+.pair img.warp { height: 240px; border-radius: 4px; display: block; background: #000; }
+.arrow { color: #64748b; font-size: 22px; }
+.meta { font-family: ui-monospace, monospace; font-size: 12px; color: #cbd5e1; min-width: 120px; }
+.meta .win { color: #4ade80; font-weight: bold; }
+`
+  const lines = []
+  lines.push(
+    `<!doctype html><html><head><meta charset="utf-8"><title>${escape(path.basename(mp4))} overlays</title><style>${css}</style></head><body>`,
+  )
+  lines.push(`<h1>${escape(path.basename(mp4))} — detection overlays</h1>`)
+  lines.push(
+    `<div class="legend">Each row: <b>raw frame + detected quad</b> → <b>warped crop</b>. ` +
+      `Corner dots: <span class="swatch" style="background:#ff3b30"></span>tl ` +
+      `<span class="swatch" style="background:#34c759"></span>tr ` +
+      `<span class="swatch" style="background:#0a84ff"></span>br ` +
+      `<span class="swatch" style="background:#ffd60a"></span>bl. ` +
+      `If the quad outline cuts across the paper instead of hugging its corners on a tilted frame, ` +
+      `the detector is approximating a perspective trapezoid with a rectangle — the warp will be skewed/cropped. ` +
+      `Green outline = cluster winner.</div>`,
+  )
+  for (const a of accepted) {
+    const isWin = winnerIds.has(a.idx)
+    const f = `frame-${String(a.idx).padStart(5, '0')}.jpg`
+    lines.push(`<div class="pair${isWin ? ' winner' : ''}">`)
+    lines.push(
+      `<div class="meta">f${a.idx}<br>score=${a.score.toFixed(3)}${isWin ? '<br><span class="win">WINNER</span>' : ''}</div>`,
+    )
+    lines.push(`<img class="overlay" src="${overlayRelDir}/${f}" alt="overlay ${a.idx}">`)
+    lines.push(`<div class="arrow">→</div>`)
+    lines.push(`<img class="warp" src="${warpRelDir}/${f}" alt="warp ${a.idx}">`)
+    lines.push(`</div>`)
+  }
+  lines.push(`</body></html>`)
+  return lines.join('\n')
+}

@@ -25,6 +25,7 @@ import {
 } from '@huggingface/transformers'
 
 import { ensureLlmReady } from './llm-extractor-gemma'
+import { parseCoTAnswer } from './llm-parse-cot'
 
 const MODEL_ID = 'onnx-community/gemma-4-E2B-it-ONNX'
 
@@ -50,18 +51,30 @@ export interface ValidationResult {
   readonly usable: boolean
   readonly quality: number       // 1..5
   readonly raw: string
+  readonly reasoning: string      // CoT 「理由:」部分 (空なら raw 全文)
+  readonly prompt_version: string // "v2-cot"
   readonly duration_ms: number
 }
 
-const PROMPT = `この画像は日本語の名刺ですか? 文字が読み取れる状態ですか?
-以下のいずれか 1 行で答えてください:
-- "1": カードではない / 真っ白 / 完全にブレている / 真っ黒
-- "2": カードに見えるが文字がほぼ読めない
-- "3": 部分的に読める
-- "4": ほとんど読める
-- "5": 鮮明に読める
+const PROMPT_VERSION = 'v2-cot'
 
-数字 1 文字のみで回答してください。`
+const PROMPT = `この画像を OCR / 名刺抽出する観点で 1-5 の数字で評価してください。
+
+判断材料:
+- 名刺らしい矩形が写っているか (背景・手・無関係な物体だけではないか)
+- 文字が読める鮮明度 (極端なブレ・グレア・暗さは減点)
+- カードの大半が画角に収まっているか
+
+スコア定義:
+- 5: 鮮明に読める
+- 4: ほとんど読める
+- 3: 部分的に読める
+- 2: ほぼ読めない
+- 1: カードではない / 真っ白 / 真っ暗
+
+以下の形式で必ず 2 行出力してください:
+理由: <1-2 文で評価>
+答え: <1-5 の数字>`
 
 /**
  * Score a single warped card image's usability for OCR/extraction.
@@ -94,7 +107,7 @@ export async function validateFrame(
     })
     const outputs = await model.generate({
       ...inputs,
-      max_new_tokens: 4,
+      max_new_tokens: 96,
       do_sample: false,
     })
     const promptLen = inputs.input_ids.dims[1]
@@ -102,12 +115,20 @@ export async function validateFrame(
     const raw = processor.batch_decode(generated, {
       skip_special_tokens: true,
     })[0] as string
-    const m = raw.match(/[1-5]/)
-    const quality = m ? Number(m[0]) : 3
+    const parsed = parseCoTAnswer(raw)
+    // Prefer the digit after `答え:`; otherwise any 1-5 in the whole
+    // string (v1 fallback). The reasoning string is what makes the UI
+    // useful even if the digit parse fails.
+    const answerDigit = parsed.answer.match(/[1-5]/)?.[0]
+    const fallbackDigit = raw.match(/[1-5]/)?.[0]
+    const digit = answerDigit ?? fallbackDigit
+    const quality = digit ? Number(digit) : 3
     return {
       usable: quality >= 2,
       quality,
       raw: raw.trim(),
+      reasoning: parsed.reasoning,
+      prompt_version: PROMPT_VERSION,
       duration_ms: performance.now() - t0,
     }
   } catch (err) {
@@ -116,6 +137,8 @@ export async function validateFrame(
       usable: true,
       quality: 3,
       raw: String(err),
+      reasoning: `LLM error: ${String(err)}`,
+      prompt_version: PROMPT_VERSION,
       duration_ms: performance.now() - t0,
     }
   }

@@ -1,0 +1,293 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>doc-corner labeler</title>
+<style>
+  :root { color-scheme: dark; }
+  * { box-sizing: border-box; }
+  body { margin: 0; font-family: ui-sans-serif, system-ui, sans-serif; background: #0f172a; color: #e2e8f0; }
+  #top { display: flex; align-items: center; gap: 12px; padding: 8px 14px; background: #1e293b; border-bottom: 1px solid #334155; flex-wrap: wrap; }
+  #top .fname { font-family: ui-monospace, monospace; font-size: 13px; color: #38bdf8; min-width: 220px; }
+  button { background: #334155; color: #e2e8f0; border: 1px solid #475569; border-radius: 6px; padding: 6px 10px; font-size: 13px; cursor: pointer; }
+  button:hover { background: #475569; }
+  button.primary { background: #2563eb; border-color: #3b82f6; }
+  button.warn { background: #b45309; border-color: #d97706; }
+  #progressbar { flex: 1; height: 8px; background: #0f172a; border-radius: 4px; overflow: hidden; min-width: 120px; }
+  #progressfill { height: 100%; background: #4ade80; width: 0%; }
+  #stats { font-family: ui-monospace, monospace; font-size: 12px; color: #94a3b8; white-space: nowrap; }
+  #main { display: flex; gap: 14px; padding: 14px; align-items: flex-start; }
+  #stage { position: relative; line-height: 0; }
+  canvas { border-radius: 6px; cursor: crosshair; background: #000; touch-action: none; }
+  #side { width: 250px; display: flex; flex-direction: column; gap: 10px; }
+  .panel { background: #1e293b; border: 1px solid #334155; border-radius: 8px; padding: 10px 12px; font-size: 13px; }
+  .corner-row { display: flex; align-items: center; gap: 8px; padding: 3px 0; font-family: ui-monospace, monospace; }
+  .swatch { width: 12px; height: 12px; border-radius: 3px; display: inline-block; }
+  .corner-row .state { margin-left: auto; color: #64748b; font-size: 11px; }
+  .corner-row.placed .state { color: #4ade80; }
+  .corner-row.occ .state { color: #fb923c; }
+  kbd { background: #0f172a; border: 1px solid #475569; border-radius: 4px; padding: 1px 5px; font-family: ui-monospace, monospace; font-size: 11px; }
+  .hint { color: #94a3b8; font-size: 12px; line-height: 1.7; }
+  .next-corner { font-weight: bold; }
+  #status { font-size: 12px; color: #94a3b8; min-height: 16px; }
+</style>
+</head>
+<body>
+<div id="top">
+  <span class="fname" id="fname">—</span>
+  <button id="prev" title="←">◀ Prev</button>
+  <button id="next" class="primary" title="→ / Space">Save &amp; Next ▶</button>
+  <button id="skip" class="warn" title="s">Skip</button>
+  <button id="reset" title="r">Reset</button>
+  <button id="undo" title="u">Undo</button>
+  <button id="jump" title="n">Next unlabeled</button>
+  <div id="progressbar"><div id="progressfill"></div></div>
+  <span id="stats">—</span>
+</div>
+<div id="main">
+  <div id="stage"><canvas id="cv"></canvas></div>
+  <div id="side">
+    <div class="panel">
+      <div id="nextcorner" class="next-corner">Click corner: <span style="color:#ff3b30">TL</span></div>
+      <div id="status"></div>
+    </div>
+    <div class="panel" id="corners"></div>
+    <div class="panel hint">
+      Click the 4 paper corners in order <b>TL → TR → BR → BL</b>.<br>
+      Drag a dot to adjust. Toggle occlusion with keys <kbd>1</kbd>–<kbd>4</kbd>
+      or the checkboxes (corner hidden by a hand / just off-frame).<br><br>
+      <kbd>Space</kbd>/<kbd>→</kbd> save&amp;next · <kbd>←</kbd> prev ·
+      <kbd>s</kbd> skip · <kbd>r</kbd> reset · <kbd>u</kbd> undo · <kbd>n</kbd> next unlabeled<br><br>
+      Skip frames with no document or ≥2 corners unguessable.
+    </div>
+  </div>
+</div>
+<script>
+const NAMES = ['TL', 'TR', 'BR', 'BL']
+const COLORS = ['#ff3b30', '#34c759', '#0a84ff', '#ffd60a']
+const HIT_R = 11
+
+const cv = document.getElementById('cv')
+const ctx = cv.getContext('2d')
+let frames = []
+let annots = {}
+let idx = 0
+let img = new Image()
+let natW = 0, natH = 0, dispW = 0, dispH = 0
+let points = []            // [[xNorm,yNorm,occluded], ...] up to 4
+let dragging = -1
+let dirty = false
+
+async function init() {
+  const st = await (await fetch('/api/state')).json()
+  frames = st.frames
+  annots = st.annots || {}
+  if (!frames.length) { document.getElementById('status').textContent = 'No frames in scripts/dataset/raw/'; return }
+  // start at first unlabeled
+  idx = firstUnlabeled()
+  loadFrame()
+  window.addEventListener('resize', () => { layout(); draw() })
+}
+
+function firstUnlabeled() {
+  for (let i = 0; i < frames.length; i++) if (!annots[frames[i]]) return i
+  return 0
+}
+
+function curFile() { return frames[idx] }
+
+function loadFrame() {
+  const file = curFile()
+  points = []
+  dragging = -1
+  dirty = false
+  const a = annots[file]
+  if (a && Array.isArray(a.points)) points = a.points.map((p) => [...p])
+  img = new Image()
+  img.onload = () => { natW = img.naturalWidth; natH = img.naturalHeight; layout(); draw(); updatePanels() }
+  img.src = '/raw/' + encodeURIComponent(file) + '?t=' + idx
+  document.getElementById('fname').textContent = `${file}  (${idx + 1}/${frames.length})`
+  updatePanels()
+}
+
+function layout() {
+  const maxH = window.innerHeight - 110
+  const maxW = window.innerWidth - 300
+  const scale = Math.min(maxW / natW, maxH / natH, 1)
+  dispW = Math.round(natW * scale)
+  dispH = Math.round(natH * scale)
+  cv.width = dispW; cv.height = dispH
+  cv.style.width = dispW + 'px'; cv.style.height = dispH + 'px'
+}
+
+function draw() {
+  if (!natW) return
+  ctx.clearRect(0, 0, dispW, dispH)
+  ctx.drawImage(img, 0, 0, dispW, dispH)
+  // polygon
+  if (points.length >= 2) {
+    ctx.strokeStyle = 'rgba(56,189,248,0.9)'
+    ctx.lineWidth = 2
+    ctx.beginPath()
+    ctx.moveTo(points[0][0] * dispW, points[0][1] * dispH)
+    for (let i = 1; i < points.length; i++) ctx.lineTo(points[i][0] * dispW, points[i][1] * dispH)
+    if (points.length === 4) ctx.closePath()
+    ctx.stroke()
+  }
+  // dots
+  for (let i = 0; i < points.length; i++) {
+    const x = points[i][0] * dispW, y = points[i][1] * dispH
+    const occ = points[i][2]
+    ctx.lineWidth = 2
+    ctx.beginPath()
+    ctx.arc(x, y, 7, 0, Math.PI * 2)
+    if (occ) { ctx.strokeStyle = COLORS[i]; ctx.stroke() }
+    else { ctx.fillStyle = COLORS[i]; ctx.fill() }
+    // index label
+    ctx.fillStyle = '#fff'
+    ctx.font = 'bold 11px ui-monospace, monospace'
+    ctx.fillText(NAMES[i] + (occ ? '·occ' : ''), x + 9, y - 6)
+  }
+}
+
+function mouseNorm(e) {
+  const r = cv.getBoundingClientRect()
+  let nx = (e.clientX - r.left) / dispW
+  let ny = (e.clientY - r.top) / dispH
+  return [Math.min(1, Math.max(0, nx)), Math.min(1, Math.max(0, ny))]
+}
+
+function hitTest(nx, ny) {
+  for (let i = 0; i < points.length; i++) {
+    const dx = (points[i][0] - nx) * dispW
+    const dy = (points[i][1] - ny) * dispH
+    if (dx * dx + dy * dy <= HIT_R * HIT_R) return i
+  }
+  return -1
+}
+
+cv.addEventListener('pointerdown', (e) => {
+  const [nx, ny] = mouseNorm(e)
+  const hit = hitTest(nx, ny)
+  if (hit >= 0) { dragging = hit; cv.setPointerCapture(e.pointerId); return }
+  if (points.length < 4) {
+    points.push([nx, ny, 0])
+    dirty = true
+    draw(); updatePanels()
+  }
+})
+cv.addEventListener('pointermove', (e) => {
+  if (dragging < 0) return
+  const [nx, ny] = mouseNorm(e)
+  points[dragging][0] = nx; points[dragging][1] = ny
+  dirty = true
+  draw()
+})
+cv.addEventListener('pointerup', () => { dragging = -1 })
+
+function updatePanels() {
+  // next-corner indicator
+  const nc = document.getElementById('nextcorner')
+  if (points.length < 4) {
+    const i = points.length
+    nc.innerHTML = `Click corner: <span style="color:${COLORS[i]}">${NAMES[i]}</span>`
+  } else {
+    nc.innerHTML = `<span style="color:#4ade80">4/4 placed — Save &amp; Next</span>`
+  }
+  // corner rows
+  const box = document.getElementById('corners')
+  box.innerHTML = ''
+  for (let i = 0; i < 4; i++) {
+    const placed = i < points.length
+    const occ = placed && points[i][2]
+    const row = document.createElement('div')
+    row.className = 'corner-row' + (placed ? ' placed' : '') + (occ ? ' occ' : '')
+    row.innerHTML =
+      `<span class="swatch" style="background:${COLORS[i]}"></span>` +
+      `<span>${NAMES[i]}</span>` +
+      `<label style="margin-left:auto;display:flex;gap:4px;align-items:center;font-size:11px;color:#94a3b8">` +
+      `<input type="checkbox" data-i="${i}" ${occ ? 'checked' : ''} ${placed ? '' : 'disabled'}>occluded</label>`
+    box.appendChild(row)
+  }
+  box.querySelectorAll('input[type=checkbox]').forEach((cb) => {
+    cb.addEventListener('change', () => {
+      const i = +cb.dataset.i
+      if (i < points.length) { points[i][2] = cb.checked ? 1 : 0; dirty = true; draw(); updatePanels() }
+    })
+  })
+  // stats
+  let labeled = 0, skipped = 0
+  for (const f of frames) { const a = annots[f]; if (a) { if (a.skipped) skipped++; else labeled++ } }
+  const remaining = frames.length - labeled - skipped
+  document.getElementById('stats').textContent = `labeled ${labeled} · skipped ${skipped} · left ${remaining}`
+  document.getElementById('progressfill').style.width = (100 * (labeled + skipped) / frames.length) + '%'
+}
+
+async function save(skipped) {
+  const file = curFile()
+  if (skipped) {
+    annots[file] = { skipped: true }
+    await post({ file, skipped: true })
+  } else if (points.length === 4) {
+    annots[file] = { points: points.map((p) => [p[0], p[1], p[2] ? 1 : 0]), skipped: false }
+    await post({ file, points: annots[file].points })
+  } else {
+    return false // nothing valid to save
+  }
+  dirty = false
+  return true
+}
+
+async function post(body) {
+  await fetch('/api/label', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body) })
+}
+
+function setStatus(s) { document.getElementById('status').textContent = s }
+
+async function go(delta) {
+  // autosave if a full label is present
+  if (points.length === 4) await save(false)
+  let n = idx + delta
+  n = Math.max(0, Math.min(frames.length - 1, n))
+  idx = n
+  loadFrame()
+}
+
+async function nextUnlabeled() {
+  if (points.length === 4) await save(false)
+  for (let k = 1; k <= frames.length; k++) {
+    const i = (idx + k) % frames.length
+    if (!annots[frames[i]]) { idx = i; loadFrame(); setStatus('jumped to next unlabeled'); return }
+  }
+  setStatus('all frames labeled or skipped 🎉')
+}
+
+document.getElementById('next').onclick = async () => {
+  if (points.length === 4) { await save(false); await go(1) }
+  else { setStatus('place all 4 corners first (or Skip)') }
+}
+document.getElementById('prev').onclick = () => go(-1)
+document.getElementById('skip').onclick = async () => { await save(true); await go(1) }
+document.getElementById('reset').onclick = () => { points = []; dirty = true; delete annots[curFile()]; post({ file: curFile() }); draw(); updatePanels(); setStatus('cleared') }
+document.getElementById('undo').onclick = () => { points.pop(); dirty = true; draw(); updatePanels() }
+document.getElementById('jump').onclick = nextUnlabeled
+
+window.addEventListener('keydown', (e) => {
+  if (e.target.tagName === 'INPUT') return
+  if (e.key === 'ArrowRight' || e.key === ' ') { e.preventDefault(); document.getElementById('next').onclick() }
+  else if (e.key === 'ArrowLeft') { e.preventDefault(); go(-1) }
+  else if (e.key === 's') document.getElementById('skip').onclick()
+  else if (e.key === 'r') document.getElementById('reset').onclick()
+  else if (e.key === 'u') document.getElementById('undo').onclick()
+  else if (e.key === 'n') nextUnlabeled()
+  else if (e.key >= '1' && e.key <= '4') {
+    const i = +e.key - 1
+    if (i < points.length) { points[i][2] = points[i][2] ? 0 : 1; dirty = true; draw(); updatePanels() }
+  }
+})
+
+init()
+</script>
+</body>
+</html>

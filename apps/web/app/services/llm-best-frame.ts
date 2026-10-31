@@ -16,6 +16,7 @@
  */
 
 import { ensureLlmReady, type LlmProgressCallback } from './llm-extractor-gemma'
+import { parseCoTAnswer } from './llm-parse-cot'
 
 // We re-use the same Gemma 4 state managed in llm-extractor-gemma.ts.
 // To avoid duplicating the transformers.js wiring, we import the
@@ -61,11 +62,28 @@ export interface FrameCandidate {
 
 export interface PickResult {
   readonly pickedIndex: number
-  readonly reasoning?: string
+  readonly candidateCount: number
+  readonly raw: string
+  readonly reasoning: string
+  readonly prompt_version: string
   readonly duration_ms: number
 }
 
-const PROMPT_HEADER = `これらは同じ名刺を連続撮影した候補画像です。最も読みやすい (テキストが鮮明、手の遮蔽がない、グレアがない) 1 枚を選んでください。回答は数字 1 文字のみ — 候補の 0-indexed の番号です。`
+const PROMPT_VERSION = 'v2-cot'
+
+function buildPrompt(n: number): string {
+  return `これら ${n} 枚は同じ名刺を別タイミング・角度で撮影した候補画像です。OCR / 文字読取に最も適した 1 枚の番号 (0..${n - 1}) を選んでください。
+
+判断材料:
+- 文字の鮮明度 (ブレが無いか)
+- グレア / 反射の少なさ
+- カード全体が画角に収まっているか (端が切れていないか)
+- 手や指による遮蔽が無いか
+
+以下の形式で必ず 2 行出力してください:
+理由: <2-3 文で評価>
+答え: <0-${n - 1} の数字>`
+}
 
 /**
  * Pick the best frame among K candidates using Gemma 4 vision.
@@ -76,7 +94,14 @@ export async function pickBestFrameByLlm(
   onProgress?: LlmProgressCallback,
 ): Promise<PickResult> {
   if (candidates.length <= 1) {
-    return { pickedIndex: 0, duration_ms: 0 }
+    return {
+      pickedIndex: 0,
+      candidateCount: candidates.length,
+      raw: '',
+      reasoning: '候補 1 枚のみ — LLM スキップ',
+      prompt_version: PROMPT_VERSION,
+      duration_ms: 0,
+    }
   }
 
   const t0 = performance.now()
@@ -84,16 +109,9 @@ export async function pickBestFrameByLlm(
     const { processor, model } = await getInstances()
     onProgress?.({ stage: 'inference' })
 
-    const labelLines = candidates
-      .map((_, i) => `${i}: (候補 ${i + 1})`)
-      .join('\n')
-
     const content: Array<{ type: 'image' } | { type: 'text'; text: string }> = []
     for (const _ of candidates) content.push({ type: 'image' })
-    content.push({
-      type: 'text',
-      text: `${PROMPT_HEADER}\n\n候補:\n${labelLines}\n\n最も読みやすい候補の番号 (0..${candidates.length - 1}):`,
-    })
+    content.push({ type: 'text', text: buildPrompt(candidates.length) })
 
     const messages = [{ role: 'user', content }]
     const prompt = processor.apply_chat_template(messages, {
@@ -110,27 +128,42 @@ export async function pickBestFrameByLlm(
     })
     const outputs = await model.generate({
       ...inputs,
-      max_new_tokens: 8,
+      max_new_tokens: 144,
       do_sample: false,
     })
     const promptLen = inputs.input_ids.dims[1]
     const generated = outputs.slice(null, [promptLen, null])
     const raw = processor.batch_decode(generated, { skip_special_tokens: true })[0] as string
+    const parsed = parseCoTAnswer(raw)
 
-    // Parse the first digit in the response
-    const m = raw.match(/\d/)
+    // Prefer the digit on the `答え:` line; if absent, scan whole raw.
+    // Multi-digit numbers (>= 10 candidates) are out of scope here — we
+    // always feed K <= 4.
+    const answerDigit = parsed.answer.match(/\d+/)?.[0]
+    const fallbackDigit = raw.match(/\d+/)?.[0]
+    const digit = answerDigit ?? fallbackDigit
     let pickedIndex = 0
-    if (m) {
-      const idx = Number(m[0])
+    if (digit) {
+      const idx = Number(digit)
       if (idx >= 0 && idx < candidates.length) pickedIndex = idx
     }
     return {
       pickedIndex,
-      reasoning: raw.trim(),
+      candidateCount: candidates.length,
+      raw: raw.trim(),
+      reasoning: parsed.reasoning,
+      prompt_version: PROMPT_VERSION,
       duration_ms: performance.now() - t0,
     }
   } catch (err) {
     console.warn('[llm-best-frame] failed, falling back to score-best', err)
-    return { pickedIndex: 0, duration_ms: performance.now() - t0 }
+    return {
+      pickedIndex: 0,
+      candidateCount: candidates.length,
+      raw: '',
+      reasoning: `LLM error: ${String(err)}`,
+      prompt_version: PROMPT_VERSION,
+      duration_ms: performance.now() - t0,
+    }
   }
 }

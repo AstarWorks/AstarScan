@@ -12,7 +12,9 @@
     "typecheck": "tsc --noEmit",
     "lint": "echo 'TODO: eslint' && exit 0",
     "test": "echo 'TODO: vitest' && exit 0",
-    "clean": "rm -rf .nuxt .output dist"
+    "clean": "rm -rf .nuxt .output dist",
+    "predev": "bun ../../scripts/copy-ort-assets.mjs",
+    "prebuild": "bun ../../scripts/copy-ort-assets.mjs"
   },
   "dependencies": {
     "@astarworks/scan-core": "workspace:*",

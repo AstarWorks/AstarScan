@@ -20,6 +20,9 @@ export default defineConfig({
       'packages/*/test/**/*.{test,spec}.ts',
       'packages/*/src/**/*.{test,spec}.ts',
       'apps/web/test/**/*.{test,spec}.ts',
+      // NOTE: scripts/eval/test/ runs under `bun test` (see root
+      // package.json "test:eval") — the harness imports .ts files with
+      // Bun-style extensionless resolution that vitest/node can't load.
     ],
     exclude: [
       '**/node_modules/**',

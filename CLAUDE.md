@@ -6,7 +6,7 @@
 Point phone at paper stack → flip through pages → unique pages auto-extracted to PDF.
 Fully offline, $0 cost, MIT licensed, embeddable as Web Component / NPM package.
 
-Full design: [/home/node/.claude/plans/woolly-imagining-balloon.md](/home/node/.claude/plans/woolly-imagining-balloon.md)
+<!-- 旧: session-scoped plan ファイル `/home/node/.claude/plans/woolly-imagining-balloon.md` を参照していたが、session ごとに変わるため削除 (2026-05-20). 設計詳細は本ファイル下記 (Architecture / Pipeline / Phase plan / Critical constraints) を参照。 -->
 
 ## Core principles
 
@@ -35,18 +35,34 @@ examples/
 └── iframe-embed/# iframe + postMessage API
 ```
 
-## Pipeline
+## Pipeline (2026-06 — segment-first; details in docs/eval-results.md)
 
 ```
-Frame (5-10 FPS)
-  → PageChangeDetector (pixel diff | optical flow)
-  → QualityScorer (Laplacian + HSV glare)
-  → EdgeDetector (JscanifyBackend | DocAlignerBackend)
-  → PerspectiveService (OpenCV.js warpPerspective)
-  → PerceptualHashService (pHash dedup, threshold 8)
-  → CapturedPage → IndexedDB
-  → (on export) jsPDF → Blob
+Frame (10 FPS)
+  → YOLOv8n-pose corner detection (primary; OpenCV Otsu ONLY on model-load
+    failure; low-confidence frames are SKIPPED, never mixed with OpenCV)
+  → perspective warp → Laplacian/Tenengrad → pHash + tile-pHash → score
+  → L1 temporal segmentation (acceptance gap >1 s = page turn; hash spikes
+    at gap <0.5 s are NEVER cuts — that's crop jitter, not a page swap)
+  → gap rescue (>2.5 s gaps hide blur-gated sparse pages; center-weighted pick)
+  → L2 merge cascade: tile ≤18 → ORB+grid → OCR 3-gram Jaccard ≥0.20
+    (dense text defeats ALL classical similarity signals — measured)
+  → best frame per cluster → CapturedPage → IndexedDB → jsPDF
 ```
+
+**Single implementation** in `packages/core/src/pipeline/`, shared by the
+eval harness and apps/web. Pure modules (hash, score, segment-cluster,
+text-similarity, …) are plain exports; cv-dependent modules (sharpness,
+warp, detect-otsu, orb) are factories over `{ cv, createCanvas }` —
+compose with `createPipelineOps`. Eval imports core TS **source** (Bun
+runs it natively); the browser consumes `@astarworks/scan-core/pipeline`
+from dist (rebuild core before web typecheck/build). Verifier OCR is the
+only env-specific half: NDLOCR-Lite in the browser, YomiToku in eval —
+the Jaccard/containment judgment is shared (`text-similarity.ts`).
+
+Headless eval: `bun scripts/eval/run.mjs <mp4>` (identity GT auto-loads from
+`test/fixtures/gt/`). Regression gate: `bun scripts/eval/regress.mjs`.
+Harness unit tests: `bun run test:eval`; pipeline unit tests: `bunx vitest run`.
 
 ## Key abstractions
 

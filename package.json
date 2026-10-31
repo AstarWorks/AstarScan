@@ -43,7 +43,8 @@
     "tauri:android:dev": "tauri android dev",
     "tauri:android:build": "tauri android build",
     "tauri:ios:dev": "tauri ios dev",
-    "tauri:ios:build": "tauri ios build"
+    "tauri:ios:build": "tauri ios build",
+    "test:eval": "bun test scripts/eval/test"
   },
   "devDependencies": {
     "@eslint/js": "^9",

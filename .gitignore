@@ -60,6 +60,13 @@ apps/web/public/models/siglip-*.onnx
 # docs/training-doc-corners.md. Untracked so each fork can train its own.
 apps/web/public/models/doc-corners.onnx
 
+# Corner labeler outputs (scripts/label). annotations.json is the
+# source-of-truth labeling effort and SHOULD be committed; everything
+# below is regenerated from it by build-dataset.mjs.
+scripts/dataset/labels/
+scripts/dataset/yolo/
+scripts/dataset/doc-corners-dataset.*
+
 # DocAligner ONNX models (legacy failed experiment, kept locally for
 # reference but never tracked).
 apps/web/public/models/docaligner-*.onnx
@@ -87,3 +94,12 @@ temp/
 # Eval harness outputs and Python venv for OCR backends
 eval-out/
 .venv-yomitoku/
+
+# Smart-extractor scratch / archived raw frames
+scripts/dataset/raw_orig*/
+scripts/dataset/frames/
+scripts/dataset/scene-reps.json
+
+# External datasets (SmartDoc etc.) — downloaded, not committed
+scripts/dataset/external/
+apps/web/public/ort/

@@ -20,6 +20,7 @@ import {
 } from '@huggingface/transformers'
 
 import { ensureLlmReady } from './llm-extractor-gemma'
+import { parseCoTAnswer } from './llm-parse-cot'
 
 const MODEL_ID = 'onnx-community/gemma-4-E2B-it-ONNX'
 
@@ -48,11 +49,23 @@ export interface PairResult {
   readonly same: boolean
   readonly confidence: number
   readonly raw: string
+  readonly reasoning: string      // CoT 「理由:」部分
+  readonly prompt_version: string // "v2-cot"
   readonly duration_ms: number
 }
 
-const PROMPT = `これら 2 枚は同じ物理的な名刺を別の角度から撮影したものですか? それとも異なるカードですか?
-"yes" または "no" のいずれか 1 単語で答えてください。`
+const PROMPT_VERSION = 'v2-cot'
+
+const PROMPT = `これら 2 枚の画像を比較してください。同じ物理的な名刺を別の角度・距離・タイミングで撮影したものか、それとも別のカードか、判断してください。
+
+判断材料:
+- 主要な文字 (氏名・会社名・電話番号・メール) が一致するか
+- ロゴ・配色・レイアウトが一致するか
+- 単なる撮影条件の違い (角度・トリミング) か、内容自体が違うか
+
+以下の形式で必ず 2 行出力してください:
+理由: <2-3 文で比較>
+答え: <yes または no>`
 
 /**
  * Ask Gemma 4 whether two cropped card images are the same physical
@@ -92,7 +105,7 @@ export async function arePairSameCard(
     })
     const outputs = await model.generate({
       ...inputs,
-      max_new_tokens: 4,
+      max_new_tokens: 144,
       do_sample: false,
     })
     const promptLen = inputs.input_ids.dims[1]
@@ -100,16 +113,29 @@ export async function arePairSameCard(
     const raw = processor.batch_decode(generated, {
       skip_special_tokens: true,
     })[0] as string
-    const lower = raw.toLowerCase().trim()
+    const parsed = parseCoTAnswer(raw)
+    // Prefer the answer line; fall back to scanning the whole raw (v1).
+    const target = parsed.answer.length > 0 ? parsed.answer : raw
+    const lower = target.toLowerCase().trim()
     const same = /^\s*yes\b|はい|同じ/.test(lower)
-    const confidence = /^(yes|no|はい|いいえ|同じ|違う)\b/.test(lower) ? 1.0 : 0.5
-    return { same, confidence, raw, duration_ms: performance.now() - t0 }
+    const confident = /^(yes|no|はい|いいえ|同じ|違う)\b/.test(lower)
+    const confidence = confident ? 1.0 : 0.5
+    return {
+      same,
+      confidence,
+      raw: raw.trim(),
+      reasoning: parsed.reasoning,
+      prompt_version: PROMPT_VERSION,
+      duration_ms: performance.now() - t0,
+    }
   } catch (err) {
     console.warn('[llm-card-pair] failed:', err)
     return {
       same: false,
       confidence: 0,
       raw: String(err),
+      reasoning: `LLM error: ${String(err)}`,
+      prompt_version: PROMPT_VERSION,
       duration_ms: performance.now() - t0,
     }
   }
