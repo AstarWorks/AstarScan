@@ -43,7 +43,14 @@ export function enhanceForOcr(srcCanvas) {
     cv.cvtColor(src, gray, cv.COLOR_RGBA2GRAY)
     cv.equalizeHist(gray, eq)
     cv.addWeighted(eq, 0.7, gray, 0.3, 0, blended)
-    cv.GaussianBlur(blended, blurred, new cv.Size(0, 0), 2.0, 2.0, cv.BORDER_DEFAULT)
+    cv.GaussianBlur(
+      blended,
+      blurred,
+      new cv.Size(0, 0),
+      2.0,
+      2.0,
+      cv.BORDER_DEFAULT,
+    )
     cv.addWeighted(blended, 1.4, blurred, -0.4, 0, sharpened)
     cv.cvtColor(sharpened, dst, cv.COLOR_GRAY2RGBA)
     const out = newCanvas(srcCanvas.width, srcCanvas.height)
@@ -63,7 +70,8 @@ export function enhanceForOcr(srcCanvas) {
 // ---- CLI smoke test --------------------------------------------------------
 if (import.meta.main) {
   const fs = await import('node:fs')
-  const { jpegToCanvas, canvasToJpegBuffer } = await import('../canvas-utils.mjs')
+  const { jpegToCanvas, canvasToJpegBuffer } =
+    await import('../canvas-utils.mjs')
   const imagePath = process.argv[2] ?? '/tmp/winner-021-test.jpg'
   const buf = fs.readFileSync(imagePath)
   const src = await jpegToCanvas(buf)

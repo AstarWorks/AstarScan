@@ -52,23 +52,32 @@ th { background: #334155; }
 .matrix-cell-low { color: #f87171; font-weight: bold; }
 `
   const lines = []
-  lines.push(`<!doctype html><html><head><meta charset="utf-8"><title>${escape(path.basename(mp4))} eval</title><style>${css}</style></head><body>`)
+  lines.push(
+    `<!doctype html><html><head><meta charset="utf-8"><title>${escape(path.basename(mp4))} eval</title><style>${css}</style></head><body>`,
+  )
   lines.push(`<h1>${escape(path.basename(mp4))}</h1>`)
   lines.push(`<div class="params">`)
   lines.push(`mp4 = ${escape(mp4)}<br>`)
   for (const [k, v] of Object.entries(params)) {
     lines.push(`${escape(k)} = ${escape(v)}<br>`)
   }
-  lines.push(`sampled=${summary.sampled} detected=${summary.detected} accepted=${summary.accepted} winners=${summary.winners}`)
+  lines.push(
+    `sampled=${summary.sampled} detected=${summary.detected} accepted=${summary.accepted} winners=${summary.winners}`,
+  )
   if (summary.gt != null) {
-    const sign = summary.absError === 0 ? 'good' : summary.absError <= 2 ? 'warn' : 'bad'
-    lines.push(` <span class="${sign}">GT=${summary.gt} abs_error=${summary.absError}</span>`)
+    const sign =
+      summary.absError === 0 ? 'good' : summary.absError <= 2 ? 'warn' : 'bad'
+    lines.push(
+      ` <span class="${sign}">GT=${summary.gt} abs_error=${summary.absError}</span>`,
+    )
   }
   lines.push(`</div>`)
 
   // Inter-winner hamming matrix — flags oversplit (low values = same page in two clusters)
   if (clusters.length >= 2) {
-    lines.push(`<h2>Inter-winner Hamming (oversplit detector — low = same page in different clusters)</h2>`)
+    lines.push(
+      `<h2>Inter-winner Hamming (oversplit detector — low = same page in different clusters)</h2>`,
+    )
     lines.push(`<table><tr><th></th>`)
     for (let i = 0; i < clusters.length; i += 1) {
       lines.push(`<th>C${i + 1}</th>`)
@@ -82,7 +91,10 @@ th { background: #334155; }
         } else if (j === i) {
           lines.push(`<td>—</td>`)
         } else {
-          const d = hammingFn(clusters[i].winner[distKey], clusters[j].winner[distKey])
+          const d = hammingFn(
+            clusters[i].winner[distKey],
+            clusters[j].winner[distKey],
+          )
           const cls = d < 70 ? 'matrix-cell-low' : ''
           lines.push(`<td class="${cls}">${d}</td>`)
         }
@@ -90,7 +102,9 @@ th { background: #334155; }
       lines.push(`</tr>`)
     }
     lines.push(`</table>`)
-    lines.push(`<div class="legend">red &lt; 70: two clusters with hashes this close are likely the same page. The current cluster threshold is ${params.clusterThr}.</div>`)
+    lines.push(
+      `<div class="legend">red &lt; 70: two clusters with hashes this close are likely the same page. The current cluster threshold is ${params.clusterThr}.</div>`,
+    )
   }
 
   lines.push(`<h2>Clusters</h2>`)
@@ -102,12 +116,16 @@ th { background: #334155; }
     const intraMin = intraDistances.length ? Math.min(...intraDistances) : 0
     const intraMax = intraDistances.length ? Math.max(...intraDistances) : 0
     const intraMean = intraDistances.length
-      ? (intraDistances.reduce((s, x) => s + x, 0) / intraDistances.length).toFixed(1)
+      ? (
+          intraDistances.reduce((s, x) => s + x, 0) / intraDistances.length
+        ).toFixed(1)
       : '–'
     lines.push(`<div class="cluster">`)
     lines.push(`<div class="cluster-head">`)
     lines.push(`<span class="cluster-id">C${i + 1}</span>`)
-    lines.push(`<span class="cluster-stats">members=${c.members.length} winner_idx=${c.winner.idx} winner_score=${c.winner.score.toFixed(3)} intra_hamming(min/mean/max)=${intraMin}/${intraMean}/${intraMax}</span>`)
+    lines.push(
+      `<span class="cluster-stats">members=${c.members.length} winner_idx=${c.winner.idx} winner_score=${c.winner.score.toFixed(3)} intra_hamming(min/mean/max)=${intraMin}/${intraMean}/${intraMax}</span>`,
+    )
     lines.push(`</div>`)
     lines.push(`<div class="thumbs">`)
     for (const m of c.members) {
@@ -180,9 +198,13 @@ h1 { font-size: 18px; margin: 0 0 4px; }
     lines.push(
       `<div class="meta">f${a.idx}<br>score=${a.score.toFixed(3)}${isWin ? '<br><span class="win">WINNER</span>' : ''}</div>`,
     )
-    lines.push(`<img class="overlay" src="${overlayRelDir}/${f}" alt="overlay ${a.idx}">`)
+    lines.push(
+      `<img class="overlay" src="${overlayRelDir}/${f}" alt="overlay ${a.idx}">`,
+    )
     lines.push(`<div class="arrow">→</div>`)
-    lines.push(`<img class="warp" src="${warpRelDir}/${f}" alt="warp ${a.idx}">`)
+    lines.push(
+      `<img class="warp" src="${warpRelDir}/${f}" alt="warp ${a.idx}">`,
+    )
     lines.push(`</div>`)
   }
   lines.push(`</body></html>`)

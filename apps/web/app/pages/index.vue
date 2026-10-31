@@ -47,7 +47,11 @@ import {
   type SegmentHooks,
 } from '@astarworks/scan-core/pipeline'
 
-import { detectDocument, ensureDocDetector, getDetectorSource } from '~/services/doc-detector'
+import {
+  detectDocument,
+  ensureDocDetector,
+  getDetectorSource,
+} from '~/services/doc-detector'
 import { rotateAndCropQuad } from '~/services/rotate-crop'
 import { downscaleToLongSide } from '~/services/canvas-helpers'
 import { classifyQuad } from '~/services/quad-classify'
@@ -55,7 +59,10 @@ import { computePHash, computeTilePHash } from '~/services/phash-dedup'
 import { type DetectedFrame } from '~/services/frame-collector'
 import { getPipelineOps } from '~/services/pipeline-ops'
 import { initOcr, runOcr } from '~/services/ocr-service'
-import { validateFrame, type ValidationResult } from '~/services/llm-frame-validator'
+import {
+  validateFrame,
+  type ValidationResult,
+} from '~/services/llm-frame-validator'
 import { pickBestFrameByLlm, type PickResult } from '~/services/llm-best-frame'
 import { arePairSameCard } from '~/services/llm-card-pair'
 import {
@@ -98,7 +105,7 @@ interface Page {
   memberCount?: number
 }
 
-const LONG_SIDE_DEFAULT = 1200   // mode 別: card 1010 / a4 1696 / receipt 1500
+const LONG_SIDE_DEFAULT = 1200 // mode 別: card 1010 / a4 1696 / receipt 1500
 /** Dense sampling — a handheld page turn only gives 2-4 genuinely sharp
  *  frames per page (the moments when the hand pauses). Sampling at 0.5 s
  *  routinely missed them; 0.1 s (10 FPS) puts ~5× more candidates per
@@ -288,11 +295,16 @@ async function loadMembers(key: number): Promise<void> {
 async function applyRepair(next: SegmentCluster<ScanRecord>[]): Promise<void> {
   repairClusters.value = next
   mergeSelection.value = []
-  captured.value = [...preScanPages.value, ...(await buildPagesFromClusters(next))]
+  captured.value = [
+    ...preScanPages.value,
+    ...(await buildPagesFromClusters(next)),
+  ]
   // The open detail view holds a Page object that the rebuild just
   // replaced. Re-resolve it by id, or close it if the repair removed it.
   if (selectedPage.value) {
-    const stillThere = captured.value.find((p) => p.id === selectedPage.value?.id)
+    const stillThere = captured.value.find(
+      (p) => p.id === selectedPage.value?.id,
+    )
     selectedPage.value = stillThere ?? null
   }
   if (detailKey.value !== null) {
@@ -305,7 +317,10 @@ async function applyRepair(next: SegmentCluster<ScanRecord>[]): Promise<void> {
   // A repair can retire the key the editor is holding (merge/split/remove
   // re-elect winners). Its source URL would then point at a frame that no
   // longer represents any page.
-  if (quadEditKey.value !== null && !next.some((c) => c.winner.idx === quadEditKey.value)) {
+  if (
+    quadEditKey.value !== null &&
+    !next.some((c) => c.winner.idx === quadEditKey.value)
+  ) {
     closeQuadEdit()
   }
   void saveSession(captured.value.map(pageToStored))
@@ -357,7 +372,8 @@ const quadEditUrl = ref('')
 const quadEditFrame = computed(() =>
   quadEditKey.value === null
     ? null
-    : (repairClusters.value.find((c) => c.winner.idx === quadEditKey.value)?.winner ?? null),
+    : (repairClusters.value.find((c) => c.winner.idx === quadEditKey.value)
+        ?.winner ?? null),
 )
 
 function openQuadEdit(key: number): void {
@@ -532,7 +548,8 @@ function blobToDataUrl(blob: Blob): Promise<string> {
   return new Promise((resolve, reject) => {
     const reader = new FileReader()
     reader.onload = () => resolve(reader.result as string)
-    reader.onerror = () => reject(reader.error ?? new Error('FileReader failed'))
+    reader.onerror = () =>
+      reject(reader.error ?? new Error('FileReader failed'))
     reader.readAsDataURL(blob)
   })
 }
@@ -571,7 +588,10 @@ async function finalizeScan(
     let p = canvasCache.get(idx)
     if (!p) {
       const r = byIdx.get(idx)
-      if (!r) return Promise.reject(new Error(`finalizeScan: no record for idx ${idx}`))
+      if (!r)
+        return Promise.reject(
+          new Error(`finalizeScan: no record for idx ${idx}`),
+        )
       p = blobToCanvas(r.warpedBlob, r.warpedWidth, r.warpedHeight)
       canvasCache.set(idx, p)
     }
@@ -640,7 +660,9 @@ async function finalizeScan(
           blobToDataUrl(rb.warpedBlob),
         ])
         const r = await arePairSameCard(aUrl, bUrl)
-        console.log(`[verify-llm] ${aIdx}↔${bIdx}: ${r.same ? 'same' : 'diff'} (conf ${r.confidence})`)
+        console.log(
+          `[verify-llm] ${aIdx}↔${bIdx}: ${r.same ? 'same' : 'diff'} (conf ${r.confidence})`,
+        )
         return r.same
       } catch (err) {
         console.warn('[verify-llm] pair compare failed:', err)
@@ -730,7 +752,11 @@ async function finalizeScan(
   }
 }
 
-function blobToCanvas(blob: Blob, width: number, height: number): Promise<HTMLCanvasElement> {
+function blobToCanvas(
+  blob: Blob,
+  width: number,
+  height: number,
+): Promise<HTMLCanvasElement> {
   return new Promise((resolve, reject) => {
     const url = URL.createObjectURL(blob)
     const img = new Image()
@@ -835,7 +861,13 @@ async function processFrame(
       srcBlob: await canvasToJpegBlob(src, SRC_JPEG_Q),
       srcW: src.width,
       srcH: src.height,
-      quad: scaleQuad(detection.quad, work.width, work.height, src.width, src.height),
+      quad: scaleQuad(
+        detection.quad,
+        work.width,
+        work.height,
+        src.width,
+        src.height,
+      ),
     }
   }
 
@@ -876,7 +908,8 @@ async function processFrame(
           // so globally weak candidates are the safest to drop.
           let worst = 0
           for (let i = 1; i < candidateRecords.length; i += 1) {
-            if (candidateRecords[i]!.score < candidateRecords[worst]!.score) worst = i
+            if (candidateRecords[i]!.score < candidateRecords[worst]!.score)
+              worst = i
           }
           candidateRecords.splice(worst, 1)
         }
@@ -1139,9 +1172,7 @@ async function startFromFile(): Promise<void> {
         if (video.currentTime - lastSampleT >= SAMPLE_INTERVAL_S) {
           lastSampleT = video.currentTime
           const pct =
-            duration > 0
-              ? Math.round((video.currentTime / duration) * 100)
-              : 0
+            duration > 0 ? Math.round((video.currentTime / duration) * 100) : 0
           statusText.value = `解析中 ${pct}% (検出 ${detectedFrames}/${sampledFrames} / 候補 ${acceptedRecords.length})`
           if (enableLlm && llmProgress.value) {
             // bump total estimate so the bar reflects upcoming work
@@ -1253,9 +1284,8 @@ async function stopCamera(): Promise<void> {
   await finalizeScan({ enableLlm: false })
 
   phase.value = captured.value.length > 0 ? 'done' : 'idle'
-  statusText.value = captured.value.length > 0
-    ? `完了: ${captured.value.length} 枚`
-    : ''
+  statusText.value =
+    captured.value.length > 0 ? `完了: ${captured.value.length} 枚` : ''
 }
 
 // ---------------------------------------------------------------------------
@@ -1359,7 +1389,9 @@ function buildDebugPayload(withImages: boolean): unknown {
       height: p.height,
       aspect: (p.width / p.height).toFixed(3),
       capturedAt: p.capturedAt,
-      capturedAtIso: new Date(p.capturedAt + performance.timeOrigin).toISOString(),
+      capturedAtIso: new Date(
+        p.capturedAt + performance.timeOrigin,
+      ).toISOString(),
       llmDebug: p.llmDebug,
       ...(withImages ? { dataUrl: p.dataUrl } : {}),
     })),
@@ -1409,9 +1441,12 @@ async function exportDebugJson(): Promise<void> {
     return
   }
   // Fallback: download as a file (production static build path).
-  const blob = new Blob([JSON.stringify(buildDebugPayload(withImages), null, 2)], {
-    type: 'application/json',
-  })
+  const blob = new Blob(
+    [JSON.stringify(buildDebugPayload(withImages), null, 2)],
+    {
+      type: 'application/json',
+    },
+  )
   const url = URL.createObjectURL(blob)
   const a = document.createElement('a')
   a.href = url
@@ -1470,11 +1505,20 @@ function pageIndexById(id: string): number {
     <header class="app__header">
       <h1 class="app__title">AstarScan</h1>
       <span v-if="statusText" class="app__status">{{ statusText }}</span>
-      <label class="app__toggle" :title="llmAvailable ? 'Gemma 4 で文書品質 / 重複判定を行う (WebGPU)' : 'WebGPU 非対応 — LLM 機能を使えません'">
+      <label
+        class="app__toggle"
+        :title="
+          llmAvailable
+            ? 'Gemma 4 で文書品質 / 重複判定を行う (WebGPU)'
+            : 'WebGPU 非対応 — LLM 機能を使えません'
+        "
+      >
         <input
           v-model="useLlm"
           type="checkbox"
-          :disabled="!llmAvailable || phase === 'scanning' || phase === 'loading'"
+          :disabled="
+            !llmAvailable || phase === 'scanning' || phase === 'loading'
+          "
         />
         LLM 判定{{ llmAvailable ? '' : ' (非対応)' }}
       </label>
@@ -1487,14 +1531,18 @@ function pageIndexById(id: string): number {
         :max="Math.max(1, llmProgress.total)"
         :value="llmProgress.done"
       />
-      <span class="llm-progress__count">{{ llmProgress.done }} / {{ llmProgress.total }}</span>
+      <span class="llm-progress__count"
+        >{{ llmProgress.done }} / {{ llmProgress.total }}</span
+      >
     </div>
 
     <section class="viewport">
       <video
         ref="videoRef"
         class="viewport__video"
-        :class="{ 'viewport__video--hidden': phase === 'idle' || !!selectedPage }"
+        :class="{
+          'viewport__video--hidden': phase === 'idle' || !!selectedPage,
+        }"
         playsinline
         muted
       />
@@ -1502,21 +1550,29 @@ function pageIndexById(id: string): number {
         v-if="debugMode"
         ref="overlayRef"
         class="viewport__overlay"
-        :class="{ 'viewport__overlay--hidden': phase === 'idle' || !!selectedPage }"
+        :class="{
+          'viewport__overlay--hidden': phase === 'idle' || !!selectedPage,
+        }"
       />
 
       <!-- thumb クリック時はメイン viewport を preview に占有 -->
       <div v-if="selectedPage" class="viewport__preview">
-        <img :src="selectedPage.dataUrl" alt="page preview" class="viewport__preview-img"/>
+        <img
+          :src="selectedPage.dataUrl"
+          alt="page preview"
+          class="viewport__preview-img"
+        />
         <button
           type="button"
           class="viewport__preview-close"
           aria-label="閉じる"
           @click="closePageDetail"
-        >×</button>
+        >
+          ×
+        </button>
         <small class="viewport__preview-meta">
-          {{ selectedPage.width }}×{{ selectedPage.height }}px
-          · {{ new Date(selectedPage.capturedAt).toLocaleString() }}
+          {{ selectedPage.width }}×{{ selectedPage.height }}px ·
+          {{ new Date(selectedPage.capturedAt).toLocaleString() }}
         </small>
         <details v-if="selectedPage.llmDebug" class="viewport__preview-debug">
           <summary class="viewport__preview-debug-summary">
@@ -1525,7 +1581,9 @@ function pageIndexById(id: string): number {
               · 品質 {{ selectedPage.llmDebug.validator.quality }}/5
             </span>
             <span v-if="selectedPage.llmDebug.bestFramePick">
-              · {{ selectedPage.llmDebug.bestFramePick.candidateCount }} 候補から選定
+              ·
+              {{ selectedPage.llmDebug.bestFramePick.candidateCount }}
+              候補から選定
             </span>
             <span v-if="selectedPage.llmDebug.pairResults?.length">
               · ペア比較 {{ selectedPage.llmDebug.pairResults.length }} 件
@@ -1534,35 +1592,62 @@ function pageIndexById(id: string): number {
           <div class="viewport__preview-debug-body">
             <section v-if="selectedPage.llmDebug.validator" class="dbg-section">
               <h4>Frame validator</h4>
-              <p class="dbg-reason">{{ selectedPage.llmDebug.validator.reasoning || '(理由出力なし)' }}</p>
+              <p class="dbg-reason">
+                {{
+                  selectedPage.llmDebug.validator.reasoning || '(理由出力なし)'
+                }}
+              </p>
               <small class="dbg-meta">
                 quality {{ selectedPage.llmDebug.validator.quality }}/5 ·
-                {{ selectedPage.llmDebug.validator.duration_ms.toFixed(0) }} ms ·
+                {{ selectedPage.llmDebug.validator.duration_ms.toFixed(0) }} ms
+                ·
                 {{ selectedPage.llmDebug.validator.prompt_version }}
               </small>
-              <pre class="dbg-raw">raw: {{ selectedPage.llmDebug.validator.raw }}</pre>
+              <pre class="dbg-raw">
+raw: {{ selectedPage.llmDebug.validator.raw }}</pre
+              >
             </section>
-            <section v-if="selectedPage.llmDebug.bestFramePick" class="dbg-section">
+            <section
+              v-if="selectedPage.llmDebug.bestFramePick"
+              class="dbg-section"
+            >
               <h4>Best-frame pick</h4>
-              <p class="dbg-reason">{{ selectedPage.llmDebug.bestFramePick.reasoning || '(理由出力なし)' }}</p>
+              <p class="dbg-reason">
+                {{
+                  selectedPage.llmDebug.bestFramePick.reasoning ||
+                  '(理由出力なし)'
+                }}
+              </p>
               <small class="dbg-meta">
-                picked index {{ selectedPage.llmDebug.bestFramePick.pickedIndex }} /
+                picked index
+                {{ selectedPage.llmDebug.bestFramePick.pickedIndex }} /
                 {{ selectedPage.llmDebug.bestFramePick.candidateCount }} ·
-                {{ selectedPage.llmDebug.bestFramePick.duration_ms.toFixed(0) }} ms ·
+                {{ selectedPage.llmDebug.bestFramePick.duration_ms.toFixed(0) }}
+                ms ·
                 {{ selectedPage.llmDebug.bestFramePick.prompt_version }}
               </small>
-              <pre v-if="selectedPage.llmDebug.bestFramePick.raw" class="dbg-raw">raw: {{ selectedPage.llmDebug.bestFramePick.raw }}</pre>
+              <pre
+                v-if="selectedPage.llmDebug.bestFramePick.raw"
+                class="dbg-raw"
+              >
+raw: {{ selectedPage.llmDebug.bestFramePick.raw }}</pre
+              >
             </section>
-            <section v-if="selectedPage.llmDebug.pairResults?.length" class="dbg-section">
+            <section
+              v-if="selectedPage.llmDebug.pairResults?.length"
+              class="dbg-section"
+            >
               <h4>Pair comparison</h4>
               <ul class="dbg-pairs">
-                <li v-for="(r, ri) in selectedPage.llmDebug.pairResults" :key="ri">
+                <li
+                  v-for="(r, ri) in selectedPage.llmDebug.pairResults"
+                  :key="ri"
+                >
                   <strong :class="r.same ? 'dbg-same' : 'dbg-diff'">
                     {{ r.same ? 'SAME' : 'DIFF' }}
                   </strong>
-                  vs ページ {{ pageIndexById(r.otherPageId) || '?' }}
-                  (conf {{ r.confidence.toFixed(1) }})
-                  — {{ r.reasoning }}
+                  vs ページ {{ pageIndexById(r.otherPageId) || '?' }} (conf
+                  {{ r.confidence.toFixed(1) }}) — {{ r.reasoning }}
                 </li>
               </ul>
             </section>
@@ -1744,11 +1829,7 @@ function pageIndexById(id: string): number {
   background: #0b1120;
   color: #f1f5f9;
   font-family:
-    -apple-system,
-    BlinkMacSystemFont,
-    'Segoe UI',
-    system-ui,
-    sans-serif;
+    -apple-system, BlinkMacSystemFont, 'Segoe UI', system-ui, sans-serif;
 }
 
 .app__header {

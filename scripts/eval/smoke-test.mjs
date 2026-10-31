@@ -12,7 +12,12 @@ import fs from 'node:fs/promises'
 import { fileURLToPath } from 'node:url'
 
 import { cv, imageDataToMat, matToImageData } from './cv-shim.mjs'
-import { ImageData, jpegToCanvas, newCanvas, saveJpeg } from './canvas-utils.mjs'
+import {
+  ImageData,
+  jpegToCanvas,
+  newCanvas,
+  saveJpeg,
+} from './canvas-utils.mjs'
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url))
 const REPO_ROOT = path.resolve(__dirname, '../..')
@@ -50,18 +55,26 @@ async function main() {
   const H = srcCanvas.height
   const m = 0.1
   const srcPoints = cv.matFromArray(4, 1, cv.CV_32FC2, [
-    W * m, H * m,
-    W * (1 - m), H * m,
-    W * (1 - m), H * (1 - m),
-    W * m, H * (1 - m),
+    W * m,
+    H * m,
+    W * (1 - m),
+    H * m,
+    W * (1 - m),
+    H * (1 - m),
+    W * m,
+    H * (1 - m),
   ])
   const OUT_W = 1200
   const OUT_H = 1600
   const dstPoints = cv.matFromArray(4, 1, cv.CV_32FC2, [
-    0, 0,
-    OUT_W, 0,
-    OUT_W, OUT_H,
-    0, OUT_H,
+    0,
+    0,
+    OUT_W,
+    0,
+    OUT_W,
+    OUT_H,
+    0,
+    OUT_H,
   ])
 
   const M = cv.getPerspectiveTransform(srcPoints, dstPoints)

@@ -27,7 +27,9 @@ import {
 export { decodeYoloOutput }
 
 export async function createYoloSession(modelPath) {
-  return ort.InferenceSession.create(modelPath, { graphOptimizationLevel: 'all' })
+  return ort.InferenceSession.create(modelPath, {
+    graphOptimizationLevel: 'all',
+  })
 }
 
 /**
@@ -37,7 +39,11 @@ export async function createYoloSession(modelPath) {
  * onnxruntime-node Tensor wrapping happens here.
  */
 export function letterboxToTensor(source, target = YOLO_INPUT_SIZE) {
-  const { data, scale, padX, padY } = letterboxToFloat32(source, newCanvas, target)
+  const { data, scale, padX, padY } = letterboxToFloat32(
+    source,
+    newCanvas,
+    target,
+  )
   const tensor = new ort.Tensor('float32', data, [1, 3, target, target])
   return { tensor, scale, padX, padY }
 }
@@ -52,7 +58,14 @@ export async function detectWithYolo(source, session, minConf = 0) {
   const out = await session.run({ images: tensor })
   const o = out.output0 ?? out[Object.keys(out)[0]]
   if (!o) return null
-  const det = decodeYoloOutput(o.data, Number(o.dims[1]), Number(o.dims[2]), scale, padX, padY)
+  const det = decodeYoloOutput(
+    o.data,
+    Number(o.dims[1]),
+    Number(o.dims[2]),
+    scale,
+    padX,
+    padY,
+  )
   if (!det || det.confidence < minConf) return null
   return det
 }
@@ -105,15 +118,23 @@ function runSelfTest() {
     ['tr.x', approx(det.quad.tr.x, expect.tr.x)],
     ['br.y', approx(det.quad.br.y, expect.br.y)],
     ['bl.x', approx(det.quad.bl.x, expect.bl.x)],
-    ['visibility order', approx(det.visibility[2], 0.4) && approx(det.visibility[0], 0.95)],
-    ['rejects on channel mismatch', decodeYoloOutput(data, 16, anchors, scale, padX, padY) === null],
+    [
+      'visibility order',
+      approx(det.visibility[2], 0.4) && approx(det.visibility[0], 0.95),
+    ],
+    [
+      'rejects on channel mismatch',
+      decodeYoloOutput(data, 16, anchors, scale, padX, padY) === null,
+    ],
   ]
   let ok = true
   for (const [name, pass] of checks) {
     console.log(`  ${pass ? '✓' : '✗ FAIL'}  ${name}`)
     if (!pass) ok = false
   }
-  console.log(ok ? '[yolo-node] self-test PASSED' : '[yolo-node] self-test FAILED')
+  console.log(
+    ok ? '[yolo-node] self-test PASSED' : '[yolo-node] self-test FAILED',
+  )
   console.log('  decoded quad:', JSON.stringify(det.quad))
   process.exit(ok ? 0 : 1)
 }

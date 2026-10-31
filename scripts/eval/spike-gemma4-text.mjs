@@ -68,9 +68,7 @@ const model = await AutoModelForCausalLM.from_pretrained(MODEL_ID, {
 })
 console.log(`[spike-text] model loaded ${Date.now() - t1} ms`)
 
-const messages = [
-  { role: 'user', content: PROMPT },
-]
+const messages = [{ role: 'user', content: PROMPT }]
 const inputs = tokenizer.apply_chat_template(messages, {
   add_generation_prompt: true,
   return_tensor: true,

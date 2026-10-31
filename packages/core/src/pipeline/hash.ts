@@ -12,7 +12,11 @@
  * canvases via the injected canvas factory (DOM or @napi-rs/canvas).
  */
 
-import type { CanvasImageSourceLike, Context2DLike, CreateCanvas } from './deps.js'
+import type {
+  CanvasImageSourceLike,
+  Context2DLike,
+  CreateCanvas,
+} from './deps.js'
 import { HASH_SIZE, TILE_BITS, TILE_GRID, TILE_HASH_SIZE } from './constants.js'
 
 /** Number of set bits in a bigint. */
@@ -32,7 +36,10 @@ export function hamming(a: bigint, b: bigint): number {
 
 /** Average hash over `count` RGBA pixels: bit `j` set when pixel `j`
  *  (Rec. 709 luma) is brighter than the mean. */
-export function avgHashFromImageData(data: Uint8ClampedArray, count: number): bigint {
+export function avgHashFromImageData(
+  data: Uint8ClampedArray,
+  count: number,
+): bigint {
   const gray = new Float64Array(count)
   let sum = 0
   for (let i = 0, j = 0; j < count; i += 4, j += 1) {
@@ -58,11 +65,19 @@ export function avgHashFromImageData(data: Uint8ClampedArray, count: number): bi
  * worst-affected tiles (hand/glare) — mean would be dragged up by them,
  * min would be too lenient.
  */
-export function tileDistance(a: readonly bigint[], b: readonly bigint[], percentile = 0.8): number {
+export function tileDistance(
+  a: readonly bigint[],
+  b: readonly bigint[],
+  percentile = 0.8,
+): number {
   const dists: number[] = []
-  for (let i = 0; i < a.length; i += 1) dists.push(popcount((a[i] ?? 0n) ^ (b[i] ?? 0n)))
+  for (let i = 0; i < a.length; i += 1)
+    dists.push(popcount((a[i] ?? 0n) ^ (b[i] ?? 0n)))
   dists.sort((x, y) => x - y)
-  const idx = Math.min(dists.length - 1, Math.floor(percentile * (dists.length - 1)))
+  const idx = Math.min(
+    dists.length - 1,
+    Math.floor(percentile * (dists.length - 1)),
+  )
   return dists[idx] ?? 0
 }
 
@@ -81,9 +96,14 @@ export function createHashOps(createCanvas: CreateCanvas): HashOps {
   let thumbCtx: Context2DLike | null = null
   let tileCtx: Context2DLike | null = null
 
-  const getCtx = (size: number, cached: Context2DLike | null): Context2DLike => {
+  const getCtx = (
+    size: number,
+    cached: Context2DLike | null,
+  ): Context2DLike => {
     if (cached) return cached
-    const ctx = createCanvas(size, size).getContext('2d', { willReadFrequently: true })
+    const ctx = createCanvas(size, size).getContext('2d', {
+      willReadFrequently: true,
+    })
     if (!ctx) throw new Error('scan-core: failed to get 2D context for hashing')
     return ctx
   }
@@ -108,10 +128,21 @@ export function createHashOps(createCanvas: CreateCanvas): HashOps {
           tileCtx.clearRect(0, 0, TILE_HASH_SIZE, TILE_HASH_SIZE)
           tileCtx.drawImage(
             source,
-            col * tileW, row * tileH, tileW, tileH,
-            0, 0, TILE_HASH_SIZE, TILE_HASH_SIZE,
+            col * tileW,
+            row * tileH,
+            tileW,
+            tileH,
+            0,
+            0,
+            TILE_HASH_SIZE,
+            TILE_HASH_SIZE,
           )
-          const { data } = tileCtx.getImageData(0, 0, TILE_HASH_SIZE, TILE_HASH_SIZE)
+          const { data } = tileCtx.getImageData(
+            0,
+            0,
+            TILE_HASH_SIZE,
+            TILE_HASH_SIZE,
+          )
           hashes.push(avgHashFromImageData(data, TILE_BITS))
         }
       }

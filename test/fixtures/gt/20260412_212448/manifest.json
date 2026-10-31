@@ -77,8 +77,6 @@
       "notes": "Originally miscatalogued as 'yellow sticky notes / non-page' during GT curation; the rescue pass (idx 355) captured it sharp and fully legible. Second GT omission found by the pipeline itself."
     }
   ],
-  "nonPages": [
-    "Empty desk frames (large fraction of the video)"
-  ],
+  "nonPages": ["Empty desk frames (large fraction of the video)"],
   "notes": "10 real items (h10 Calorie Mate box added 2026-06-12 after the rescue pass exposed a curation error — it had been dismissed as sticky notes). Earlier verbal GT of 11 was an overcount. yolo2 winners: h01 split into 8 duplicates, h03 and h06 into 2 each; h02 missed entirely (blur gate)."
 }

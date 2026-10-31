@@ -81,7 +81,10 @@ function selfIntersects(q) {
   const pts = [q.tl, q.tr, q.br, q.bl]
   // edges: 0=TL-TR, 1=TR-BR, 2=BR-BL, 3=BL-TL
   // non-adjacent pairs: (0,2) and (1,3)
-  return segIntersect(pts[0], pts[1], pts[2], pts[3]) || segIntersect(pts[1], pts[2], pts[3], pts[0])
+  return (
+    segIntersect(pts[0], pts[1], pts[2], pts[3]) ||
+    segIntersect(pts[1], pts[2], pts[3], pts[0])
+  )
 }
 
 function segIntersect(p1, p2, p3, p4) {
@@ -89,7 +92,10 @@ function segIntersect(p1, p2, p3, p4) {
   const d2 = direction(p3, p4, p2)
   const d3 = direction(p1, p2, p3)
   const d4 = direction(p1, p2, p4)
-  return ((d1 > 0 && d2 < 0) || (d1 < 0 && d2 > 0)) && ((d3 > 0 && d4 < 0) || (d3 < 0 && d4 > 0))
+  return (
+    ((d1 > 0 && d2 < 0) || (d1 < 0 && d2 > 0)) &&
+    ((d3 > 0 && d4 < 0) || (d3 < 0 && d4 > 0))
+  )
 }
 
 function direction(a, b, c) {
@@ -106,10 +112,20 @@ function direction(a, b, c) {
  */
 export function classifyQuad(quad, frameW, frameH) {
   if (!isConvex(quad)) {
-    return { mode: 'other', aspect: 0, area_fraction: 0, rejection_reason: 'non-convex' }
+    return {
+      mode: 'other',
+      aspect: 0,
+      area_fraction: 0,
+      rejection_reason: 'non-convex',
+    }
   }
   if (selfIntersects(quad)) {
-    return { mode: 'other', aspect: 0, area_fraction: 0, rejection_reason: 'self-intersecting' }
+    return {
+      mode: 'other',
+      aspect: 0,
+      area_fraction: 0,
+      rejection_reason: 'self-intersecting',
+    }
   }
 
   const w = (dist(quad.tl, quad.tr) + dist(quad.bl, quad.br)) / 2
@@ -121,10 +137,20 @@ export function classifyQuad(quad, frameW, frameH) {
   const area_fraction = area / (frameW * frameH)
 
   if (area_fraction < MIN_AREA_FRACTION) {
-    return { mode: 'other', aspect, area_fraction, rejection_reason: 'too-small' }
+    return {
+      mode: 'other',
+      aspect,
+      area_fraction,
+      rejection_reason: 'too-small',
+    }
   }
   if (area_fraction > MAX_AREA_FRACTION) {
-    return { mode: 'other', aspect, area_fraction, rejection_reason: 'too-large' }
+    return {
+      mode: 'other',
+      aspect,
+      area_fraction,
+      rejection_reason: 'too-large',
+    }
   }
 
   for (const [mode, [lo, hi]] of Object.entries(ASPECT_BANDS)) {
@@ -136,13 +162,19 @@ export function classifyQuad(quad, frameW, frameH) {
       const longSide = TARGET_BASE_LONG[mode]
       const shortSide = Math.round(longSide / r)
       // Honor orientation: if aspect >= 1 (landscape) width=long, else height=long
-      const target = aspect >= 1
-        ? { width: longSide, height: shortSide }
-        : { width: shortSide, height: longSide }
+      const target =
+        aspect >= 1
+          ? { width: longSide, height: shortSide }
+          : { width: shortSide, height: longSide }
       return { mode, aspect, area_fraction, target }
     }
   }
-  return { mode: 'other', aspect, area_fraction, rejection_reason: `aspect-out-of-band:${r.toFixed(2)}` }
+  return {
+    mode: 'other',
+    aspect,
+    area_fraction,
+    rejection_reason: `aspect-out-of-band:${r.toFixed(2)}`,
+  }
 }
 
 export const QUAD_CLASSIFY_DEFAULTS = {

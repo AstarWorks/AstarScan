@@ -96,7 +96,9 @@ export class FrameCollector<TBlob = unknown> {
    * per-cluster winner centroids (no transitive chains). Returns one
    * winner per cluster sorted by capture time.
    */
-  selectBest(threshold: number = DEFAULT_CLUSTER_THRESHOLD): DetectedFrame<TBlob>[] {
+  selectBest(
+    threshold: number = DEFAULT_CLUSTER_THRESHOLD,
+  ): DetectedFrame<TBlob>[] {
     return this.#cluster(threshold, (a, b) => popcount(a.hash ^ b.hash)).map(
       (c) => c.winner,
     )
@@ -125,7 +127,8 @@ export class FrameCollector<TBlob = unknown> {
   ): FrameCluster<TBlob>[] {
     const n = this.#frames.length
     if (n === 0) return []
-    if (n === 1) return [{ winner: this.#frames[0]!, members: [...this.#frames] }]
+    if (n === 1)
+      return [{ winner: this.#frames[0]!, members: [...this.#frames] }]
 
     // Score-descending so the seed of each cluster is the winner;
     // tie-break by insertion order (Array.sort is stable per ES2019).

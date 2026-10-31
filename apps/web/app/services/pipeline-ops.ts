@@ -38,6 +38,9 @@ export function getPipelineOps(): PipelineOps | null {
   if (ops) return ops
   const cv = (window as { cv?: { Mat?: unknown } }).cv
   if (!cv?.Mat) return null
-  ops = createPipelineOps({ cv: cv as unknown as CvLike, createCanvas: browserCreateCanvas })
+  ops = createPipelineOps({
+    cv: cv as unknown as CvLike,
+    createCanvas: browserCreateCanvas,
+  })
   return ops
 }

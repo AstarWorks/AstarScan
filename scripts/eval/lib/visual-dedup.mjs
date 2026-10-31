@@ -73,8 +73,13 @@ export async function visualDedup(items, maxDist = DEFAULT_HAMMING_MAX) {
 if (import.meta.main) {
   const fs = await import('node:fs')
   const path = await import('node:path')
-  const dir = process.argv[2] ?? '/IdeaProjects/AstarScan/eval-out/meishi/20260516_005528-fps5-v7/items'
-  const files = fs.readdirSync(dir).filter((n) => n.endsWith('.jpg')).sort()
+  const dir =
+    process.argv[2] ??
+    '/IdeaProjects/AstarScan/eval-out/meishi/20260516_005528-fps5-v7/items'
+  const files = fs
+    .readdirSync(dir)
+    .filter((n) => n.endsWith('.jpg'))
+    .sort()
   const items = files.map((n, i) => ({
     id: n,
     warpedBuf: fs.readFileSync(path.join(dir, n)),

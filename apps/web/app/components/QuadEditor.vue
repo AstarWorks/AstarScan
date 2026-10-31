@@ -21,7 +21,14 @@
  * the corners.
  */
 
-import { computed, onBeforeUnmount, onMounted, ref, shallowRef, watch } from 'vue'
+import {
+  computed,
+  onBeforeUnmount,
+  onMounted,
+  ref,
+  shallowRef,
+  watch,
+} from 'vue'
 import {
   moveQuadCorner,
   nearestQuadCorner,
@@ -55,7 +62,12 @@ const LOUPE_SIZE = 108
 /** Working copy, in source space. Reset whenever the caller opens a
  *  different page rather than only on mount. */
 const working = ref<Quad>(props.quad)
-watch(() => props.quad, (q) => { working.value = q })
+watch(
+  () => props.quad,
+  (q) => {
+    working.value = q
+  },
+)
 
 const stage = ref<HTMLElement | null>(null)
 const stageW = ref(0)
@@ -94,7 +106,11 @@ const BLOCKING: Record<string, string> = {
 }
 
 const problem = computed(() => {
-  const reason = classifyQuad(working.value, props.srcW, props.srcH).rejection_reason
+  const reason = classifyQuad(
+    working.value,
+    props.srcW,
+    props.srcH,
+  ).rejection_reason
   return reason ? (BLOCKING[reason] ?? null) : null
 })
 
@@ -122,8 +138,20 @@ function onPointerDown(e: PointerEvent): void {
 function onPointerMove(e: PointerEvent): void {
   const corner = dragging.value
   if (!corner) return
-  const moved = moveQuadCorner(shown.value, corner, toStage(e), stageW.value, stageH.value)
-  working.value = scaleQuad(moved, stageW.value, stageH.value, props.srcW, props.srcH)
+  const moved = moveQuadCorner(
+    shown.value,
+    corner,
+    toStage(e),
+    stageW.value,
+    stageH.value,
+  )
+  working.value = scaleQuad(
+    moved,
+    stageW.value,
+    stageH.value,
+    props.srcW,
+    props.srcH,
+  )
   e.preventDefault()
   drawLoupe()
 }
@@ -161,7 +189,17 @@ function drawLoupe(): void {
   const c = working.value[corner]
 
   ctx.clearRect(0, 0, LOUPE_SIZE, LOUPE_SIZE)
-  ctx.drawImage(img, c.x - win / 2, c.y - win / 2, win, win, 0, 0, LOUPE_SIZE, LOUPE_SIZE)
+  ctx.drawImage(
+    img,
+    c.x - win / 2,
+    c.y - win / 2,
+    win,
+    win,
+    0,
+    0,
+    LOUPE_SIZE,
+    LOUPE_SIZE,
+  )
 
   const mid = LOUPE_SIZE / 2
   ctx.strokeStyle = '#00e5ff'
@@ -193,7 +231,9 @@ onMounted(() => {
   // element, and reading pixels back out of the rendered <img> is not
   // possible.
   const img = new Image()
-  img.onload = () => { image.value = img }
+  img.onload = () => {
+    image.value = img
+  }
   img.src = props.src
 })
 
@@ -219,10 +259,18 @@ function onSave(): void {
       @pointerup="onPointerUp"
       @pointercancel="onPointerUp"
     >
-      <img :src="src" alt="" class="qed__img" draggable="false">
+      <img :src="src" alt="" class="qed__img" draggable="false" />
 
-      <svg class="qed__overlay" :viewBox="`0 0 ${stageW} ${stageH}`" aria-hidden="true">
-        <polygon :points="outline" class="qed__poly" :class="{ 'is-bad': problem !== null }" />
+      <svg
+        class="qed__overlay"
+        :viewBox="`0 0 ${stageW} ${stageH}`"
+        aria-hidden="true"
+      >
+        <polygon
+          :points="outline"
+          class="qed__poly"
+          :class="{ 'is-bad': problem !== null }"
+        />
         <!-- The dot is deliberately smaller than the tap target: grabbing
              is resolved geometrically against GRAB_RADIUS (22 px, i.e. the
              44 px target), not by hit-testing these shapes, so a fingertip
@@ -248,12 +296,21 @@ function onSave(): void {
     </div>
 
     <p v-if="problem" class="qed__problem">{{ problem }}</p>
-    <p v-else class="qed__hint">四隅をドラッグして書類の範囲を合わせてください。</p>
+    <p v-else class="qed__hint">
+      四隅をドラッグして書類の範囲を合わせてください。
+    </p>
 
     <!-- Buttons at the bottom: one-handed operation. -->
     <div class="qed__acts">
-      <button class="btn btn--ghost" type="button" @click="emit('cancel')">キャンセル</button>
-      <button class="btn btn--primary" type="button" :disabled="problem !== null" @click="onSave">
+      <button class="btn btn--ghost" type="button" @click="emit('cancel')">
+        キャンセル
+      </button>
+      <button
+        class="btn btn--primary"
+        type="button"
+        :disabled="problem !== null"
+        @click="onSave"
+      >
         この範囲で切り直す
       </button>
     </div>

@@ -36,10 +36,14 @@ const BASELINE_DIR = path.join(REPO_ROOT, 'test/baselines')
 /** The frozen production parameter set. Changing these REQUIRES a
  *  conscious baseline regeneration (the diff shows up in review). */
 export const PROD_PARAMS = [
-  '--detector', 'yolo',
-  '--algorithm', 'segment',
-  '--min-conf', '0.25',
-  '--verify', 'ocr',
+  '--detector',
+  'yolo',
+  '--algorithm',
+  'segment',
+  '--min-conf',
+  '0.25',
+  '--verify',
+  'ocr',
 ]
 
 const args = process.argv.slice(2)
@@ -72,7 +76,13 @@ function runEval(video) {
   return new Promise((resolve, reject) => {
     const p = spawn(
       'bun',
-      [path.join(__dirname, 'run.mjs'), video.mp4, ...PROD_PARAMS, '--out', out],
+      [
+        path.join(__dirname, 'run.mjs'),
+        video.mp4,
+        ...PROD_PARAMS,
+        '--out',
+        out,
+      ],
       { stdio: ['ignore', 'inherit', 'inherit'] },
     )
     p.on('error', reject)
@@ -86,10 +96,14 @@ let failed = false
 for (const video of videos) {
   console.log(`\n[regress] ===== ${video.id} =====`)
   const out = await runEval(video)
-  const summary = JSON.parse(await fs.readFile(path.join(out, 'summary.json'), 'utf8'))
+  const summary = JSON.parse(
+    await fs.readFile(path.join(out, 'summary.json'), 'utf8'),
+  )
   const m = summary.gtIdentity
   if (!m) {
-    console.error(`[regress] ${video.id}: no gtIdentity in summary — GT matching failed`)
+    console.error(
+      `[regress] ${video.id}: no gtIdentity in summary — GT matching failed`,
+    )
     failed = true
     continue
   }
@@ -115,7 +129,9 @@ for (const video of videos) {
   try {
     base = JSON.parse(await fs.readFile(baselinePath, 'utf8'))
   } catch {
-    console.error(`[regress] ${video.id}: no baseline — run with --update-baselines first`)
+    console.error(
+      `[regress] ${video.id}: no baseline — run with --update-baselines first`,
+    )
     failed = true
     continue
   }
@@ -127,7 +143,9 @@ for (const video of videos) {
     problems.push(`duplicates ${base.duplicates} → ${current.duplicates}`)
   }
   if (current.falsePositives > base.falsePositives) {
-    problems.push(`falsePositives ${base.falsePositives} → ${current.falsePositives}`)
+    problems.push(
+      `falsePositives ${base.falsePositives} → ${current.falsePositives}`,
+    )
   }
   if (current.mergeErrors > base.mergeErrors) {
     problems.push(`mergeErrors ${base.mergeErrors} → ${current.mergeErrors}`)
@@ -143,7 +161,9 @@ for (const video of videos) {
       current.perPageRecall > base.perPageRecall ||
       current.duplicates < base.duplicates
     ) {
-      console.log(`[regress]   improvement detected — consider --update-baselines`)
+      console.log(
+        `[regress]   improvement detected — consider --update-baselines`,
+      )
     }
   }
 }

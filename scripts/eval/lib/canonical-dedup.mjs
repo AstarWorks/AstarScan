@@ -206,7 +206,7 @@ export function clusterByCanonicalKey(items) {
 function companiesCompatible(a, b) {
   const ea = normEmail(a?.email)
   const eb = normEmail(b?.email)
-  if (ea && eb) return ea === eb              // rule 1
+  if (ea && eb) return ea === eb // rule 1
 
   const ca = normName(a?.company)
   const cb = normName(b?.company)
@@ -232,7 +232,11 @@ if (import.meta.main) {
     {
       id: 'frame-100',
       score: 80,
-      fields: { name: '込田友紀子', mobile: '090-5516-1153', tel: '03-3609-3446' },
+      fields: {
+        name: '込田友紀子',
+        mobile: '090-5516-1153',
+        tel: '03-3609-3446',
+      },
     },
     {
       id: 'frame-120', // same card, different angle
@@ -242,7 +246,11 @@ if (import.meta.main) {
     {
       id: 'frame-300',
       score: 70,
-      fields: { name: '野口明雄', email: 'akionoguchi7@gmail.com', mobile: '080-2673-6319' },
+      fields: {
+        name: '野口明雄',
+        email: 'akionoguchi7@gmail.com',
+        mobile: '080-2673-6319',
+      },
     },
     {
       id: 'frame-310', // same as 300, different OCR error on name

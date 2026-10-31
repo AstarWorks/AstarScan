@@ -109,7 +109,8 @@ export async function pickBestFrameByLlm(
     const { processor, model } = await getInstances()
     onProgress?.({ stage: 'inference' })
 
-    const content: Array<{ type: 'image' } | { type: 'text'; text: string }> = []
+    const content: Array<{ type: 'image' } | { type: 'text'; text: string }> =
+      []
     for (const _ of candidates) content.push({ type: 'image' })
     content.push({ type: 'text', text: buildPrompt(candidates.length) })
 
@@ -133,7 +134,9 @@ export async function pickBestFrameByLlm(
     })
     const promptLen = inputs.input_ids.dims[1]
     const generated = outputs.slice(null, [promptLen, null])
-    const raw = processor.batch_decode(generated, { skip_special_tokens: true })[0] as string
+    const raw = processor.batch_decode(generated, {
+      skip_special_tokens: true,
+    })[0] as string
     const parsed = parseCoTAnswer(raw)
 
     // Prefer the digit on the `答え:` line; if absent, scan whole raw.

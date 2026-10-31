@@ -9,7 +9,11 @@
 import type { Point, Quad } from '../types.js'
 import type { CanvasLike, CvRotatedRect, PipelineDeps } from './deps.js'
 import { matFromCanvas } from './cv-canvas.js'
-import { MAX_FRAME_FRACTION, MIN_FRAME_FRACTION, MORPH_KERNEL } from './constants.js'
+import {
+  MAX_FRAME_FRACTION,
+  MIN_FRAME_FRACTION,
+  MORPH_KERNEL,
+} from './constants.js'
 
 export function rotatedRectCorners(rect: CvRotatedRect): Point[] {
   const cx = rect.center.x
@@ -43,10 +47,22 @@ export function orderQuadCorners(pts: readonly Point[]): Quad {
   for (const p of pts) {
     const s = p.x + p.y
     const d = p.y - p.x
-    if (s < minSum) { minSum = s; tl = p }
-    if (s > maxSum) { maxSum = s; br = p }
-    if (d < minDiff) { minDiff = d; tr = p }
-    if (d > maxDiff) { maxDiff = d; bl = p }
+    if (s < minSum) {
+      minSum = s
+      tl = p
+    }
+    if (s > maxSum) {
+      maxSum = s
+      br = p
+    }
+    if (d < minDiff) {
+      minDiff = d
+      tr = p
+    }
+    if (d > maxDiff) {
+      maxDiff = d
+      bl = p
+    }
   }
   return { tl, tr, br, bl }
 }

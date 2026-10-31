@@ -55,7 +55,9 @@ function hamming(a, b) {
   return n
 }
 
-const files = (await fs.readdir(RAW_DIR)).filter((f) => /\.(jpe?g|png)$/i.test(f)).sort()
+const files = (await fs.readdir(RAW_DIR))
+  .filter((f) => /\.(jpe?g|png)$/i.test(f))
+  .sort()
 const hashes = await Promise.all(files.map(phash))
 
 // Union-find by Hamming ≤ DUP_HAMMING.
@@ -83,6 +85,8 @@ const groups = [...byRoot.values()]
 await fs.writeFile(OUT, JSON.stringify({ groups }, null, 0))
 
 console.log(`frames=${files.length}  distinct scenes=${groups.length}`)
-console.log(`group sizes: min=${Math.min(...groups.map((g) => g.members.length))} max=${Math.max(...groups.map((g) => g.members.length))} median=${groups.map((g) => g.members.length).sort((a, b) => a - b)[Math.floor(groups.length / 2)]}`)
+console.log(
+  `group sizes: min=${Math.min(...groups.map((g) => g.members.length))} max=${Math.max(...groups.map((g) => g.members.length))} median=${groups.map((g) => g.members.length).sort((a, b) => a - b)[Math.floor(groups.length / 2)]}`,
+)
 console.log('representatives (one per scene):')
 for (const g of groups) console.log(`  ${g.rep}  (x${g.members.length})`)

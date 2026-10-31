@@ -15,19 +15,26 @@ import {
   splitCluster,
   updateClusterCrop,
 } from '../src/pipeline/cluster-repair.js'
-import type { SegmentCluster, SegmentFrameRecord } from '../src/pipeline/segment-cluster.js'
+import type {
+  SegmentCluster,
+  SegmentFrameRecord,
+} from '../src/pipeline/segment-cluster.js'
 
 function rec(idx: number, score = 0.5): SegmentFrameRecord {
   return { idx, t_s: idx * 0.1, hash: 0n, tileHash: [], score }
 }
 
 /** Build a cluster the way clusterBySegments would: members by idx, winner by score. */
-function cluster(members: SegmentFrameRecord[]): SegmentCluster<SegmentFrameRecord> {
+function cluster(
+  members: SegmentFrameRecord[],
+): SegmentCluster<SegmentFrameRecord> {
   const ordered = [...members].sort((a, b) => a.idx - b.idx)
   return { winner: pickWinner(ordered), members: ordered }
 }
 
-const memberIdxs = (cs: readonly SegmentCluster<SegmentFrameRecord>[]): number[] =>
+const memberIdxs = (
+  cs: readonly SegmentCluster<SegmentFrameRecord>[],
+): number[] =>
   cs.flatMap((c) => c.members.map((m) => m.idx)).sort((a, b) => a - b)
 
 describe('pickWinner', () => {
@@ -92,7 +99,16 @@ describe('mergeClusters', () => {
 
 describe('splitCluster', () => {
   // One cluster holding what are really two pages: 0-2 and 10-12.
-  const base = [cluster([rec(0, 0.4), rec(1, 0.7), rec(2, 0.3), rec(10, 0.9), rec(11, 0.5), rec(12, 0.6)])]
+  const base = [
+    cluster([
+      rec(0, 0.4),
+      rec(1, 0.7),
+      rec(2, 0.3),
+      rec(10, 0.9),
+      rec(11, 0.5),
+      rec(12, 0.6),
+    ]),
+  ]
 
   it('cuts at the given frame index, re-electing both sides', () => {
     const out = splitCluster(base, base[0]!.winner.idx, 10)
@@ -110,7 +126,9 @@ describe('splitCluster', () => {
   })
 
   it('preserves every member exactly once', () => {
-    expect(memberIdxs(splitCluster(base, base[0]!.winner.idx, 10))).toEqual(memberIdxs(base))
+    expect(memberIdxs(splitCluster(base, base[0]!.winner.idx, 10))).toEqual(
+      memberIdxs(base),
+    )
   })
 
   it('is a no-op when the split point leaves a side empty', () => {
@@ -144,7 +162,10 @@ describe('removeCluster', () => {
 })
 
 describe('setClusterWinner', () => {
-  const base = [cluster([rec(0, 0.3), rec(1, 0.9), rec(2, 0.5)]), cluster([rec(20, 0.5)])]
+  const base = [
+    cluster([rec(0, 0.3), rec(1, 0.9), rec(2, 0.5)]),
+    cluster([rec(20, 0.5)]),
+  ]
 
   it('overrides the score-elected winner with the chosen member', () => {
     const out = setClusterWinner(base, 1, 2)
@@ -158,12 +179,17 @@ describe('setClusterWinner', () => {
 
   it('re-sorts clusters by the new winner idx', () => {
     // Cluster keyed at 1 re-elects to frame 2 — still ahead of 20.
-    expect(setClusterWinner(base, 1, 2).map((c) => c.winner.idx)).toEqual([2, 20])
+    expect(setClusterWinner(base, 1, 2).map((c) => c.winner.idx)).toEqual([
+      2, 20,
+    ])
   })
 
   it('is a no-op on an unknown key or a frame outside the cluster', () => {
     expect(setClusterWinner(base, 999, 0)[0]!.winner.idx).toBe(1)
-    expect(setClusterWinner(base, 1, 777).find((c) => c.members.length === 3)!.winner.idx).toBe(1)
+    expect(
+      setClusterWinner(base, 1, 777).find((c) => c.members.length === 3)!.winner
+        .idx,
+    ).toBe(1)
   })
 
   it('loses the override when the cluster is later merged', () => {
@@ -176,7 +202,10 @@ describe('setClusterWinner', () => {
 })
 
 describe('updateClusterCrop', () => {
-  const base = [cluster([rec(0, 0.3), rec(1, 0.9), rec(2, 0.5)]), cluster([rec(20, 0.5)])]
+  const base = [
+    cluster([rec(0, 0.3), rec(1, 0.9), rec(2, 0.5)]),
+    cluster([rec(20, 0.5)]),
+  ]
 
   it('applies the patch to the winner', () => {
     const out = updateClusterCrop(base, 1, { hash: 42n })
@@ -193,7 +222,9 @@ describe('updateClusterCrop', () => {
   it('leaves the other members alone', () => {
     const out = updateClusterCrop(base, 1, { hash: 42n })
     const target = out.find((c) => c.members.length === 3)!
-    expect(target.members.filter((m) => m.hash === 0n).map((m) => m.idx)).toEqual([0, 2])
+    expect(
+      target.members.filter((m) => m.hash === 0n).map((m) => m.idx),
+    ).toEqual([0, 2])
   })
 
   it('never mutates the input', () => {
@@ -209,7 +240,9 @@ describe('updateClusterCrop', () => {
   })
 
   it('keeps the member set intact', () => {
-    expect(memberIdxs(updateClusterCrop(base, 1, { hash: 42n }))).toEqual(memberIdxs(base))
+    expect(memberIdxs(updateClusterCrop(base, 1, { hash: 42n }))).toEqual(
+      memberIdxs(base),
+    )
   })
 
   it('is a no-op on an unknown key', () => {

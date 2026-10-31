@@ -75,7 +75,9 @@ export const SEGMENT_DEFAULTS = {
   rescueMinGapFrames: 25,
 } as const
 
-export type SegmentOptions = { -readonly [K in keyof typeof SEGMENT_DEFAULTS]: number }
+export type SegmentOptions = {
+  -readonly [K in keyof typeof SEGMENT_DEFAULTS]: number
+}
 
 /** Non-max-suppression radius for the gap-rescue pass (0.8 s at 10 fps):
  *  a rescued frame claims its neighborhood so recursion can't shave the

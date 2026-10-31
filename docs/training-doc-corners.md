@@ -11,11 +11,11 @@ score.
 Public document-corner detectors all underperformed on this exact handheld
 style:
 
-| Detector | MP4① detection rate | Notes |
-| --- | --- | --- |
-| OpenCV Otsu + minAreaRect | 97 % | No confidence; degenerates on hand occlusion |
-| DocAligner LCNet (4.7 MB) | 11 % | BL corner heatmap collapses on occlusion |
-| DocAligner FastViT-T8 (13 MB) | 13 % | Same failure mode |
+| Detector                      | MP4① detection rate | Notes                                        |
+| ----------------------------- | ------------------- | -------------------------------------------- |
+| OpenCV Otsu + minAreaRect     | 97 %                | No confidence; degenerates on hand occlusion |
+| DocAligner LCNet (4.7 MB)     | 11 %                | BL corner heatmap collapses on occlusion     |
+| DocAligner FastViT-T8 (13 MB) | 13 %                | Same failure mode                            |
 
 YOLOv8-pose treats keypoints the same way MediaPipe Hands treats finger
 joints — independent regression per landmark. Fine-tuning on ~270 frames
@@ -65,11 +65,11 @@ map and details: `scripts/label/README.md`.
 ### Occlusion = `v=1`, never `v=0`
 
 When a hand covers a corner or it sits just off-frame, place it where you
-*think* it is and mark it **occluded** (keys `1`–`4`). The label encodes
+_think_ it is and mark it **occluded** (keys `1`–`4`). The label encodes
 visibility `2` (visible) or `1` (occluded-but-located) — we deliberately
 **never emit `v=0`**.
 
-Why: in Ultralytics pose loss `v=0` drops the *location* term for that
+Why: in Ultralytics pose loss `v=0` drops the _location_ term for that
 keypoint, so the model would never learn where an occluded corner is — and
 hand-occluded corners are the exact case we need it to extrapolate so the
 warp stays a complete quad. `v=1` keeps location loss on. If a corner is
@@ -167,6 +167,7 @@ emulation); use the **T4 GPU** (Colab) or a CLI GPU (Kaggle / a cheap cloud
 instance). The smoke-tested command above runs end-to-end on a T4 in ~60-90 min.
 
 Training takes 60-90 min on T4. Watch for:
+
 - `pose_loss` should drop below ~1.5 by epoch 30
 - mAP50-95 (Pose) should reach 0.6+ for a usable model on this size dataset
 
@@ -227,7 +228,7 @@ The web app keeps the OpenCV path as default. To switch to the trained
 model, edit `apps/web/app/services/doc-detector.ts`:
 
 ```ts
-const ENABLE_ML_DETECTOR = true   // was false
+const ENABLE_ML_DETECTOR = true // was false
 ```
 
 (Eventually we'll promote this to a runtime URL flag like

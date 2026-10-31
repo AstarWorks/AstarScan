@@ -57,7 +57,10 @@ export class QuadSmoother {
   private prev: Quad | null = null
   private prevIdx: number | null = null
 
-  constructor(alpha = 0.6, opts: { iouReset?: number; maxGapFrames?: number } = {}) {
+  constructor(
+    alpha = 0.6,
+    opts: { iouReset?: number; maxGapFrames?: number } = {},
+  ) {
     this.alpha = alpha
     this.iouReset = opts.iouReset ?? 0.6
     this.maxGapFrames = opts.maxGapFrames ?? 5
@@ -65,7 +68,8 @@ export class QuadSmoother {
 
   /** Returns the smoothed quad; mutates internal state. */
   apply(quad: Quad, idx: number): Quad {
-    const gapped = this.prevIdx !== null && idx - this.prevIdx > this.maxGapFrames
+    const gapped =
+      this.prevIdx !== null && idx - this.prevIdx > this.maxGapFrames
     if (!this.prev || gapped || bboxIou(this.prev, quad) < this.iouReset) {
       this.prev = quad
       this.prevIdx = idx

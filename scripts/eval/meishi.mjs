@@ -55,31 +55,50 @@ function parseArgs(argv) {
     minLaplacian: 10,
     minConfidence: 0.1,
     keepFrames: false,
-    frameQuality: false,    // Phase 2d-A2: opt-in. Default = single-best frame.
-    permissive: false,      // Phase 2d-D: relax all gates, expect LLM dedup.
+    frameQuality: false, // Phase 2d-A2: opt-in. Default = single-best frame.
+    permissive: false, // Phase 2d-D: relax all gates, expect LLM dedup.
   }
   const rest = []
   for (let i = 0; i < argv.length; i += 1) {
     const a = argv[i]
     const next = () => argv[++i]
     switch (a) {
-      case '--fps': args.fps = Number(next()); break
-      case '--out': args.out = next(); break
-      case '--detector': args.detector = next(); break
-      case '--mode': args.mode = next(); break
-      case '--min-laplacian': args.minLaplacian = Number(next()); break
-      case '--min-confidence': args.minConfidence = Number(next()); break
-      case '--keep-frames': args.keepFrames = true; break
-      case '--frame-quality': args.frameQuality = true; break
+      case '--fps':
+        args.fps = Number(next())
+        break
+      case '--out':
+        args.out = next()
+        break
+      case '--detector':
+        args.detector = next()
+        break
+      case '--mode':
+        args.mode = next()
+        break
+      case '--min-laplacian':
+        args.minLaplacian = Number(next())
+        break
+      case '--min-confidence':
+        args.minConfidence = Number(next())
+        break
+      case '--keep-frames':
+        args.keepFrames = true
+        break
+      case '--frame-quality':
+        args.frameQuality = true
+        break
       case '--permissive':
         args.permissive = true
         args.minLaplacian = Math.min(args.minLaplacian, 5)
         break
-      default: rest.push(a)
+      default:
+        rest.push(a)
     }
   }
   if (rest.length !== 1) {
-    console.error('Usage: bun scripts/eval/meishi.mjs <mp4> [--fps 5] [--out DIR] ...')
+    console.error(
+      'Usage: bun scripts/eval/meishi.mjs <mp4> [--fps 5] [--out DIR] ...',
+    )
     process.exit(2)
   }
   args.mp4 = path.resolve(rest[0])
@@ -98,7 +117,9 @@ function runFfmpeg(args) {
   return new Promise((resolve, reject) => {
     const p = spawn('ffmpeg', args, { stdio: ['ignore', 'ignore', 'pipe'] })
     let err = ''
-    p.stderr.on('data', (b) => { err += b.toString() })
+    p.stderr.on('data', (b) => {
+      err += b.toString()
+    })
     p.on('error', reject)
     p.on('close', (code) => {
       if (code === 0) resolve()
@@ -110,8 +131,16 @@ function runFfmpeg(args) {
 async function extractFrames(mp4, fps, frameDir) {
   await fsp.mkdir(frameDir, { recursive: true })
   await runFfmpeg([
-    '-y', '-hide_banner', '-loglevel', 'error',
-    '-i', mp4, '-vf', `fps=${fps}`, '-q:v', '3',
+    '-y',
+    '-hide_banner',
+    '-loglevel',
+    'error',
+    '-i',
+    mp4,
+    '-vf',
+    `fps=${fps}`,
+    '-q:v',
+    '3',
     path.join(frameDir, 'frame-%05d.jpg'),
   ])
   const entries = (await fsp.readdir(frameDir))
@@ -131,7 +160,9 @@ async function main() {
   const args = parseArgs(process.argv.slice(2))
   console.log(`[meishi] mp4=${args.mp4}`)
   console.log(`[meishi] out=${args.out}`)
-  console.log(`[meishi] fps=${args.fps} detector=${args.detector} mode=${args.mode}`)
+  console.log(
+    `[meishi] fps=${args.fps} detector=${args.detector} mode=${args.mode}`,
+  )
 
   await fsp.rm(args.out, { recursive: true, force: true })
   await fsp.mkdir(args.out, { recursive: true })
@@ -167,7 +198,10 @@ async function main() {
     if (!det || det.confidence < args.minConfidence) continue
     frameDetCount++
     const cls = classifyQuad(det.quad, canvas.width, canvas.height)
-    if (cls.mode === 'other' || (args.mode !== 'auto' && cls.mode !== args.mode)) {
+    if (
+      cls.mode === 'other' ||
+      (args.mode !== 'auto' && cls.mode !== args.mode)
+    ) {
       frameDropOther++
       continue
     }
@@ -210,13 +244,17 @@ async function main() {
       content_edge_density: fp.edgeDensity,
     })
     if (frames.length > 50 && (f.idx + 1) % 50 === 0) {
-      console.log(`  [${f.idx + 1}/${frames.length}] det=${frameDetCount} accepted=${accepted.length}`)
+      console.log(
+        `  [${f.idx + 1}/${frames.length}] det=${frameDetCount} accepted=${accepted.length}`,
+      )
     }
   }
-  console.log(`[meishi] detect: ${frames.length} frames → ` +
-    `det=${frameDetCount} accepted=${accepted.length} ` +
-    `(drop-other=${frameDropOther} drop-fp=${frameDropFp} drop-blur=${frameDropBlur}) ` +
-    `in ${Date.now() - tDetect} ms`)
+  console.log(
+    `[meishi] detect: ${frames.length} frames → ` +
+      `det=${frameDetCount} accepted=${accepted.length} ` +
+      `(drop-other=${frameDropOther} drop-fp=${frameDropFp} drop-blur=${frameDropBlur}) ` +
+      `in ${Date.now() - tDetect} ms`,
+  )
 
   // ---- Stage 3: ByteTrack-style identity tracker ----
   const tracker = new DocTracker()
@@ -224,8 +262,13 @@ async function main() {
   const TOPK = args.frameQuality ? 3 : 1
   const tracks = tracker.finalize(TOPK)
   if (args.frameQuality) {
-    const totalCandidates = tracks.reduce((s, t) => s + (t.topKItems?.length ?? 1), 0)
-    console.log(`[meishi] tracker → ${tracks.length} tracks, ${totalCandidates} candidates (top-${TOPK}, --frame-quality)`)
+    const totalCandidates = tracks.reduce(
+      (s, t) => s + (t.topKItems?.length ?? 1),
+      0,
+    )
+    console.log(
+      `[meishi] tracker → ${tracks.length} tracks, ${totalCandidates} candidates (top-${TOPK}, --frame-quality)`,
+    )
   } else {
     console.log(`[meishi] tracker → ${tracks.length} tracks`)
   }
@@ -246,7 +289,9 @@ async function main() {
     const tOcr = Date.now()
     console.log('[meishi] running YomiToku batch (top-K candidates)…')
     ocrMap = await runYomiTokuBatch(winnersDir)
-    console.log(`[meishi] OCR ${ocrMap.size} candidates in ${Date.now() - tOcr} ms`)
+    console.log(
+      `[meishi] OCR ${ocrMap.size} candidates in ${Date.now() - tOcr} ms`,
+    )
 
     winners = []
     for (let i = 0; i < tracks.length; i++) {
@@ -300,7 +345,9 @@ async function main() {
     const tOcr = Date.now()
     console.log('[meishi] running YomiToku batch…')
     ocrMap = await runYomiTokuBatch(winnersDir)
-    console.log(`[meishi] OCR ${ocrMap.size}/${winners.length} in ${Date.now() - tOcr} ms`)
+    console.log(
+      `[meishi] OCR ${ocrMap.size}/${winners.length} in ${Date.now() - tOcr} ms`,
+    )
   }
 
   // ---- Stage 6: heuristic field extraction per winner ----
@@ -361,7 +408,9 @@ async function main() {
         if (txt.length >= minRawTextLen) return true
         return false
       })
-  console.log(`[meishi] filter: ${beforeFilter} → ${filtered.length} (dropped ${beforeFilter - filtered.length} low-signal${args.permissive ? '; permissive=skip' : ''})`)
+  console.log(
+    `[meishi] filter: ${beforeFilter} → ${filtered.length} (dropped ${beforeFilter - filtered.length} low-signal${args.permissive ? '; permissive=skip' : ''})`,
+  )
 
   // ---- Stage 6c: temporal back/front pairing ----
   // Pair two adjacent winners only when the "back" side has VERY little
@@ -370,7 +419,9 @@ async function main() {
   // we paired anything-no-contact with anything-with-contact, which
   // collapsed legitimate weak-OCR cards (e.g. 中根徹也) onto neighboring
   // cards as fake "back sides".
-  const sortedByFrame = [...filtered].sort((a, b) => a.source_frame_idx - b.source_frame_idx)
+  const sortedByFrame = [...filtered].sort(
+    (a, b) => a.source_frame_idx - b.source_frame_idx,
+  )
   const mergedBackIds = new Set()
   const BACK_MAX_RAW_CHARS = 60
   const PAIR_MAX_GAP_MS = 3000
@@ -380,7 +431,7 @@ async function main() {
     if (mergedBackIds.has(a.id) || mergedBackIds.has(b.id)) continue
     const aContact = !!(a.fields.email || a.fields.tel || a.fields.mobile)
     const bContact = !!(b.fields.email || b.fields.tel || b.fields.mobile)
-    if (aContact === bContact) continue            // need exactly one with contact
+    if (aContact === bContact) continue // need exactly one with contact
     const gap = Math.abs(b.source_ts_ms - a.source_ts_ms)
     if (gap > PAIR_MAX_GAP_MS) continue
     const front = aContact ? a : b
@@ -392,12 +443,18 @@ async function main() {
     mergedBackIds.add(back.id)
   }
   const afterPairing = filtered.filter((it) => !mergedBackIds.has(it.id))
-  console.log(`[meishi] back/front pair: merged ${mergedBackIds.size} back-side items`)
+  console.log(
+    `[meishi] back/front pair: merged ${mergedBackIds.size} back-side items`,
+  )
 
   // ---- Stage 7: canonical-key dedup across remaining items ----
-  const clusters = clusterByCanonicalKey(afterPairing.map((it) => ({
-    id: it.id, fields: it.fields, score: it.score,
-  })))
+  const clusters = clusterByCanonicalKey(
+    afterPairing.map((it) => ({
+      id: it.id,
+      fields: it.fields,
+      score: it.score,
+    })),
+  )
   // Re-key items by cluster: winner keeps the original, others marked as merged.
   const idToCluster = new Map()
   for (const c of clusters) {
@@ -417,7 +474,12 @@ async function main() {
       dedup_dropped_info: dropped.map((d) => ({
         id: d.id,
         source_frame_idx: d.source_frame_idx,
-        fields: { name: d.fields.name, email: d.fields.email, mobile: d.fields.mobile, tel: d.fields.tel },
+        fields: {
+          name: d.fields.name,
+          email: d.fields.email,
+          mobile: d.fields.mobile,
+          tel: d.fields.tel,
+        },
       })),
     })
   }
@@ -451,14 +513,21 @@ async function main() {
     }
   }
   finalItems = finalItems.filter((it) => visualKeepSet.has(it.id))
-  console.log(`[meishi] visual dedup: dropped ${visualDroppedCount} near-duplicate item(s)`)
+  console.log(
+    `[meishi] visual dedup: dropped ${visualDroppedCount} near-duplicate item(s)`,
+  )
 
   // Rename final winners to item-XX.<mode>.jpg in items/ for clarity.
-  const sorted = finalItems.sort((a, b) => a.source_frame_idx - b.source_frame_idx)
+  const sorted = finalItems.sort(
+    (a, b) => a.source_frame_idx - b.source_frame_idx,
+  )
   for (let i = 0; i < sorted.length; i++) {
     const it = sorted[i]
     const newName = `${it.mode}-${String(i + 1).padStart(2, '0')}.jpg`
-    await fsp.copyFile(path.join(winnersDir, it.filename), path.join(itemsDir, newName))
+    await fsp.copyFile(
+      path.join(winnersDir, it.filename),
+      path.join(itemsDir, newName),
+    )
     it.image = `items/${newName}`
   }
 
@@ -526,19 +595,27 @@ async function main() {
 // ---- summary.html renderer -------------------------------------------------
 
 function renderMeishiHtml(s) {
-  const cards = s.items.map((it) => {
-    const f = it.fields
-    const fieldsHtml = Object.entries({
-      name: f.name, name_kana: f.name_kana,
-      company: f.company, department: f.department, title: f.title,
-      postal: f.postal, address: f.address,
-      tel: f.tel, fax: f.fax, mobile: f.mobile,
-      email: f.email, url: f.url,
-    })
-      .filter(([, v]) => v != null && v !== '')
-      .map(([k, v]) => `<tr><th>${k}</th><td>${escape(String(v))}</td></tr>`)
-      .join('\n')
-    return `
+  const cards = s.items
+    .map((it) => {
+      const f = it.fields
+      const fieldsHtml = Object.entries({
+        name: f.name,
+        name_kana: f.name_kana,
+        company: f.company,
+        department: f.department,
+        title: f.title,
+        postal: f.postal,
+        address: f.address,
+        tel: f.tel,
+        fax: f.fax,
+        mobile: f.mobile,
+        email: f.email,
+        url: f.url,
+      })
+        .filter(([, v]) => v != null && v !== '')
+        .map(([k, v]) => `<tr><th>${k}</th><td>${escape(String(v))}</td></tr>`)
+        .join('\n')
+      return `
 <section class="item">
   <header>
     <h2>${it.id} <span class="mode mode-${it.mode}">${it.mode}</span></h2>
@@ -552,7 +629,8 @@ function renderMeishiHtml(s) {
   </div>
   ${f.raw_text ? `<details><summary>raw OCR text</summary><pre>${escape(f.raw_text)}</pre></details>` : ''}
 </section>`
-  }).join('\n')
+    })
+    .join('\n')
 
   return `<!DOCTYPE html>
 <html lang="ja">
@@ -601,7 +679,13 @@ ${cards}
 }
 
 function escape(s) {
-  return s.replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]))
+  return s.replace(
+    /[&<>"']/g,
+    (c) =>
+      ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[
+        c
+      ],
+  )
 }
 
 main().catch((err) => {

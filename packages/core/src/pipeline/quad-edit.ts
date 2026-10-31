@@ -31,7 +31,9 @@ export const QUAD_CORNERS = ['tl', 'tr', 'br', 'bl'] as const
 export type QuadCorner = (typeof QUAD_CORNERS)[number]
 
 /** Corners as an ordered list — what a renderer iterates to draw handles. */
-export function quadCornerList(quad: Quad): Array<{ corner: QuadCorner; point: Point }> {
+export function quadCornerList(
+  quad: Quad,
+): Array<{ corner: QuadCorner; point: Point }> {
   return QUAD_CORNERS.map((corner) => ({ corner, point: quad[corner] }))
 }
 
@@ -47,7 +49,11 @@ export function quadCornerList(quad: Quad): Array<{ corner: QuadCorner; point: P
  * together are already a degenerate quad, so the choice only has to be
  * deterministic, not clever.
  */
-export function nearestQuadCorner(quad: Quad, p: Point, maxDist: number): QuadCorner | null {
+export function nearestQuadCorner(
+  quad: Quad,
+  p: Point,
+  maxDist: number,
+): QuadCorner | null {
   let best: QuadCorner | null = null
   let bestDist = Infinity
   for (const corner of QUAD_CORNERS) {
@@ -63,7 +69,11 @@ export function nearestQuadCorner(quad: Quad, p: Point, maxDist: number): QuadCo
 }
 
 /** Clamp a point into `[0, w] x [0, h]` — the frame's own bounds. */
-export function clampPointToFrame(p: Point, frameW: number, frameH: number): Point {
+export function clampPointToFrame(
+  p: Point,
+  frameW: number,
+  frameH: number,
+): Point {
   return {
     x: Math.min(Math.max(p.x, 0), frameW),
     y: Math.min(Math.max(p.y, 0), frameH),
@@ -115,5 +125,10 @@ export function scaleQuad(
   const sx = toW / fromW
   const sy = toH / fromH
   const map = (p: Point): Point => ({ x: p.x * sx, y: p.y * sy })
-  return { tl: map(quad.tl), tr: map(quad.tr), br: map(quad.br), bl: map(quad.bl) }
+  return {
+    tl: map(quad.tl),
+    tr: map(quad.tr),
+    br: map(quad.br),
+    bl: map(quad.bl),
+  }
 }

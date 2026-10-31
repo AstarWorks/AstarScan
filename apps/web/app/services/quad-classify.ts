@@ -51,7 +51,10 @@ const TARGET_BASE_LONG: Record<Exclude<DocumentMode, 'other'>, number> = {
   receipt: 1500,
 }
 
-function dist(a: { x: number; y: number }, b: { x: number; y: number }): number {
+function dist(
+  a: { x: number; y: number },
+  b: { x: number; y: number },
+): number {
   const dx = a.x - b.x
   const dy = a.y - b.y
   return Math.sqrt(dx * dx + dy * dy)
@@ -86,8 +89,10 @@ function isConvex(q: Quad): boolean {
 
 function selfIntersects(q: Quad): boolean {
   const pts = [q.tl, q.tr, q.br, q.bl]
-  return segIntersect(pts[0]!, pts[1]!, pts[2]!, pts[3]!) ||
+  return (
+    segIntersect(pts[0]!, pts[1]!, pts[2]!, pts[3]!) ||
     segIntersect(pts[1]!, pts[2]!, pts[3]!, pts[0]!)
+  )
 }
 
 function segIntersect(
@@ -96,14 +101,19 @@ function segIntersect(
   p3: { x: number; y: number },
   p4: { x: number; y: number },
 ): boolean {
-  const d = (a: { x: number; y: number }, b: { x: number; y: number }, c: { x: number; y: number }) =>
-    (c.x - a.x) * (b.y - a.y) - (b.x - a.x) * (c.y - a.y)
+  const d = (
+    a: { x: number; y: number },
+    b: { x: number; y: number },
+    c: { x: number; y: number },
+  ) => (c.x - a.x) * (b.y - a.y) - (b.x - a.x) * (c.y - a.y)
   const d1 = d(p3, p4, p1)
   const d2 = d(p3, p4, p2)
   const d3 = d(p1, p2, p3)
   const d4 = d(p1, p2, p4)
-  return ((d1 > 0 && d2 < 0) || (d1 < 0 && d2 > 0)) &&
+  return (
+    ((d1 > 0 && d2 < 0) || (d1 < 0 && d2 > 0)) &&
     ((d3 > 0 && d4 < 0) || (d3 < 0 && d4 > 0))
+  )
 }
 
 export function classifyQuad(
@@ -112,10 +122,20 @@ export function classifyQuad(
   frameH: number,
 ): QuadClassification {
   if (!isConvex(quad)) {
-    return { mode: 'other', aspect: 0, area_fraction: 0, rejection_reason: 'non-convex' }
+    return {
+      mode: 'other',
+      aspect: 0,
+      area_fraction: 0,
+      rejection_reason: 'non-convex',
+    }
   }
   if (selfIntersects(quad)) {
-    return { mode: 'other', aspect: 0, area_fraction: 0, rejection_reason: 'self-intersecting' }
+    return {
+      mode: 'other',
+      aspect: 0,
+      area_fraction: 0,
+      rejection_reason: 'self-intersecting',
+    }
   }
 
   const w = (dist(quad.tl, quad.tr) + dist(quad.bl, quad.br)) / 2
@@ -127,10 +147,20 @@ export function classifyQuad(
   const area_fraction = area / (frameW * frameH)
 
   if (area_fraction < MIN_AREA_FRACTION) {
-    return { mode: 'other', aspect, area_fraction, rejection_reason: 'too-small' }
+    return {
+      mode: 'other',
+      aspect,
+      area_fraction,
+      rejection_reason: 'too-small',
+    }
   }
   if (area_fraction > MAX_AREA_FRACTION) {
-    return { mode: 'other', aspect, area_fraction, rejection_reason: 'too-large' }
+    return {
+      mode: 'other',
+      aspect,
+      area_fraction,
+      rejection_reason: 'too-large',
+    }
   }
 
   for (const [mode, [lo, hi]] of Object.entries(ASPECT_BANDS) as [
@@ -140,9 +170,10 @@ export function classifyQuad(
     if (r >= lo && r <= hi) {
       const longSide = TARGET_BASE_LONG[mode]
       const shortSide = Math.round(longSide / r)
-      const target = aspect >= 1
-        ? { width: longSide, height: shortSide }
-        : { width: shortSide, height: longSide }
+      const target =
+        aspect >= 1
+          ? { width: longSide, height: shortSide }
+          : { width: shortSide, height: longSide }
       return { mode, aspect, area_fraction, target }
     }
   }

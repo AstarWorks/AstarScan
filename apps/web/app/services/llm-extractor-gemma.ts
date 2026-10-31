@@ -31,7 +31,7 @@ import { extractRuleFields } from './extractor-rule'
 export interface LlmProgress {
   readonly stage: 'load' | 'inference'
   readonly file?: string
-  readonly progress?: number   // 0..1
+  readonly progress?: number // 0..1
   readonly note?: string
 }
 
@@ -66,21 +66,26 @@ export async function ensureLlmReady(
     const processor = await AutoProcessor.from_pretrained(MODEL_ID)
     onProgress?.({ stage: 'load', note: 'model weights (~3 GB)' })
 
-    const model = await Gemma4ForConditionalGeneration.from_pretrained(MODEL_ID, {
-      dtype: 'q4f16',
-      device: 'webgpu',
-      // transformers.js progress_callback is loosely typed; cast through any
-      progress_callback: ((p: unknown) => {
-        const info = p as { file?: string; progress?: number }
-        onProgress?.({
-          stage: 'load',
-          file: info.file,
-          progress:
-            typeof info.progress === 'number' ? info.progress / 100 : undefined,
-        })
-        // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      }) as any,
-    })
+    const model = await Gemma4ForConditionalGeneration.from_pretrained(
+      MODEL_ID,
+      {
+        dtype: 'q4f16',
+        device: 'webgpu',
+        // transformers.js progress_callback is loosely typed; cast through any
+        progress_callback: ((p: unknown) => {
+          const info = p as { file?: string; progress?: number }
+          onProgress?.({
+            stage: 'load',
+            file: info.file,
+            progress:
+              typeof info.progress === 'number'
+                ? info.progress / 100
+                : undefined,
+          })
+          // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        }) as any,
+      },
+    )
     const s: LlmState = { processor, model }
     state = s
     return s
@@ -197,7 +202,8 @@ export async function extractWithLlm(
     sns_handles: Array.isArray(parsed.sns_handles) ? parsed.sns_handles : [],
     raw_text: raw,
     language: 'ja',
-    confidence: parsed.name && (rule.email || rule.tel || rule.mobile) ? 0.9 : 0.5,
+    confidence:
+      parsed.name && (rule.email || rule.tel || rule.mobile) ? 0.9 : 0.5,
   }
   return { fields, raw_response: raw, duration_ms }
 }

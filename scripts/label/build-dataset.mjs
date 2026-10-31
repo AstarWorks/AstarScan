@@ -51,7 +51,10 @@ function toYoloLine(points) {
   // hand-occlusion case we need it to extrapolate. Skip a frame instead
   // of marking a corner v=0.
   const kp = points
-    .map((p) => `${clamp01(p[0]).toFixed(6)} ${clamp01(p[1]).toFixed(6)} ${p[2] ? 1 : 2}`)
+    .map(
+      (p) =>
+        `${clamp01(p[0]).toFixed(6)} ${clamp01(p[1]).toFixed(6)} ${p[2] ? 1 : 2}`,
+    )
     .join(' ')
   return `0 ${cx.toFixed(6)} ${cy.toFixed(6)} ${w.toFixed(6)} ${h.toFixed(6)} ${kp}`
 }
@@ -135,15 +138,25 @@ async function main() {
   try {
     annots = JSON.parse(await fs.readFile(ANNOT_PATH, 'utf8'))
   } catch {
-    console.error(`[build] no annotations at ${path.relative(REPO_ROOT, ANNOT_PATH)} — run the labeler first:`)
+    console.error(
+      `[build] no annotations at ${path.relative(REPO_ROOT, ANNOT_PATH)} — run the labeler first:`,
+    )
     console.error('         bun scripts/label/server.mjs')
     process.exit(1)
   }
 
   const files = Object.keys(annots).sort()
-  const labeled = files.filter((f) => annots[f] && !annots[f].skipped && Array.isArray(annots[f].points) && annots[f].points.length === 4)
+  const labeled = files.filter(
+    (f) =>
+      annots[f] &&
+      !annots[f].skipped &&
+      Array.isArray(annots[f].points) &&
+      annots[f].points.length === 4,
+  )
   const skipped = files.filter((f) => annots[f] && annots[f].skipped)
-  const allRaw = (await fs.readdir(RAW_DIR)).filter((f) => /\.(jpe?g|png)$/i.test(f))
+  const allRaw = (await fs.readdir(RAW_DIR)).filter((f) =>
+    /\.(jpe?g|png)$/i.test(f),
+  )
   const unlabeled = allRaw.length - labeled.length - skipped.length
 
   if (labeled.length === 0) {
@@ -184,7 +197,10 @@ async function main() {
     if (split === 'val') nVal += 1
     else nTrain += 1
     const base = file.replace(/\.[^.]+$/, '')
-    await fs.copyFile(path.join(RAW_DIR, file), path.join(OUT_DIR, 'images', split, file))
+    await fs.copyFile(
+      path.join(RAW_DIR, file),
+      path.join(OUT_DIR, 'images', split, file),
+    )
     await fs.writeFile(
       path.join(OUT_DIR, 'labels', split, base + '.txt'),
       toYoloLine(annots[file].points) + '\n',
@@ -202,20 +218,40 @@ async function main() {
     await fs.rm(archive, { force: true })
     z = spawnSync('tar', ['czf', archive, '-C', DATASET_DIR, 'yolo'])
     if (z.error || z.status !== 0) {
-      console.warn('[build] both zip and tar failed — the yolo/ folder is ready, archive it manually.')
+      console.warn(
+        '[build] both zip and tar failed — the yolo/ folder is ready, archive it manually.',
+      )
       archive = null
     }
   }
 
   console.log('[build] done.')
-  console.log(`  labeled=${labeled.length}  (train=${nTrain}, val=${nVal})  skipped=${skipped.length}  unlabeled=${unlabeled}`)
-  console.log(`  distinct scenes (dedup groups)=${nGroups} → val is ${nVal} frames from held-out groups (no train near-dupes)`)
+  console.log(
+    `  labeled=${labeled.length}  (train=${nTrain}, val=${nVal})  skipped=${skipped.length}  unlabeled=${unlabeled}`,
+  )
+  console.log(
+    `  distinct scenes (dedup groups)=${nGroups} → val is ${nVal} frames from held-out groups (no train near-dupes)`,
+  )
   console.log(`  dataset:  ${path.relative(REPO_ROOT, OUT_DIR)}/`)
-  if (archive) console.log(`  archive:  ${path.relative(REPO_ROOT, archive)}  → upload to Colab/Kaggle`)
-  if (unlabeled > 0) console.log(`  note: ${unlabeled} frame(s) still unlabeled — run the labeler to finish, or proceed with ${labeled.length}.`)
-  if (labeled.length < 150) console.log('  warn: <150 labeled frames may underfit; aim for ~250 (see training doc).')
-  if (nGroups < 25) console.log(`  warn: only ${nGroups} distinct scenes — low diversity; in-distribution val will flatter. Validate on a HELD-OUT video.`)
-  console.log('  honest test: both eval mp4s are training sources — judge generalization on a held-out video (e.g. 20260516_*.mp4) via scripts/eval/run.mjs.')
+  if (archive)
+    console.log(
+      `  archive:  ${path.relative(REPO_ROOT, archive)}  → upload to Colab/Kaggle`,
+    )
+  if (unlabeled > 0)
+    console.log(
+      `  note: ${unlabeled} frame(s) still unlabeled — run the labeler to finish, or proceed with ${labeled.length}.`,
+    )
+  if (labeled.length < 150)
+    console.log(
+      '  warn: <150 labeled frames may underfit; aim for ~250 (see training doc).',
+    )
+  if (nGroups < 25)
+    console.log(
+      `  warn: only ${nGroups} distinct scenes — low diversity; in-distribution val will flatter. Validate on a HELD-OUT video.`,
+    )
+  console.log(
+    '  honest test: both eval mp4s are training sources — judge generalization on a held-out video (e.g. 20260516_*.mp4) via scripts/eval/run.mjs.',
+  )
 }
 
 main()

@@ -59,10 +59,7 @@ const SCHEMA_INSTRUCTION = `この画像は日本語の名刺です。以下の 
 const messages = [
   {
     role: 'user',
-    content: [
-      { type: 'image' },
-      { type: 'text', text: SCHEMA_INSTRUCTION },
-    ],
+    content: [{ type: 'image' }, { type: 'text', text: SCHEMA_INSTRUCTION }],
   },
 ]
 

@@ -58,7 +58,12 @@ interface GrayImage {
 function canvasToGray(canvas: HTMLCanvasElement): GrayImage {
   const ctx = canvas.getContext('2d', { willReadFrequently: true })
   if (!ctx) throw new Error('Failed to create 2D context')
-  const { data, width, height } = ctx.getImageData(0, 0, canvas.width, canvas.height)
+  const { data, width, height } = ctx.getImageData(
+    0,
+    0,
+    canvas.width,
+    canvas.height,
+  )
   const gray = new Float32Array(width * height)
   for (let i = 0, j = 0; i < data.length; i += 4, j++) {
     gray[j] = 0.299 * data[i]! + 0.587 * data[i + 1]! + 0.114 * data[i + 2]!
@@ -93,12 +98,19 @@ function edgeDensity(gray: GrayImage): number {
     for (let x = 1; x < width - 1; x++) {
       const i = y * width + x
       const gx =
-        -data[i - width - 1]! + data[i - width + 1]! +
-        -2 * data[i - 1]! + 2 * data[i + 1]! +
-        -data[i + width - 1]! + data[i + width + 1]!
+        -data[i - width - 1]! +
+        data[i - width + 1]! +
+        -2 * data[i - 1]! +
+        2 * data[i + 1]! +
+        -data[i + width - 1]! +
+        data[i + width + 1]!
       const gy =
-        -data[i - width - 1]! - 2 * data[i - width]! - data[i - width + 1]! +
-        data[i + width - 1]! + 2 * data[i + width]! + data[i + width + 1]!
+        -data[i - width - 1]! -
+        2 * data[i - width]! -
+        data[i - width + 1]! +
+        data[i + width - 1]! +
+        2 * data[i + width]! +
+        data[i + width + 1]!
       const mag = Math.sqrt(gx * gx + gy * gy)
       if (mag > MAG_THRESHOLD) edges++
       total++
@@ -107,7 +119,9 @@ function edgeDensity(gray: GrayImage): number {
   return total > 0 ? edges / total : 0
 }
 
-export function isLikelyDocument(canvas: HTMLCanvasElement): DocumentLikenessResult {
+export function isLikelyDocument(
+  canvas: HTMLCanvasElement,
+): DocumentLikenessResult {
   const gray = canvasToGray(canvas)
   const { variance } = meanAndVariance(gray)
   const density = edgeDensity(gray)
@@ -115,7 +129,12 @@ export function isLikelyDocument(canvas: HTMLCanvasElement): DocumentLikenessRes
     return { ok: false, reason: 'low-variance', variance, edgeDensity: density }
   }
   if (density < EDGE_DENSITY_MIN) {
-    return { ok: false, reason: 'low-edge-density', variance, edgeDensity: density }
+    return {
+      ok: false,
+      reason: 'low-edge-density',
+      variance,
+      edgeDensity: density,
+    }
   }
   return { ok: true, variance, edgeDensity: density }
 }
@@ -129,8 +148,12 @@ function sobelHorizontal(gray: GrayImage): Float32Array {
     for (let x = 1; x < width - 1; x++) {
       const i = y * width + x
       const gy =
-        -data[i - width - 1]! - 2 * data[i - width]! - data[i - width + 1]! +
-        data[i + width - 1]! + 2 * data[i + width]! + data[i + width + 1]!
+        -data[i - width - 1]! -
+        2 * data[i - width]! -
+        data[i - width + 1]! +
+        data[i + width - 1]! +
+        2 * data[i + width]! +
+        data[i + width + 1]!
       out[i] = gy
     }
   }
@@ -144,16 +167,23 @@ function sobelVertical(gray: GrayImage): Float32Array {
     for (let x = 1; x < width - 1; x++) {
       const i = y * width + x
       const gx =
-        -data[i - width - 1]! + data[i - width + 1]! +
-        -2 * data[i - 1]! + 2 * data[i + 1]! +
-        -data[i + width - 1]! + data[i + width + 1]!
+        -data[i - width - 1]! +
+        data[i - width + 1]! +
+        -2 * data[i - 1]! +
+        2 * data[i + 1]! +
+        -data[i + width - 1]! +
+        data[i + width + 1]!
       out[i] = gx
     }
   }
   return out
 }
 
-function lineStrengthRow(sobelData: Float32Array, w: number, r: number): number {
+function lineStrengthRow(
+  sobelData: Float32Array,
+  w: number,
+  r: number,
+): number {
   let strong = 0
   for (let c = 0; c < w; c++) {
     if (Math.abs(sobelData[r * w + c]!) > 64) strong++
@@ -180,7 +210,9 @@ function findEdgeInset(
 ): number {
   const { width: W, height: H } = gray
   const isHorizontal = side === 'top' || side === 'bottom'
-  const stripMax = Math.floor((isHorizontal ? H : W) * REFINE_MAX_STRIP_FRACTION)
+  const stripMax = Math.floor(
+    (isHorizontal ? H : W) * REFINE_MAX_STRIP_FRACTION,
+  )
   if (stripMax < 2) return 0
 
   const sobel = isHorizontal ? sobelHorizontal(gray) : sobelVertical(gray)
@@ -238,7 +270,14 @@ export function refineCardEdges(canvas: HTMLCanvasElement): RefineResult {
   const H = canvas.height
   const newW = W - inset.left - inset.right
   const newH = H - inset.top - inset.bottom
-  if (newW <= 0 || newH <= 0 || (inset.top === 0 && inset.bottom === 0 && inset.left === 0 && inset.right === 0)) {
+  if (
+    newW <= 0 ||
+    newH <= 0 ||
+    (inset.top === 0 &&
+      inset.bottom === 0 &&
+      inset.left === 0 &&
+      inset.right === 0)
+  ) {
     return { canvas, inset }
   }
   // CRITICAL: do NOT resize back to (W, H). Asymmetric insets would

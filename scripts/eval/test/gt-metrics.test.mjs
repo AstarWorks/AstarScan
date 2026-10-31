@@ -11,7 +11,11 @@ const manifest = {
   ],
 }
 
-const assign = (pageId, extra = {}) => ({ pageId, mergeSuspect: false, ...extra })
+const assign = (pageId, extra = {}) => ({
+  pageId,
+  mergeSuspect: false,
+  ...extra,
+})
 
 describe('computeGtMetrics', () => {
   it('computes per-page recall over non-optional pages only', () => {

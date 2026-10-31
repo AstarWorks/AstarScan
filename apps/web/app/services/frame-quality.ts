@@ -40,7 +40,12 @@ interface GrayImage {
 function canvasToGray(canvas: HTMLCanvasElement): GrayImage {
   const ctx = canvas.getContext('2d', { willReadFrequently: true })
   if (!ctx) throw new Error('Failed to create 2D context')
-  const { data, width, height } = ctx.getImageData(0, 0, canvas.width, canvas.height)
+  const { data, width, height } = ctx.getImageData(
+    0,
+    0,
+    canvas.width,
+    canvas.height,
+  )
   const gray = new Float32Array(width * height)
   for (let i = 0, j = 0; i < data.length; i += 4, j++) {
     gray[j] = 0.299 * data[i]! + 0.587 * data[i + 1]! + 0.114 * data[i + 2]!
@@ -51,15 +56,24 @@ function canvasToGray(canvas: HTMLCanvasElement): GrayImage {
 /** Laplacian variance inside [x1,y1,x2,y2] sub-window of gray. */
 function lapVarianceInRegion(
   gray: GrayImage,
-  x1: number, y1: number, x2: number, y2: number,
+  x1: number,
+  y1: number,
+  x2: number,
+  y2: number,
 ): number {
-  let sum = 0, sumSq = 0, n = 0
+  let sum = 0,
+    sumSq = 0,
+    n = 0
   const w = gray.width
   for (let y = Math.max(1, y1); y < Math.min(gray.height - 1, y2); y++) {
     for (let x = Math.max(1, x1); x < Math.min(w - 1, x2); x++) {
       const i = y * w + x
-      const v = -4 * gray.data[i]! + gray.data[i - 1]! + gray.data[i + 1]! +
-        gray.data[i - w]! + gray.data[i + w]!
+      const v =
+        -4 * gray.data[i]! +
+        gray.data[i - 1]! +
+        gray.data[i + 1]! +
+        gray.data[i - w]! +
+        gray.data[i + w]!
       sum += v
       sumSq += v * v
       n++
@@ -72,20 +86,31 @@ function lapVarianceInRegion(
 
 function tenengradInRegion(
   gray: GrayImage,
-  x1: number, y1: number, x2: number, y2: number,
+  x1: number,
+  y1: number,
+  x2: number,
+  y2: number,
 ): number {
-  let acc = 0, n = 0
+  let acc = 0,
+    n = 0
   const w = gray.width
   for (let y = Math.max(1, y1); y < Math.min(gray.height - 1, y2); y++) {
     for (let x = Math.max(1, x1); x < Math.min(w - 1, x2); x++) {
       const i = y * w + x
       const gx =
-        -gray.data[i - w - 1]! + gray.data[i - w + 1]! +
-        -2 * gray.data[i - 1]! + 2 * gray.data[i + 1]! +
-        -gray.data[i + w - 1]! + gray.data[i + w + 1]!
+        -gray.data[i - w - 1]! +
+        gray.data[i - w + 1]! +
+        -2 * gray.data[i - 1]! +
+        2 * gray.data[i + 1]! +
+        -gray.data[i + w - 1]! +
+        gray.data[i + w + 1]!
       const gy =
-        -gray.data[i - w - 1]! - 2 * gray.data[i - w]! - gray.data[i - w + 1]! +
-        gray.data[i + w - 1]! + 2 * gray.data[i + w]! + gray.data[i + w + 1]!
+        -gray.data[i - w - 1]! -
+        2 * gray.data[i - w]! -
+        gray.data[i - w + 1]! +
+        gray.data[i + w - 1]! +
+        2 * gray.data[i + w]! +
+        gray.data[i + w + 1]!
       acc += gx * gx + gy * gy
       n++
     }
@@ -95,9 +120,13 @@ function tenengradInRegion(
 
 function glareCountInRegion(
   gray: GrayImage,
-  x1: number, y1: number, x2: number, y2: number,
+  x1: number,
+  y1: number,
+  x2: number,
+  y2: number,
 ): { hits: number; total: number } {
-  let hits = 0, total = 0
+  let hits = 0,
+    total = 0
   const w = gray.width
   for (let y = Math.max(0, y1); y < Math.min(gray.height, y2); y++) {
     for (let x = Math.max(0, x1); x < Math.min(w, x2); x++) {
@@ -122,7 +151,11 @@ export function scoreFrame(args: {
     return { score: 0, components: { reason: 'no-text' } }
   }
   const gray = canvasToGray(canvas)
-  let lapSum = 0, tenSum = 0, glareHits = 0, glareTotal = 0, bboxCount = 0
+  let lapSum = 0,
+    tenSum = 0,
+    glareHits = 0,
+    glareTotal = 0,
+    bboxCount = 0
   for (const p of paragraphs) {
     const [x1, y1, x2, y2] = p.box
     const w = Math.round(x2 - x1)
@@ -141,7 +174,8 @@ export function scoreFrame(args: {
   const lapAvg = lapSum / bboxCount
   const tenAvg = tenSum / bboxCount
   const glareFrac = glareHits / glareTotal
-  let ocrConfSum = 0, ocrConfCount = 0
+  let ocrConfSum = 0,
+    ocrConfCount = 0
   for (const p of paragraphs) {
     if (typeof p.confidence === 'number') {
       ocrConfSum += p.confidence
@@ -149,7 +183,8 @@ export function scoreFrame(args: {
     }
   }
   const ocrConf = ocrConfCount > 0 ? ocrConfSum / ocrConfCount : 1.0
-  const score = (lapAvg * 0.4 + tenAvg * 0.3) * ocrConf * Math.max(0.1, 1 - glareFrac)
+  const score =
+    (lapAvg * 0.4 + tenAvg * 0.3) * ocrConf * Math.max(0.1, 1 - glareFrac)
   return {
     score,
     components: {

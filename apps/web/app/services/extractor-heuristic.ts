@@ -40,35 +40,108 @@ export interface HeuristicFields {
 }
 
 const COMPANY_KEYWORDS = [
-  '株式会社', '有限会社', '合同会社', '合名会社', '合資会社',
-  '一般社団法人', '一般財団法人', '公益社団法人', '公益財団法人',
-  '社会福祉法人', '医療法人', '学校法人', '宗教法人',
-  '(株)', '（株）', '(有)', '（有)', '（有）',
-  'Co.,Ltd', 'Co., Ltd', 'Inc.', 'LLC', 'Ltd.', 'Corp.', 'Company',
+  '株式会社',
+  '有限会社',
+  '合同会社',
+  '合名会社',
+  '合資会社',
+  '一般社団法人',
+  '一般財団法人',
+  '公益社団法人',
+  '公益財団法人',
+  '社会福祉法人',
+  '医療法人',
+  '学校法人',
+  '宗教法人',
+  '(株)',
+  '（株）',
+  '(有)',
+  '（有)',
+  '（有）',
+  'Co.,Ltd',
+  'Co., Ltd',
+  'Inc.',
+  'LLC',
+  'Ltd.',
+  'Corp.',
+  'Company',
 ]
 const TITLE_KEYWORDS = [
-  '代表取締役', '代表者', '代表', '取締役', '社長', '副社長',
-  '専務', '常務', '監査役',
-  '会長', '副会長', '理事長', '理事', '顧問', '相談役',
-  '本部長', '事業部長', '部長', '次長', '課長', '係長', '主任',
-  '主査', '主事', '担当', '幹事',
-  'マネージャー', 'マネジャー', 'Manager', 'Director', 'President',
-  'CEO', 'CTO', 'CFO', 'COO', 'VP',
-  '委員', '青年委員', '会員',
+  '代表取締役',
+  '代表者',
+  '代表',
+  '取締役',
+  '社長',
+  '副社長',
+  '専務',
+  '常務',
+  '監査役',
+  '会長',
+  '副会長',
+  '理事長',
+  '理事',
+  '顧問',
+  '相談役',
+  '本部長',
+  '事業部長',
+  '部長',
+  '次長',
+  '課長',
+  '係長',
+  '主任',
+  '主査',
+  '主事',
+  '担当',
+  '幹事',
+  'マネージャー',
+  'マネジャー',
+  'Manager',
+  'Director',
+  'President',
+  'CEO',
+  'CTO',
+  'CFO',
+  'COO',
+  'VP',
+  '委員',
+  '青年委員',
+  '会員',
 ]
 const DEPT_KEYWORDS = [
-  '営業部', '営業課', '営業1部', '営業2部',
-  '総務部', '総務課', '経理部', '経理課',
-  '人事部', '人事課', '広報部', '広報課',
-  '企画部', '企画課', '開発部', '開発課',
-  '事業部', '本部', '局', 'グループ',
-  '部', '課', '室',
+  '営業部',
+  '営業課',
+  '営業1部',
+  '営業2部',
+  '総務部',
+  '総務課',
+  '経理部',
+  '経理課',
+  '人事部',
+  '人事課',
+  '広報部',
+  '広報課',
+  '企画部',
+  '企画課',
+  '開発部',
+  '開発課',
+  '事業部',
+  '本部',
+  '局',
+  'グループ',
+  '部',
+  '課',
+  '室',
 ]
 const ADDRESS_PREFIX = /[都道府県市区町村]/
-const NAME_OBVIOUS_KANJI = /^[\p{Script=Han}々ヵヶ]{2,4}(\s|\u3000)?[\p{Script=Han}々ヵヶ]{0,4}$/u
+const NAME_OBVIOUS_KANJI =
+  /^[\p{Script=Han}々ヵヶ]{2,4}(\s|\u3000)?[\p{Script=Han}々ヵヶ]{0,4}$/u
 
-const COMPANY_KEYWORDS_SORTED = [...COMPANY_KEYWORDS].sort((a, b) => b.length - a.length)
-const TITLE_KEYWORDS_SORTED = [...TITLE_KEYWORDS].sort((a, b) => b.length - a.length)
+const COMPANY_KEYWORDS_SORTED = [...COMPANY_KEYWORDS].sort(
+  (a, b) => b.length - a.length,
+)
+const TITLE_KEYWORDS_SORTED = [...TITLE_KEYWORDS].sort(
+  (a, b) => b.length - a.length,
+)
 
 function compactJa(s: string): string {
   return s.replace(/\s+/g, '')
@@ -103,7 +176,8 @@ function looksLikeAddress(s: string): boolean {
 function looksLikeSlogan(s: string): boolean {
   if (s.length >= 12) return true
   if (/[をにはがでとから]$/.test(s)) return true
-  if (/(ます|です|ました|してください|くださる|つなぐ|始まり)/.test(s)) return true
+  if (/(ます|です|ました|してください|くださる|つなぐ|始まり)/.test(s))
+    return true
   if (/[!！?？♡❤☆★～]/.test(s)) return true
   if (/^[・·-]/.test(s)) return true
   const particleCount = (s.match(/[をにはがでとから]/g) || []).length
@@ -111,28 +185,39 @@ function looksLikeSlogan(s: string): boolean {
   return false
 }
 
-const PERSON_NAME_RX = /^[\p{Script=Han}々]{1,4}[\s\u3000]*[\p{Script=Han}々ぁ-んァ-ヶ]{1,5}$/u
+const PERSON_NAME_RX =
+  /^[\p{Script=Han}々]{1,4}[\s\u3000]*[\p{Script=Han}々ぁ-んァ-ヶ]{1,5}$/u
 const PERSON_NAME_FULL_KANJI_RX = /^[\p{Script=Han}々]{2,6}$/u
 
 function median(arr: readonly number[]): number {
   if (arr.length === 0) return 0
   const sorted = [...arr].sort((a, b) => a - b)
   const mid = Math.floor(sorted.length / 2)
-  return sorted.length % 2 ? sorted[mid]! : (sorted[mid - 1]! + sorted[mid]!) / 2
+  return sorted.length % 2
+    ? sorted[mid]!
+    : (sorted[mid - 1]! + sorted[mid]!) / 2
 }
 
 function nameScore(p: OcrParagraph, allHeights: readonly number[]): number {
   const s = p.contents.replace(/\s+/g, ' ').trim()
   if (s.length === 0 || s.length > 15) return -Infinity
-  if (looksLikeCompany(s) || looksLikeTitle(s) || looksLikeDepartment(s) || looksLikeAddress(s)) return -Infinity
+  if (
+    looksLikeCompany(s) ||
+    looksLikeTitle(s) ||
+    looksLikeDepartment(s) ||
+    looksLikeAddress(s)
+  )
+    return -Infinity
   if (looksLikeSlogan(s)) return -Infinity
   if (/[@:\d-]/.test(s) && !/[\p{Script=Han}]/u.test(s)) return -Infinity
-  if (!/[\p{Script=Han}\p{Script=Hiragana}\p{Script=Katakana}]/u.test(s)) return -Infinity
+  if (!/[\p{Script=Han}\p{Script=Hiragana}\p{Script=Katakana}]/u.test(s))
+    return -Infinity
   if (!/[\p{Script=Han}]/u.test(s)) return -Infinity
 
   let score = 0
   if (PERSON_NAME_RX.test(s)) score += 6
-  if (PERSON_NAME_FULL_KANJI_RX.test(s) && s.length >= 2 && s.length <= 5) score += 5
+  if (PERSON_NAME_FULL_KANJI_RX.test(s) && s.length >= 2 && s.length <= 5)
+    score += 5
   if (NAME_OBVIOUS_KANJI.test(s)) score += 2
   if (s.length <= 6) score += 2
 
@@ -156,12 +241,15 @@ function extractTitleSpan(s: string): string {
   return s
 }
 
-function detectLanguage(paragraphs: readonly OcrParagraph[]): 'ja' | 'en' | 'mixed' {
+function detectLanguage(
+  paragraphs: readonly OcrParagraph[],
+): 'ja' | 'en' | 'mixed' {
   let ja = 0
   let other = 0
   for (const p of paragraphs) {
     for (const c of p.contents) {
-      if (/[\p{Script=Han}\p{Script=Hiragana}\p{Script=Katakana}]/u.test(c)) ja++
+      if (/[\p{Script=Han}\p{Script=Hiragana}\p{Script=Katakana}]/u.test(c))
+        ja++
       else if (/[A-Za-z]/.test(c)) other++
     }
   }
@@ -170,7 +258,9 @@ function detectLanguage(paragraphs: readonly OcrParagraph[]): 'ja' | 'en' | 'mix
   return 'ja'
 }
 
-export function extractHeuristic(paragraphs: readonly OcrParagraph[]): HeuristicFields {
+export function extractHeuristic(
+  paragraphs: readonly OcrParagraph[],
+): HeuristicFields {
   const lang = detectLanguage(paragraphs)
   const rawText = paragraphs.map((p) => p.contents).join('\n')
   const rule = extractRuleFields(rawText)
@@ -197,7 +287,10 @@ export function extractHeuristic(paragraphs: readonly OcrParagraph[]): Heuristic
   for (const ln of lines) {
     const s = ln.text
     if (looksLikeCompany(s)) {
-      const incMarker = /\(株\)|（株）|\(有\)|（有\)|（有）|株式会社|有限会社|合同会社|Co\.?,?\s*Ltd|Inc\./.test(compactJa(s))
+      const incMarker =
+        /\(株\)|（株）|\(有\)|（有\)|（有）|株式会社|有限会社|合同会社|Co\.?,?\s*Ltd|Inc\./.test(
+          compactJa(s),
+        )
       if (!company || (incMarker && !companyHasIncMarker)) {
         company = stripCompanyPrefix(s)
         companyHasIncMarker = incMarker
@@ -206,7 +299,12 @@ export function extractHeuristic(paragraphs: readonly OcrParagraph[]): Heuristic
     if (!title && looksLikeTitle(s)) {
       title = extractTitleSpan(s)
     }
-    if (!department && looksLikeDepartment(s) && !looksLikeTitle(s) && !looksLikeCompany(s)) {
+    if (
+      !department &&
+      looksLikeDepartment(s) &&
+      !looksLikeTitle(s) &&
+      !looksLikeCompany(s)
+    ) {
       department = s
     }
     if (!address && looksLikeAddress(s)) {
@@ -224,7 +322,10 @@ export function extractHeuristic(paragraphs: readonly OcrParagraph[]): Heuristic
       const idx = company.lastIndexOf(kw)
       if (idx > 0 && idx + kw.length === company.length) {
         if (!title) title = kw
-        company = company.slice(0, idx).replace(/\s*\/?$/, '').trim()
+        company = company
+          .slice(0, idx)
+          .replace(/\s*\/?$/, '')
+          .trim()
         break
       }
     }
