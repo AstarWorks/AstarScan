@@ -49,9 +49,9 @@ async function getInstances() {
 
 export interface ValidationResult {
   readonly usable: boolean
-  readonly quality: number       // 1..5
+  readonly quality: number // 1..5
   readonly raw: string
-  readonly reasoning: string      // CoT 「理由:」部分 (空なら raw 全文)
+  readonly reasoning: string // CoT 「理由:」部分 (空なら raw 全文)
   readonly prompt_version: string // "v2-cot"
   readonly duration_ms: number
 }
@@ -92,10 +92,7 @@ export async function validateFrame(
     const messages = [
       {
         role: 'user',
-        content: [
-          { type: 'image' },
-          { type: 'text', text: PROMPT },
-        ],
+        content: [{ type: 'image' }, { type: 'text', text: PROMPT }],
       },
     ]
     const prompt = processor.apply_chat_template(messages, {

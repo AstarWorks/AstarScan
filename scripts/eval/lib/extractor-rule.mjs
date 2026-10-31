@@ -14,16 +14,15 @@
  * Output: { tel, fax, mobile, email, url, postal } with null for missing.
  */
 
-const RE_EMAIL =
-  /[A-Za-z0-9._%+\-]+@[A-Za-z0-9.\-]+\.[A-Za-z]{2,}/g
+const RE_EMAIL = /[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}/g
 
 // Broken-email indicators: YomiToku often splits "info@offisis.co.jp" into
 // "info@" + "0" + "si" + "is.co.jp" or similar fragments separated by
 // newlines. We detect "<localpart>@" alone and a separate ".tld"-bearing
 // fragment, then attempt to stitch with the domain from a URL or company.
-const RE_EMAIL_LOCALPART_ONLY = /([A-Za-z0-9._%+\-]+)@(?!\S*\.\w{2,})/g
+const RE_EMAIL_LOCALPART_ONLY = /([A-Za-z0-9._%+-]+)@(?!\S*\.\w{2,})/g
 const RE_DOMAIN_FRAGMENT =
-  /\b((?:[A-Za-z0-9\-]+\.){1,3}(?:com|jp|net|org|co\.jp|or\.jp|ne\.jp|ac\.jp|go\.jp|gr\.jp|edu|info|biz|app|dev|io|me))\b/gi
+  /\b((?:[A-Za-z0-9-]+\.){1,3}(?:com|jp|net|org|co\.jp|or\.jp|ne\.jp|ac\.jp|go\.jp|gr\.jp|edu|info|biz|app|dev|io|me))\b/gi
 
 // JP phone forms:
 //   0X-XXXX-XXXX (固定)        e.g. 03-3609-3446
@@ -33,16 +32,14 @@ const RE_DOMAIN_FRAGMENT =
 //   090/080/070-XXXX-XXXX (携帯)
 //   +81-X-XXXX-XXXX (国際)
 //   (03) 6908 3210  (parens + spaces — common on cards)
-const RE_PHONE_JP =
-  /(?:\+81[-－―]?[1-9]|0\d{1,4})[-－―]\d{1,4}[-－―]\d{3,4}/g
+const RE_PHONE_JP = /(?:\+81[-－―]?[1-9]|0\d{1,4})[-－―]\d{1,4}[-－―]\d{3,4}/g
 const RE_PHONE_PARENS =
   /(?:\+81|0)\(?\d{1,4}\)?[-－―\s]?\d{1,4}[-－―\s]?\d{3,4}/g
 
 // 〒 + 3-4 digits. Require 〒 to avoid eating the first 7 digits of a phone
 // number like "090-5516-1153". Cards lacking 〒 will miss postal — acceptable
 // false-negative rate; LLM stage covers the remainder.
-const RE_POSTAL_JP =
-  /〒\s*(\d{3}|[０-９]{3})[-－―ー]?\s*(\d{4}|[０-９]{4})/g
+const RE_POSTAL_JP = /〒\s*(\d{3}|[０-９]{3})[-－―ー]?\s*(\d{4}|[０-９]{4})/g
 
 // URL — generous, drops trailing punctuation
 const RE_URL =
@@ -51,9 +48,18 @@ const RE_URL =
 // "TEL:", "FAX:", "Mobile:", "携帯:" prefix capture. Allow parens for forms
 // like "TEL:(03) 6908 3210" common on JP cards.
 const PHONE_DIGITS = `[\\+\\d\\-－―\\s()（）]+`
-const PREFIX_TEL = new RegExp(`(?:TEL|Tel|tel|電話|☎|℡)[:：]?\\s*(${PHONE_DIGITS})`, 'g')
-const PREFIX_FAX = new RegExp(`(?:FAX|Fax|fax|ＦＡＸ)[:：]?\\s*(${PHONE_DIGITS})`, 'g')
-const PREFIX_MOBILE = new RegExp(`(?:Mobile|MOBILE|mobile|携帯|Cell|cell|CELL)[:：]?\\s*(${PHONE_DIGITS})`, 'g')
+const PREFIX_TEL = new RegExp(
+  `(?:TEL|Tel|tel|電話|☎|℡)[:：]?\\s*(${PHONE_DIGITS})`,
+  'g',
+)
+const PREFIX_FAX = new RegExp(
+  `(?:FAX|Fax|fax|ＦＡＸ)[:：]?\\s*(${PHONE_DIGITS})`,
+  'g',
+)
+const PREFIX_MOBILE = new RegExp(
+  `(?:Mobile|MOBILE|mobile|携帯|Cell|cell|CELL)[:：]?\\s*(${PHONE_DIGITS})`,
+  'g',
+)
 
 function normalizeDigits(s) {
   // full-width → half-width digits; normalize separators to '-'; collapse runs.
@@ -69,7 +75,7 @@ function normalizeDigits(s) {
 function normalizePhone(raw) {
   if (!raw) return null
   const d = normalizeDigits(raw)
-  const m = d.match(/(\+?\d[\d\-]{7,18}\d)/)
+  const m = d.match(/(\+?\d[\d-]{7,18}\d)/)
   return m ? m[1] : null
 }
 
@@ -128,8 +134,9 @@ export function extractRuleFields(input) {
       // Strategy 2: derive domain from URL hostname
       let urlHost = null
       if (url) {
-        const um = url.match(/https?:\/\/(?:www\.)?([A-Za-z0-9.\-]+\.[A-Za-z]{2,})/) ||
-          url.match(/(?:www\.)?([A-Za-z0-9.\-]+\.[A-Za-z]{2,})/)
+        const um =
+          url.match(/https?:\/\/(?:www\.)?([A-Za-z0-9.-]+\.[A-Za-z]{2,})/) ||
+          url.match(/(?:www\.)?([A-Za-z0-9.-]+\.[A-Za-z]{2,})/)
         if (um) urlHost = um[1].toLowerCase()
       }
       // Prefer the URL host (more reliable) over loose domain fragments
@@ -172,12 +179,15 @@ export function extractRuleFields(input) {
   RE_PHONE_PARENS.lastIndex = 0
   while ((m = RE_PHONE_PARENS.exec(text)) !== null) {
     const n = normalizeDigits(m[0])
-    if (n.replace(/\D/g, '').length >= 9 && !allBare.includes(n)) allBare.push(n)
+    if (n.replace(/\D/g, '').length >= 9 && !allBare.includes(n))
+      allBare.push(n)
   }
 
   // Disambiguate: a bare number already matched by prefix should not be re-assigned.
   const usedSet = new Set(
-    [telPrefixed, faxPrefixed, mobPrefixed].filter(Boolean).map((s) => s.replace(/\D/g, ''))
+    [telPrefixed, faxPrefixed, mobPrefixed]
+      .filter(Boolean)
+      .map((s) => s.replace(/\D/g, '')),
   )
   const unused = allBare.filter((n) => !usedSet.has(n.replace(/\D/g, '')))
 

@@ -59,7 +59,11 @@ export interface SegmentHooks {
    * overlap between same-page and different-page pairs), so this hook is
    * what decides them. Return null to abstain (treated as "different").
    */
-  verifySame?: (aIdx: number, bIdx: number, gapS: number) => Promise<boolean | null>
+  verifySame?: (
+    aIdx: number,
+    bIdx: number,
+    gapS: number,
+  ) => Promise<boolean | null>
 }
 
 export interface SegmentCut {
@@ -91,7 +95,12 @@ export interface SegmentDebug {
   segments: Array<{ range: [number, number]; n: number; rescued?: true }>
   cuts: SegmentCut[]
   merges: SegmentMerge[]
-  rescues: Array<{ idx: number; t_s: number; score: number; ten: number | undefined }>
+  rescues: Array<{
+    idx: number
+    t_s: number
+    score: number
+    ten: number | undefined
+  }>
 }
 
 export interface SegmentResult<T extends SegmentFrameRecord> {
@@ -123,7 +132,10 @@ export async function clusterBySegments<T extends SegmentFrameRecord>(
 ): Promise<SegmentResult<T>> {
   const o = { ...SEGMENT_DEFAULTS, ...opts }
   if (records.length === 0 && candidates.length === 0) {
-    return { clusters: [], debug: { segments: [], cuts: [], merges: [], rescues: [] } }
+    return {
+      clusters: [],
+      debug: { segments: [], cuts: [], merges: [], rescues: [] },
+    }
   }
 
   // ORB cache: descriptors per frame idx, computed lazily, freed at the end.
@@ -164,12 +176,24 @@ export async function clusterBySegments<T extends SegmentFrameRecord>(
           let same = inliers >= o.cutOrbInliers
           let via: SegmentCut['via'] = 'orb'
           if (!same && hooks.verifySame) {
-            same = (await hooks.verifySame(prev.idx, r.idx, (r.idx - prev.idx) * 0.1)) === true
+            same =
+              (await hooks.verifySame(
+                prev.idx,
+                r.idx,
+                (r.idx - prev.idx) * 0.1,
+              )) === true
             via = 'verify'
           }
           if (!same) {
             split = true
-            cuts.push({ a: prev.idx, b: r.idx, phash: d, gap, orb: inliers, via })
+            cuts.push({
+              a: prev.idx,
+              b: r.idx,
+              phash: d,
+              gap,
+              orb: inliers,
+              via,
+            })
           }
         }
       }
@@ -208,7 +232,10 @@ export async function clusterBySegments<T extends SegmentFrameRecord>(
         // still reachable.
         const margin = Math.floor((hi - lo) * 0.2)
         const inGap = candidates.filter(
-          (c) => c.idx > lo + margin && c.idx < hi - margin && !acceptedIdx.has(c.idx),
+          (c) =>
+            c.idx > lo + margin &&
+            c.idx < hi - margin &&
+            !acceptedIdx.has(c.idx),
         )
         if (!inGap.length) return
         const best = inGap.reduce((b, c) => (c.score > b.score ? c : b))
@@ -237,7 +264,8 @@ export async function clusterBySegments<T extends SegmentFrameRecord>(
       }
     })
     const parent = segs.map((_, i) => i)
-    const find = (i: number): number => (parent[i] === i ? i : (parent[i] = find(parent[i]!)))
+    const find = (i: number): number =>
+      parent[i] === i ? i : (parent[i] = find(parent[i]!))
     const union = (i: number, j: number): void => {
       parent[find(j)] = find(i)
     }
@@ -264,7 +292,10 @@ export async function clusterBySegments<T extends SegmentFrameRecord>(
           } else if (gapS <= o.adjacentGapS && hooks.verifySame) {
             // Classical signals abstained on a temporally adjacent pair —
             // exactly the dense-text blind spot. Ask the content verifier.
-            if ((await hooks.verifySame(a.winner.idx, b.winner.idx, gapS)) === true) {
+            if (
+              (await hooks.verifySame(a.winner.idx, b.winner.idx, gapS)) ===
+              true
+            ) {
               verdict = 'verify-adjacent'
             }
           }
@@ -306,7 +337,12 @@ export async function clusterBySegments<T extends SegmentFrameRecord>(
         })),
         cuts,
         merges: merges.filter((m) => m.verdict || (m.orb ?? 0) >= 15),
-        rescues: rescues.map((r) => ({ idx: r.idx, t_s: r.t_s, score: r.score, ten: r.ten })),
+        rescues: rescues.map((r) => ({
+          idx: r.idx,
+          t_s: r.t_s,
+          score: r.score,
+          ten: r.ten,
+        })),
       },
     }
   } finally {

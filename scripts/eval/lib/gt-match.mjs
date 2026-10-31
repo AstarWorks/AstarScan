@@ -49,11 +49,15 @@ export async function resolveGtManifest({ gtMapArg, repoRoot, mp4Path }) {
   const candidates = []
   if (gtMapArg) {
     candidates.push(
-      gtMapArg.endsWith('.json') ? gtMapArg : path.join(gtMapArg, 'manifest.json'),
+      gtMapArg.endsWith('.json')
+        ? gtMapArg
+        : path.join(gtMapArg, 'manifest.json'),
     )
   } else {
     const base = path.basename(mp4Path, path.extname(mp4Path))
-    candidates.push(path.join(repoRoot, 'test/fixtures/gt', base, 'manifest.json'))
+    candidates.push(
+      path.join(repoRoot, 'test/fixtures/gt', base, 'manifest.json'),
+    )
   }
   for (const p of candidates) {
     try {
@@ -64,7 +68,9 @@ export async function resolveGtManifest({ gtMapArg, repoRoot, mp4Path }) {
     }
   }
   if (gtMapArg) {
-    throw new Error(`--gt-map: manifest not found at ${candidates.join(' or ')}`)
+    throw new Error(
+      `--gt-map: manifest not found at ${candidates.join(' or ')}`,
+    )
   }
   return null
 }
@@ -127,7 +133,9 @@ export async function matchWinnersToGt({ manifestPath, winners }) {
         .map((r) => r.page.id)
       const bestVisual = visual[0]
       const visualOk = (v) =>
-        v && (v.inliers >= VISUAL_MATCH_INLIERS || v.tileDist <= VISUAL_MATCH_TILE_DIST)
+        v &&
+        (v.inliers >= VISUAL_MATCH_INLIERS ||
+          v.tileDist <= VISUAL_MATCH_TILE_DIST)
 
       let pageId = null
       let method = null
@@ -177,7 +185,9 @@ export function computeGtMetrics(manifest, assignments) {
     assignments.filter((a) => a.pageId).map((a) => a.pageId),
   )
   const matchedReal = realPages.filter((p) => matched.has(p.id))
-  const missedPages = realPages.filter((p) => !matched.has(p.id)).map((p) => p.id)
+  const missedPages = realPages
+    .filter((p) => !matched.has(p.id))
+    .map((p) => p.id)
 
   const claimCounts = new Map()
   let duplicates = 0
@@ -205,6 +215,8 @@ export function computeGtMetrics(manifest, assignments) {
     falsePositives,
     falsePositiveRate: total ? +(falsePositives / total).toFixed(3) : 0,
     mergeErrors,
-    flags: assignments.filter((a) => a.flag).map((a) => ({ idx: a.idx, flag: a.flag })),
+    flags: assignments
+      .filter((a) => a.flag)
+      .map((a) => ({ idx: a.idx, flag: a.flag })),
   }
 }

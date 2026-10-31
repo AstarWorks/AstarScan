@@ -5,6 +5,7 @@
  * Run: bun scripts/eval/lib/visualize-quad.mjs <imagePath> [fastvit_t8|lcnet100|fastvit_sa24]
  */
 
+import process from 'node:process'
 import * as fs from 'node:fs'
 import * as path from 'node:path'
 import { jpegToCanvas, canvasToJpegBuffer } from '../canvas-utils.mjs'

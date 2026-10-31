@@ -49,7 +49,7 @@ export interface PairResult {
   readonly same: boolean
   readonly confidence: number
   readonly raw: string
-  readonly reasoning: string      // CoT 「理由:」部分
+  readonly reasoning: string // CoT 「理由:」部分
   readonly prompt_version: string // "v2-cot"
   readonly duration_ms: number
 }

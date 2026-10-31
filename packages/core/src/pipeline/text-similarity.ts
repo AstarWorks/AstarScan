@@ -64,7 +64,8 @@ export function verifySameText(
   opts: VerifySameTextOptions = {},
 ): { same: boolean; jaccard: number; containment: number } | null {
   const minLen = opts.minTextLength ?? VERIFY_MIN_TEXT_LENGTH
-  if (ta == null || tb == null || ta.length < minLen || tb.length < minLen) return null
+  if (ta == null || tb == null || ta.length < minLen || tb.length < minLen)
+    return null
   const { jaccard, containment } = textSimilarity(ta, tb)
   const same =
     jaccard >= (opts.jaccardThreshold ?? VERIFY_JACCARD) ||

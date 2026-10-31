@@ -45,7 +45,10 @@ export interface Context2DLike {
 export interface CanvasLike {
   width: number
   height: number
-  getContext(contextId: '2d', options?: { willReadFrequently?: boolean }): Context2DLike | null
+  getContext(
+    contextId: '2d',
+    options?: { willReadFrequently?: boolean },
+  ): Context2DLike | null
 }
 
 /** Anything drawImage accepts. Both DOM and @napi-rs canvases qualify. */
@@ -130,7 +133,11 @@ export interface CvOrb {
 }
 
 export interface CvBFMatcher {
-  match(queryDescriptors: CvMat, trainDescriptors: CvMat, matches: CvDMatchVector): void
+  match(
+    queryDescriptors: CvMat,
+    trainDescriptors: CvMat,
+    matches: CvDMatchVector,
+  ): void
 }
 
 /**
@@ -150,7 +157,13 @@ export interface CvLike {
   BFMatcher: new (normType: number, crossCheck: boolean) => CvBFMatcher
 
   cvtColor(src: CvMat, dst: CvMat, code: number): void
-  threshold(src: CvMat, dst: CvMat, thresh: number, maxval: number, type: number): number
+  threshold(
+    src: CvMat,
+    dst: CvMat,
+    thresh: number,
+    maxval: number,
+    type: number,
+  ): number
   getStructuringElement(shape: number, ksize: CvSize): CvMat
   morphologyEx(src: CvMat, dst: CvMat, op: number, kernel: CvMat): void
   findContours(

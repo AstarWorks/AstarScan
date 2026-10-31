@@ -20,6 +20,7 @@
  *         + data.yaml
  */
 
+import process from 'node:process'
 import fs from 'node:fs/promises'
 import path from 'node:path'
 import zlib from 'node:zlib'
@@ -65,7 +66,9 @@ function toYoloLine(corners, W, H) {
   const cy = (minY + maxY) / 2
   const w = Math.max(1e-4, maxX - minX)
   const h = Math.max(1e-4, maxY - minY)
-  const kp = corners.map((c) => `${nx(c.x).toFixed(6)} ${ny(c.y).toFixed(6)} 2`).join(' ')
+  const kp = corners
+    .map((c) => `${nx(c.x).toFixed(6)} ${ny(c.y).toFixed(6)} 2`)
+    .join(' ')
   return `0 ${cx.toFixed(6)} ${cy.toFixed(6)} ${w.toFixed(6)} ${h.toFixed(6)} ${kp}`
 }
 
@@ -77,14 +80,32 @@ async function main() {
   try {
     csv = zlib.gunzipSync(await fs.readFile(metaPath)).toString('utf8')
   } catch {
-    console.error(`[smartdoc] missing ${path.relative(REPO_ROOT, metaPath)} — extract frames.tar.gz first.`)
+    console.error(
+      `[smartdoc] missing ${path.relative(REPO_ROOT, metaPath)} — extract frames.tar.gz first.`,
+    )
     process.exit(1)
   }
   const lines = csv.trim().split('\n')
   const header = lines[0].split(',')
   const idx = Object.fromEntries(header.map((h, i) => [h, i]))
-  const need = ['image_path', 'bg_name', 'model_name', 'tl_x', 'tl_y', 'bl_x', 'bl_y', 'br_x', 'br_y', 'tr_x', 'tr_y']
-  for (const n of need) if (idx[n] === undefined) { console.error(`[smartdoc] column ${n} missing`); process.exit(1) }
+  const need = [
+    'image_path',
+    'bg_name',
+    'model_name',
+    'tl_x',
+    'tl_y',
+    'bl_x',
+    'bl_y',
+    'br_x',
+    'br_y',
+    'tr_x',
+    'tr_y',
+  ]
+  for (const n of need)
+    if (idx[n] === undefined) {
+      console.error(`[smartdoc] column ${n} missing`)
+      process.exit(1)
+    }
 
   // Group rows by video = bg_name/model_name.
   const videos = new Map()
@@ -96,7 +117,9 @@ async function main() {
     videos.get(key).push(f)
   }
   const videoKeys = [...videos.keys()].sort()
-  console.log(`[smartdoc] ${lines.length - 1} frames across ${videoKeys.length} videos`)
+  console.log(
+    `[smartdoc] ${lines.length - 1} frames across ${videoKeys.length} videos`,
+  )
 
   // Verify frame resolution is the documented 1920×1080 (sample a few).
   let W = 1920
@@ -104,7 +127,13 @@ async function main() {
   for (const k of videoKeys.slice(0, 5)) {
     const f = videos.get(k)[0]
     const img = await loadImage(path.join(SD, f[idx.image_path]))
-    if (img.width !== 1920 || img.height !== 1080) { W = img.width; H = img.height; console.warn(`[smartdoc] non-1080p frame ${img.width}x${img.height} — reading per-image dims`) }
+    if (img.width !== 1920 || img.height !== 1080) {
+      W = img.width
+      H = img.height
+      console.warn(
+        `[smartdoc] non-1080p frame ${img.width}x${img.height} — reading per-image dims`,
+      )
+    }
   }
   const perImageDims = W !== 1920 || H !== 1080
 
@@ -128,7 +157,13 @@ async function main() {
       let w = W
       let h = H
       if (perImageDims) {
-        try { const im = await loadImage(src); w = im.width; h = im.height } catch { continue }
+        try {
+          const im = await loadImage(src)
+          w = im.width
+          h = im.height
+        } catch {
+          continue
+        }
       }
       const corners = [
         { x: +f[idx.tl_x], y: +f[idx.tl_y] }, // tl
@@ -136,19 +171,30 @@ async function main() {
         { x: +f[idx.br_x], y: +f[idx.br_y] }, // br
         { x: +f[idx.bl_x], y: +f[idx.bl_y] }, // bl
       ]
-      const flat = f[idx.image_path].replace(/\//g, '_').replace(/\.jpe?g$/i, '')
+      const flat = f[idx.image_path]
+        .replace(/\//g, '_')
+        .replace(/\.jpe?g$/i, '')
       try {
         await fs.copyFile(src, path.join(OUT, 'images', split, flat + '.jpg'))
-      } catch { continue }
-      await fs.writeFile(path.join(OUT, 'labels', split, flat + '.txt'), toYoloLine(corners, w, h) + '\n')
+      } catch {
+        continue
+      }
+      await fs.writeFile(
+        path.join(OUT, 'labels', split, flat + '.txt'),
+        toYoloLine(corners, w, h) + '\n',
+      )
       if (split === 'val') nVal += 1
       else nTrain += 1
     }
   }
 
   await fs.writeFile(path.join(OUT, 'data.yaml'), DATA_YAML)
-  console.log(`[smartdoc] wrote ${nTrain + nVal} frames (train=${nTrain}, val=${nVal}) → ${path.relative(REPO_ROOT, OUT)}/`)
-  console.log('[smartdoc] note: landscape 1080p, patterned backgrounds, NO hand occlusion — domain-shifted from our portrait/desk/hands footage. Good v1 base; measure on held-out real video.')
+  console.log(
+    `[smartdoc] wrote ${nTrain + nVal} frames (train=${nTrain}, val=${nVal}) → ${path.relative(REPO_ROOT, OUT)}/`,
+  )
+  console.log(
+    '[smartdoc] note: landscape 1080p, patterned backgrounds, NO hand occlusion — domain-shifted from our portrait/desk/hands footage. Good v1 base; measure on held-out real video.',
+  )
 }
 
 main()

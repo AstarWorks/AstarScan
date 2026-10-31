@@ -67,9 +67,7 @@ export class YoloPoseBackend {
     this.#ready = true
   }
 
-  async detect(
-    frame: HTMLCanvasElement,
-  ): Promise<YoloPoseDetection | null> {
+  async detect(frame: HTMLCanvasElement): Promise<YoloPoseDetection | null> {
     const session = this.#session
     if (!session || !this.#ready) {
       throw new Error('YoloPoseBackend.warmUp() must be called before detect()')
@@ -93,8 +91,7 @@ export class YoloPoseBackend {
     const results = await session.run({ images: tensor })
     // Ultralytics names the output "output0" by default. Fall back to
     // the first tensor if the name has been customized at export time.
-    const out =
-      results['output0'] ?? results[Object.keys(results)[0] ?? '']
+    const out = results['output0'] ?? results[Object.keys(results)[0] ?? '']
     if (!out) return null
 
     const det = decodeYoloOutput(
@@ -119,4 +116,3 @@ export class YoloPoseBackend {
     this.#ready = false
   }
 }
-

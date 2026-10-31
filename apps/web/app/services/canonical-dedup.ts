@@ -105,7 +105,7 @@ class UnionFind {
 function companiesCompatible(a: CanonicalFields, b: CanonicalFields): boolean {
   const ea = normEmail(a.email)
   const eb = normEmail(b.email)
-  if (ea && eb) return ea === eb              // emails contradict or match
+  if (ea && eb) return ea === eb // emails contradict or match
 
   const ca = normName(a.company)
   const cb = normName(b.company)

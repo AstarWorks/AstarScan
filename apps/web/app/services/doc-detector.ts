@@ -115,10 +115,7 @@ export async function detectDocument(
         // and break hash continuity (see module docs).
         return null
       } catch (err) {
-        console.warn(
-          '[doc-detector] ML inference threw, skipping frame',
-          err,
-        )
+        console.warn('[doc-detector] ML inference threw, skipping frame', err)
         return null
       }
     }
@@ -143,7 +140,9 @@ export function getDetectorSource(): 'yolo-pose' | 'opencv' | 'pending' {
 function detectWithOpenCV(frame: HTMLCanvasElement): Quad | null {
   const ops = getPipelineOps()
   if (!ops) return null
-  return ops.detectWithOpenCV(frame as unknown as Parameters<typeof ops.detectWithOpenCV>[0])
+  return ops.detectWithOpenCV(
+    frame as unknown as Parameters<typeof ops.detectWithOpenCV>[0],
+  )
 }
 
 /**

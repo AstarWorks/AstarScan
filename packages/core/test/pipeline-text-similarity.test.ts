@@ -5,8 +5,10 @@ import {
   verifySameText,
 } from '../src/pipeline/text-similarity.js'
 
-const LONG_A = 'この製品を使用する前に必ず取扱説明書をお読みください安全上の注意事項'
-const LONG_B = 'この製品を使用する前に必ず取扱説明書をお読みください警告表示について'
+const LONG_A =
+  'この製品を使用する前に必ず取扱説明書をお読みください安全上の注意事項'
+const LONG_B =
+  'この製品を使用する前に必ず取扱説明書をお読みください警告表示について'
 
 describe('shingles', () => {
   it('produces character 3-grams', () => {
@@ -42,7 +44,8 @@ describe('verifySameText', () => {
   })
 
   it('different page: disjoint content fails', () => {
-    const other = '請求書発行日二〇二六年六月十二日合計金額税込壱萬円也株式会社アスター'
+    const other =
+      '請求書発行日二〇二六年六月十二日合計金額税込壱萬円也株式会社アスター'
     const v = verifySameText(LONG_A, other, 10)
     expect(v?.same).toBe(false)
   })

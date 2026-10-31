@@ -7,10 +7,17 @@ import {
   SEGMENT_DEFAULTS,
   clusterBySegments,
 } from '../src/pipeline/segment-cluster.js'
-import type { SegmentFrameRecord, SegmentHooks } from '../src/pipeline/segment-cluster.js'
+import type {
+  SegmentFrameRecord,
+  SegmentHooks,
+} from '../src/pipeline/segment-cluster.js'
 import type { CanvasLike } from '../src/pipeline/deps.js'
 
-const blank = { width: 64, height: 64, getContext: () => null } as unknown as CanvasLike
+const blank = {
+  width: 64,
+  height: 64,
+  getContext: () => null,
+} as unknown as CanvasLike
 const loadCanvas = async (): Promise<CanvasLike> => blank
 
 /** ORB that never matches anything — the featureless-canvas equivalent. */
@@ -34,13 +41,25 @@ function mix64(x: number | bigint): bigint {
 }
 function rec(idx: number, score = 0.5, bits = idx): SegmentFrameRecord {
   const tile = Array.from({ length: 16 }, (_, t) => mix64(bits * 131 + t))
-  return { idx, t_s: idx * 0.1, hash: mix64(bits) << 192n, tileHash: tile, score, ten: 40 }
+  return {
+    idx,
+    t_s: idx * 0.1,
+    hash: mix64(bits) << 192n,
+    tileHash: tile,
+    score,
+    ten: 40,
+  }
 }
 
 describe('clusterBySegments', () => {
   it('splits on gaps > maxGapFrames and keeps continuous runs together', async () => {
     const records = [rec(0), rec(1), rec(2), rec(50), rec(51)]
-    const { clusters, debug } = await clusterBySegments(records, loadCanvas, {}, hooks())
+    const { clusters, debug } = await clusterBySegments(
+      records,
+      loadCanvas,
+      {},
+      hooks(),
+    )
     expect(debug.segments.map((s) => s.range)).toEqual([
       [0, 2],
       [50, 51],
@@ -59,7 +78,12 @@ describe('clusterBySegments', () => {
 
   it('cuts a suspicious in-run gap when ORB and verifier both say different', async () => {
     const records = [rec(0), rec(1), rec(8), rec(9)] // gap 7 ∈ [5, 10]
-    const { debug } = await clusterBySegments(records, loadCanvas, {}, hooks(async () => false))
+    const { debug } = await clusterBySegments(
+      records,
+      loadCanvas,
+      {},
+      hooks(async () => false),
+    )
     expect(debug.cuts).toHaveLength(1)
     expect(debug.cuts[0]).toMatchObject({ a: 1, b: 8 })
     expect(debug.segments.map((s) => s.range)).toEqual([
@@ -70,7 +94,12 @@ describe('clusterBySegments', () => {
 
   it('bridges a suspicious gap when the verifier says same', async () => {
     const records = [rec(0), rec(1), rec(8), rec(9)]
-    const { debug } = await clusterBySegments(records, loadCanvas, {}, hooks(async () => true))
+    const { debug } = await clusterBySegments(
+      records,
+      loadCanvas,
+      {},
+      hooks(async () => true),
+    )
     expect(debug.cuts).toHaveLength(0)
     expect(debug.segments).toHaveLength(1)
   })
@@ -97,7 +126,12 @@ describe('clusterBySegments', () => {
     // adjacentGapS=3 → 0-1 vs 200-201 (gap ~20 s) must stay separate
     // even with an always-true verifier (no page-revisit support yet).
     const records = [rec(0), rec(1), rec(200), rec(201)]
-    const { clusters } = await clusterBySegments(records, loadCanvas, {}, hooks(async () => true))
+    const { clusters } = await clusterBySegments(
+      records,
+      loadCanvas,
+      {},
+      hooks(async () => true),
+    )
     expect(clusters).toHaveLength(2)
   })
 
@@ -117,26 +151,46 @@ describe('clusterBySegments', () => {
       hooks(async () => false),
       candidates,
     )
-    expect(debug.rescues.map((r) => r.idx).sort((a, b) => a - b)).toEqual([31, 70])
+    expect(debug.rescues.map((r) => r.idx).sort((a, b) => a - b)).toEqual([
+      31, 70,
+    ])
   })
 
   it('does not rescue from short (page-turn) gaps', async () => {
     const records = [rec(0), rec(1), rec(20), rec(21)] // gap 19 < 25
     const candidates = [rec(10, 0.9)]
-    const { debug } = await clusterBySegments(records, loadCanvas, {}, hooks(), candidates)
+    const { debug } = await clusterBySegments(
+      records,
+      loadCanvas,
+      {},
+      hooks(),
+      candidates,
+    )
     expect(debug.rescues).toHaveLength(0)
   })
 
   it('rescues from the tail gap after the last segment', async () => {
     const records = [rec(0), rec(1)]
     const candidates = [rec(40, 0.7), rec(41, 0.5)]
-    const { debug } = await clusterBySegments(records, loadCanvas, {}, hooks(), candidates)
+    const { debug } = await clusterBySegments(
+      records,
+      loadCanvas,
+      {},
+      hooks(),
+      candidates,
+    )
     expect(debug.rescues.map((r) => r.idx)).toEqual([40])
   })
 
   it('handles an all-candidates video (every frame below the gate)', async () => {
     const candidates = [rec(0, 0.4), rec(1, 0.6), rec(60, 0.5)]
-    const { clusters } = await clusterBySegments([], loadCanvas, {}, hooks(), candidates)
+    const { clusters } = await clusterBySegments(
+      [],
+      loadCanvas,
+      {},
+      hooks(),
+      candidates,
+    )
     expect(clusters.length).toBeGreaterThan(0)
   })
 

@@ -58,7 +58,8 @@ export function letterboxToFloat32(
 
   const work = createCanvas(target, target)
   const ctx = work.getContext('2d', { willReadFrequently: true })
-  if (!ctx) throw new Error('scan-core: failed to get 2D context for YOLO letterbox')
+  if (!ctx)
+    throw new Error('scan-core: failed to get 2D context for YOLO letterbox')
   const grey = Math.round(YOLO_PAD_VALUE * 255)
   ctx.fillStyle = `rgb(${grey}, ${grey}, ${grey})`
   ctx.fillRect(0, 0, target, target)
@@ -110,7 +111,12 @@ export function decodeYoloOutput(
     vis.push(v)
   }
   return {
-    quad: { tl: corners[0]!, tr: corners[1]!, br: corners[2]!, bl: corners[3]! },
+    quad: {
+      tl: corners[0]!,
+      tr: corners[1]!,
+      br: corners[2]!,
+      bl: corners[3]!,
+    },
     confidence: bestConf,
     visibility: [vis[0]!, vis[1]!, vis[2]!, vis[3]!],
   }

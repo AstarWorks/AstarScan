@@ -19,13 +19,12 @@ export interface RuleFields {
   readonly postal: string | null
 }
 
-const RE_EMAIL = /[A-Za-z0-9._%+\-]+@[A-Za-z0-9.\-]+\.[A-Za-z]{2,}/g
-const RE_EMAIL_LOCALPART_ONLY = /([A-Za-z0-9._%+\-]+)@(?!\S*\.\w{2,})/g
+const RE_EMAIL = /[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}/g
+const RE_EMAIL_LOCALPART_ONLY = /([A-Za-z0-9._%+-]+)@(?!\S*\.\w{2,})/g
 const RE_DOMAIN_FRAGMENT =
-  /\b((?:[A-Za-z0-9\-]+\.){1,3}(?:com|jp|net|org|co\.jp|or\.jp|ne\.jp|ac\.jp|go\.jp|gr\.jp|edu|info|biz|app|dev|io|me))\b/gi
+  /\b((?:[A-Za-z0-9-]+\.){1,3}(?:com|jp|net|org|co\.jp|or\.jp|ne\.jp|ac\.jp|go\.jp|gr\.jp|edu|info|biz|app|dev|io|me))\b/gi
 
-const RE_PHONE_JP =
-  /(?:\+81[-－―]?[1-9]|0\d{1,4})[-－―]\d{1,4}[-－―]\d{3,4}/g
+const RE_PHONE_JP = /(?:\+81[-－―]?[1-9]|0\d{1,4})[-－―]\d{1,4}[-－―]\d{3,4}/g
 const RE_PHONE_PARENS =
   /(?:\+81|0)\(?\d{1,4}\)?[-－―\s]?\d{1,4}[-－―\s]?\d{3,4}/g
 
@@ -35,9 +34,18 @@ const RE_URL =
   /https?:\/\/[^\s<>"'）)]+|(?<![\w/])(?:www\.)[A-Za-z0-9.\-/_?=&%]+/g
 
 const PHONE_DIGITS = '[\\+\\d\\-－―\\s()（）]+'
-const PREFIX_TEL = new RegExp(`(?:TEL|Tel|tel|電話|☎|℡)[:：]?\\s*(${PHONE_DIGITS})`, 'g')
-const PREFIX_FAX = new RegExp(`(?:FAX|Fax|fax|ＦＡＸ)[:：]?\\s*(${PHONE_DIGITS})`, 'g')
-const PREFIX_MOBILE = new RegExp(`(?:Mobile|MOBILE|mobile|携帯|Cell|cell|CELL)[:：]?\\s*(${PHONE_DIGITS})`, 'g')
+const PREFIX_TEL = new RegExp(
+  `(?:TEL|Tel|tel|電話|☎|℡)[:：]?\\s*(${PHONE_DIGITS})`,
+  'g',
+)
+const PREFIX_FAX = new RegExp(
+  `(?:FAX|Fax|fax|ＦＡＸ)[:：]?\\s*(${PHONE_DIGITS})`,
+  'g',
+)
+const PREFIX_MOBILE = new RegExp(
+  `(?:Mobile|MOBILE|mobile|携帯|Cell|cell|CELL)[:：]?\\s*(${PHONE_DIGITS})`,
+  'g',
+)
 
 function normalizeDigits(s: string): string {
   return s
@@ -52,7 +60,7 @@ function normalizeDigits(s: string): string {
 function normalizePhone(raw: string | undefined | null): string | null {
   if (!raw) return null
   const d = normalizeDigits(raw)
-  const m = d.match(/(\+?\d[\d\-]{7,18}\d)/)
+  const m = d.match(/(\+?\d[\d-]{7,18}\d)/)
   return m ? m[1]! : null
 }
 
@@ -103,14 +111,16 @@ export function extractRuleFields(
       let urlHost: string | null = null
       if (url) {
         const um =
-          url.match(/https?:\/\/(?:www\.)?([A-Za-z0-9.\-]+\.[A-Za-z]{2,})/) ||
-          url.match(/(?:www\.)?([A-Za-z0-9.\-]+\.[A-Za-z]{2,})/)
+          url.match(/https?:\/\/(?:www\.)?([A-Za-z0-9.-]+\.[A-Za-z]{2,})/) ||
+          url.match(/(?:www\.)?([A-Za-z0-9.-]+\.[A-Za-z]{2,})/)
         if (um && um[1]) urlHost = um[1].toLowerCase()
       }
       const candidate = urlHost ?? domainMatches[0]
       if (candidate) {
         const synthesized = `${localpart}@${candidate}`
-        if (/^[A-Za-z0-9._%+\-]+@[A-Za-z0-9.\-]+\.[A-Za-z]{2,}$/.test(synthesized)) {
+        if (
+          /^[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}$/.test(synthesized)
+        ) {
           email = synthesized
         }
       }
@@ -140,7 +150,8 @@ export function extractRuleFields(
   RE_PHONE_PARENS.lastIndex = 0
   while ((m = RE_PHONE_PARENS.exec(text)) !== null) {
     const n = normalizeDigits(m[0])
-    if (n.replace(/\D/g, '').length >= 9 && !allBare.includes(n)) allBare.push(n)
+    if (n.replace(/\D/g, '').length >= 9 && !allBare.includes(n))
+      allBare.push(n)
   }
 
   const usedSet = new Set(

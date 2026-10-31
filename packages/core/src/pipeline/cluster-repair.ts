@@ -38,7 +38,9 @@ import type { SegmentCluster, SegmentFrameRecord } from './segment-cluster.js'
  * Callers must not pass an empty array; a cluster with no members is not
  * representable.
  */
-export function pickWinner<T extends SegmentFrameRecord>(members: readonly T[]): T {
+export function pickWinner<T extends SegmentFrameRecord>(
+  members: readonly T[],
+): T {
   return members.reduce((best, m) => (m.score > best.score ? m : best))
 }
 
@@ -55,7 +57,9 @@ function sorted<T extends SegmentFrameRecord>(
 }
 
 /** Rebuild a cluster from members, re-electing the winner by the shared rule. */
-function fromMembers<T extends SegmentFrameRecord>(members: readonly T[]): SegmentCluster<T> {
+function fromMembers<T extends SegmentFrameRecord>(
+  members: readonly T[],
+): SegmentCluster<T> {
   const ordered = byIdx(members)
   return { winner: pickWinner(ordered), members: ordered }
 }
@@ -170,7 +174,9 @@ export function updateClusterCrop<T extends SegmentFrameRecord>(
   if (!target) return [...clusters]
 
   const winner: T = { ...target.winner, ...patch }
-  const members = byIdx(target.members).map((m) => (m.idx === winner.idx ? winner : m))
+  const members = byIdx(target.members).map((m) =>
+    m.idx === winner.idx ? winner : m,
+  )
   const rest = clusters.filter((c) => c.winner.idx !== key)
   return sorted([...rest, { winner, members }])
 }

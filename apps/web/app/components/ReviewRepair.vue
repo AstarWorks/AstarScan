@@ -60,7 +60,9 @@ const emit = defineEmits<{
   editQuad: [clusterKey: number]
 }>()
 
-const repairable = computed(() => props.pages.filter((p) => p.clusterKey !== undefined))
+const repairable = computed(() =>
+  props.pages.filter((p) => p.clusterKey !== undefined),
+)
 const canMerge = computed(() => props.selected.length >= 2)
 
 function isSelected(key: number | undefined): boolean {
@@ -78,7 +80,9 @@ function canSplitAt(i: number): boolean {
     <header class="repair__bar">
       <p class="repair__count">
         {{ repairable.length }} ページ
-        <span v-if="selected.length" class="repair__sel">/ {{ selected.length }} 選択中</span>
+        <span v-if="selected.length" class="repair__sel"
+          >/ {{ selected.length }} 選択中</span
+        >
       </p>
       <button
         class="btn btn--primary"
@@ -108,8 +112,10 @@ function canSplitAt(i: number): boolean {
           :aria-pressed="isSelected(p.clusterKey)"
           @click="emit('toggle', p.clusterKey!)"
         >
-          <img :src="p.dataUrl" alt="" class="repair__thumb">
-          <span class="repair__mark" aria-hidden="true">{{ isSelected(p.clusterKey) ? '✓' : '' }}</span>
+          <img :src="p.dataUrl" alt="" class="repair__thumb" />
+          <span class="repair__mark" aria-hidden="true">{{
+            isSelected(p.clusterKey) ? '✓' : ''
+          }}</span>
         </button>
         <div class="repair__acts">
           <button
@@ -120,10 +126,18 @@ function canSplitAt(i: number): boolean {
           >
             候補 {{ p.memberCount ?? 0 }}
           </button>
-          <button class="btn btn--ghost" type="button" @click="emit('editQuad', p.clusterKey!)">
+          <button
+            class="btn btn--ghost"
+            type="button"
+            @click="emit('editQuad', p.clusterKey!)"
+          >
             四隅
           </button>
-          <button class="btn btn--ghost" type="button" @click="emit('remove', p.clusterKey!)">
+          <button
+            class="btn btn--ghost"
+            type="button"
+            @click="emit('remove', p.clusterKey!)"
+          >
             削除
           </button>
         </div>
@@ -133,13 +147,24 @@ function canSplitAt(i: number): boolean {
     <div v-if="detailKey !== null" class="repair__strip">
       <header class="repair__bar">
         <p class="repair__count">候補フレーム</p>
-        <button class="btn btn--ghost" type="button" @click="emit('closeMembers')">閉じる</button>
+        <button
+          class="btn btn--ghost"
+          type="button"
+          @click="emit('closeMembers')"
+        >
+          閉じる
+        </button>
       </header>
 
       <p v-if="membersLoading" class="repair__note">読み込み中…</p>
       <ul v-else class="repair__frames">
         <li v-for="(m, i) in members" :key="m.idx" class="repair__frame">
-          <img :src="m.dataUrl" alt="" class="repair__fthumb" :class="{ 'is-winner': m.isWinner }">
+          <img
+            :src="m.dataUrl"
+            alt=""
+            class="repair__fthumb"
+            :class="{ 'is-winner': m.isWinner }"
+          />
           <p class="repair__meta">{{ m.t_s.toFixed(1) }}s</p>
           <button
             class="btn btn--ghost"

@@ -19,6 +19,7 @@
  * tl, tr, br, bl (model channel order). v=2 visible, 1 occluded.
  */
 
+import process from 'node:process'
 import fs from 'node:fs/promises'
 import path from 'node:path'
 import { Canvas } from '@napi-rs/canvas'
@@ -31,7 +32,12 @@ const REPO_ROOT = path.resolve(__dirname, '../..')
 const FW = 720
 const FH = 1280
 
-const args = { n: 1600, out: path.join(REPO_ROOT, 'scripts/dataset/external/synth-yolo'), valEvery: 10, debug: false }
+const args = {
+  n: 1600,
+  out: path.join(REPO_ROOT, 'scripts/dataset/external/synth-yolo'),
+  valEvery: 10,
+  debug: false,
+}
 for (let i = 2; i < process.argv.length; i += 1) {
   const a = process.argv[i]
   if (a === '--n') args.n = Number(process.argv[++i])
@@ -70,7 +76,9 @@ function drawBackground() {
   const d = id.data
   for (let i = 0; i < d.length; i += 4) {
     const n = (Math.random() - 0.5) * 18
-    d[i] += n; d[i + 1] += n; d[i + 2] += n
+    d[i] += n
+    d[i + 1] += n
+    d[i + 2] += n
   }
   ctx.putImageData(id, 0, 0)
   return c
@@ -84,7 +92,9 @@ function drawDocument() {
   const c = new Canvas(dw, dh)
   const ctx = c.getContext('2d')
   const colored = Math.random() < 0.28
-  ctx.fillStyle = colored ? choice(['#f2cf3e', '#e9c0c0', '#cfe0ef', '#efe7c4', '#dfeede']) : `hsl(${ri(40, 60)}, ${ri(2, 8)}%, ${ri(94, 99)}%)`
+  ctx.fillStyle = colored
+    ? choice(['#f2cf3e', '#e9c0c0', '#cfe0ef', '#efe7c4', '#dfeede'])
+    : `hsl(${ri(40, 60)}, ${ri(2, 8)}%, ${ri(94, 99)}%)`
   ctx.fillRect(0, 0, dw, dh)
   const m = dw * rand(0.06, 0.12) // margin
   // optional title block
@@ -114,14 +124,6 @@ function drawDocument() {
   return { canvas: c, dw, dh }
 }
 
-function destCorners() {
-  // doc long-side fraction of the frame's SHORT side; up to ~0.98 = fills frame
-  const frac = rand(0.42, 0.98)
-  const target = FW * frac
-  // unrotated half-extents from the doc aspect chosen later — approximate square-ish then scaled by aspect in caller
-  return target
-}
-
 // Build 4 dest corners for a doc of pixel size dw x dh.
 function placeQuad(dw, dh) {
   const frac = rand(0.42, 0.98)
@@ -129,7 +131,13 @@ function placeQuad(dw, dh) {
   const r = dw / dh
   let ww
   let hh
-  if (dw >= dh) { ww = longpx; hh = longpx / r } else { hh = longpx; ww = longpx * r }
+  if (dw >= dh) {
+    ww = longpx
+    hh = longpx / r
+  } else {
+    hh = longpx
+    ww = longpx * r
+  }
   const cx = FW / 2 + rand(-0.12, 0.12) * FW
   const cy = FH / 2 + rand(-0.12, 0.12) * FH
   const theta = rand(-0.45, 0.45) // radians (~±25°)
@@ -138,7 +146,10 @@ function placeQuad(dw, dh) {
   const jx = longpx * rand(0, 0.13)
   const jy = longpx * rand(0, 0.13)
   const base = [
-    [-ww / 2, -hh / 2], [ww / 2, -hh / 2], [ww / 2, hh / 2], [-ww / 2, hh / 2],
+    [-ww / 2, -hh / 2],
+    [ww / 2, -hh / 2],
+    [ww / 2, hh / 2],
+    [-ww / 2, hh / 2],
   ]
   // per-corner perspective jitter
   const jit = base.map(() => [rand(-jx, jx), rand(-jy, jy)])
@@ -153,19 +164,37 @@ function warpDocOnto(bg, docCanvas, dw, dh, corners) {
   const dst = new cv.Mat()
   const sp = cv.matFromArray(4, 1, cv.CV_32FC2, [0, 0, dw, 0, dw, dh, 0, dh])
   const dp = cv.matFromArray(4, 1, cv.CV_32FC2, [
-    corners[0].x, corners[0].y, corners[1].x, corners[1].y,
-    corners[2].x, corners[2].y, corners[3].x, corners[3].y,
+    corners[0].x,
+    corners[0].y,
+    corners[1].x,
+    corners[1].y,
+    corners[2].x,
+    corners[2].y,
+    corners[3].x,
+    corners[3].y,
   ])
   let M = null
   try {
     M = cv.getPerspectiveTransform(sp, dp)
-    cv.warpPerspective(src, dst, M, new cv.Size(FW, FH), cv.INTER_LINEAR, cv.BORDER_CONSTANT, new cv.Scalar(0, 0, 0, 0))
+    cv.warpPerspective(
+      src,
+      dst,
+      M,
+      new cv.Size(FW, FH),
+      cv.INTER_LINEAR,
+      cv.BORDER_CONSTANT,
+      new cv.Scalar(0, 0, 0, 0),
+    )
     const warped = new Canvas(FW, FH)
     cv.imshow(warped, dst)
     const ctx = bg.getContext('2d')
     ctx.drawImage(warped, 0, 0) // alpha-0 outside doc → composites over bg
   } finally {
-    src.delete(); dst.delete(); sp.delete(); dp.delete(); M?.delete()
+    src.delete()
+    dst.delete()
+    sp.delete()
+    dp.delete()
+    M?.delete()
   }
 }
 
@@ -178,7 +207,15 @@ function addHandAndLighting(frame, corners, vis) {
     const hr = rand(120, 260)
     ctx.fillStyle = `hsl(${ri(18, 30)}, ${ri(35, 55)}%, ${ri(60, 78)}%)`
     ctx.beginPath()
-    ctx.ellipse(hx, hy, hr * rand(0.5, 0.8), hr, rand(-0.5, 0.5), 0, Math.PI * 2)
+    ctx.ellipse(
+      hx,
+      hy,
+      hr * rand(0.5, 0.8),
+      hr,
+      rand(-0.5, 0.5),
+      0,
+      Math.PI * 2,
+    )
     ctx.fill()
     for (let i = 0; i < 4; i += 1) {
       const dx = corners[i].x - hx
@@ -203,7 +240,12 @@ function toLabel(corners, vis) {
   const cy = (Math.min(...ys) + Math.max(...ys)) / 2
   const w = Math.max(1e-4, Math.max(...xs) - Math.min(...xs))
   const h = Math.max(1e-4, Math.max(...ys) - Math.min(...ys))
-  const kp = corners.map((c, i) => `${cl(c.x / FW).toFixed(6)} ${cl(c.y / FH).toFixed(6)} ${vis[i]}`).join(' ')
+  const kp = corners
+    .map(
+      (c, i) =>
+        `${cl(c.x / FW).toFixed(6)} ${cl(c.y / FH).toFixed(6)} ${vis[i]}`,
+    )
+    .join(' ')
   return `0 ${cx.toFixed(6)} ${cy.toFixed(6)} ${w.toFixed(6)} ${h.toFixed(6)} ${kp}`
 }
 
@@ -213,7 +255,8 @@ async function main() {
     await fs.mkdir(path.join(args.out, 'images', s), { recursive: true })
     await fs.mkdir(path.join(args.out, 'labels', s), { recursive: true })
   }
-  if (args.debug) await fs.mkdir(path.join(args.out, 'debug'), { recursive: true })
+  if (args.debug)
+    await fs.mkdir(path.join(args.out, 'debug'), { recursive: true })
 
   let nt = 0
   let nv = 0
@@ -227,8 +270,14 @@ async function main() {
 
     const split = i % args.valEvery === args.valEvery - 1 ? 'val' : 'train'
     const name = `synth_${String(i).padStart(5, '0')}`
-    await fs.writeFile(path.join(args.out, 'images', split, name + '.jpg'), bg.toBuffer('image/jpeg', 88))
-    await fs.writeFile(path.join(args.out, 'labels', split, name + '.txt'), toLabel(corners, vis) + '\n')
+    await fs.writeFile(
+      path.join(args.out, 'images', split, name + '.jpg'),
+      bg.toBuffer('image/jpeg', 88),
+    )
+    await fs.writeFile(
+      path.join(args.out, 'labels', split, name + '.txt'),
+      toLabel(corners, vis) + '\n',
+    )
     if (split === 'val') nv += 1
     else nt += 1
 
@@ -237,11 +286,21 @@ async function main() {
       const COL = ['#ff3b30', '#34c759', '#0a84ff', '#ffd60a']
       dctx.lineWidth = 3
       dctx.strokeStyle = 'rgba(255,0,255,0.9)'
-      dctx.beginPath(); dctx.moveTo(corners[0].x, corners[0].y)
+      dctx.beginPath()
+      dctx.moveTo(corners[0].x, corners[0].y)
       for (let k = 1; k < 4; k += 1) dctx.lineTo(corners[k].x, corners[k].y)
-      dctx.closePath(); dctx.stroke()
-      for (let k = 0; k < 4; k += 1) { dctx.fillStyle = COL[k]; dctx.beginPath(); dctx.arc(corners[k].x, corners[k].y, 7, 0, Math.PI * 2); dctx.fill() }
-      await fs.writeFile(path.join(args.out, 'debug', name + '_ov.jpg'), bg.toBuffer('image/jpeg', 88))
+      dctx.closePath()
+      dctx.stroke()
+      for (let k = 0; k < 4; k += 1) {
+        dctx.fillStyle = COL[k]
+        dctx.beginPath()
+        dctx.arc(corners[k].x, corners[k].y, 7, 0, Math.PI * 2)
+        dctx.fill()
+      }
+      await fs.writeFile(
+        path.join(args.out, 'debug', name + '_ov.jpg'),
+        bg.toBuffer('image/jpeg', 88),
+      )
     }
     if ((i + 1) % 200 === 0) console.log(`  ${i + 1}/${args.n}`)
   }
@@ -250,7 +309,9 @@ async function main() {
     path.join(args.out, 'data.yaml'),
     `path: ${args.out}\ntrain: images/train\nval: images/val\nkpt_shape: [4, 3]\nflip_idx: [1, 0, 3, 2]\nnames:\n  0: document\n`,
   )
-  console.log(`[synth] generated ${nt + nv} (train=${nt}, val=${nv}) → ${path.relative(REPO_ROOT, args.out)}/`)
+  console.log(
+    `[synth] generated ${nt + nv} (train=${nt}, val=${nv}) → ${path.relative(REPO_ROOT, args.out)}/`,
+  )
 }
 
 main()

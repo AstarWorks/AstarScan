@@ -38,7 +38,12 @@ const DEFAULT_MARGIN_RATIO = 0.05
  * @returns {HTMLCanvasElement-like} new canvas with the cropped card,
  *   long side ≤ `longSide` pixels, aspect = quad's true aspect.
  */
-export function rotateAndCropQuad(canvas, quad, longSide, marginRatio = DEFAULT_MARGIN_RATIO) {
+export function rotateAndCropQuad(
+  canvas,
+  quad,
+  longSide,
+  marginRatio = DEFAULT_MARGIN_RATIO,
+) {
   // 1. Angle of top edge (tl → tr)
   const dx = quad.tr.x - quad.tl.x
   const dy = quad.tr.y - quad.tl.y
@@ -58,7 +63,9 @@ export function rotateAndCropQuad(canvas, quad, longSide, marginRatio = DEFAULT_
   const M = cv.getRotationMatrix2D(new cv.Point(cx, cy), angleDeg, 1.0)
   try {
     cv.warpAffine(
-      src, rotated, M,
+      src,
+      rotated,
+      M,
       new cv.Size(srcW, srcH),
       cv.INTER_LINEAR,
       cv.BORDER_CONSTANT,
@@ -78,7 +85,10 @@ export function rotateAndCropQuad(canvas, quad, longSide, marginRatio = DEFAULT_
     const c2 = M.doubleAt(1, 0)
     const d2 = M.doubleAt(1, 1)
     const ty = M.doubleAt(1, 2)
-    const rotPt = (p) => ({ x: a * p.x + b * p.y + tx, y: c2 * p.x + d2 * p.y + ty })
+    const rotPt = (p) => ({
+      x: a * p.x + b * p.y + tx,
+      y: c2 * p.x + d2 * p.y + ty,
+    })
     const rotCorners = [quad.tl, quad.tr, quad.br, quad.bl].map(rotPt)
 
     // 3. Bbox with margin.

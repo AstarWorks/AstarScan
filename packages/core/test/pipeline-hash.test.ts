@@ -18,7 +18,9 @@ function referenceAvgHash(data: Uint8ClampedArray, count: number): bigint {
   let sum = 0
   for (let i = 0, j = 0; j < count; i += 4, j += 1) {
     const v =
-      0.2126 * (data[i] ?? 0) + 0.7152 * (data[i + 1] ?? 0) + 0.0722 * (data[i + 2] ?? 0)
+      0.2126 * (data[i] ?? 0) +
+      0.7152 * (data[i + 1] ?? 0) +
+      0.0722 * (data[i + 2] ?? 0)
     gray[j] = v
     sum += v
   }
@@ -41,7 +43,8 @@ function syntheticRgba(pixels: number, seed: number): Uint8ClampedArray {
   return data
 }
 
-const nodeCreateCanvas: CreateCanvas = (w, h) => createCanvas(w, h) as unknown as CanvasLike
+const nodeCreateCanvas: CreateCanvas = (w, h) =>
+  createCanvas(w, h) as unknown as CanvasLike
 
 describe('popcount / hamming', () => {
   it('counts set bits', () => {
@@ -61,7 +64,9 @@ describe('avgHashFromImageData', () => {
     for (const seed of [1, 42, 20260612]) {
       const count = HASH_SIZE * HASH_SIZE
       const data = syntheticRgba(count, seed)
-      expect(avgHashFromImageData(data, count)).toBe(referenceAvgHash(data, count))
+      expect(avgHashFromImageData(data, count)).toBe(
+        referenceAvgHash(data, count),
+      )
     }
   })
 

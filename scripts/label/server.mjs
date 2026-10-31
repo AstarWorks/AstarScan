@@ -21,6 +21,8 @@
  *   model's channel order: tl, tr, br, bl.
  */
 
+import { serve } from 'bun'
+import process from 'node:process'
 import fs from 'node:fs/promises'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -66,7 +68,10 @@ function toYoloLine(points) {
   const w = clamp01(Math.max(1e-4, maxX - minX))
   const h = clamp01(Math.max(1e-4, maxY - minY))
   const kp = points
-    .map((p) => `${clamp01(p[0]).toFixed(6)} ${clamp01(p[1]).toFixed(6)} ${p[2] ? 1 : 2}`)
+    .map(
+      (p) =>
+        `${clamp01(p[0]).toFixed(6)} ${clamp01(p[1]).toFixed(6)} ${p[2] ? 1 : 2}`,
+    )
     .join(' ')
   return `0 ${cx.toFixed(6)} ${cy.toFixed(6)} ${w.toFixed(6)} ${h.toFixed(6)} ${kp}`
 }
@@ -83,14 +88,16 @@ async function removeLabel(file) {
   await fs.rm(labelTxtPath(file), { force: true })
 }
 
-Bun.serve({
+serve({
   port: PORT,
   async fetch(req) {
     const url = new URL(req.url)
 
     if (url.pathname === '/') {
       const html = await fs.readFile(path.join(__dirname, 'index.html'))
-      return new Response(html, { headers: { 'content-type': 'text/html; charset=utf-8' } })
+      return new Response(html, {
+        headers: { 'content-type': 'text/html; charset=utf-8' },
+      })
     }
 
     if (url.pathname === '/api/state') {
@@ -99,11 +106,15 @@ Bun.serve({
     }
 
     if (url.pathname.startsWith('/raw/')) {
-      const name = path.basename(decodeURIComponent(url.pathname.slice('/raw/'.length)))
+      const name = path.basename(
+        decodeURIComponent(url.pathname.slice('/raw/'.length)),
+      )
       try {
         const buf = await fs.readFile(path.join(RAW_DIR, name))
         return new Response(buf, {
-          headers: { 'content-type': name.endsWith('.png') ? 'image/png' : 'image/jpeg' },
+          headers: {
+            'content-type': name.endsWith('.png') ? 'image/png' : 'image/jpeg',
+          },
         })
       } catch {
         return new Response('not found', { status: 404 })
@@ -113,7 +124,8 @@ Bun.serve({
     if (url.pathname === '/api/label' && req.method === 'POST') {
       const body = await req.json()
       const { file, points, skipped } = body
-      if (!file) return Response.json({ ok: false, error: 'no file' }, { status: 400 })
+      if (!file)
+        return Response.json({ ok: false, error: 'no file' }, { status: 400 })
       if (skipped) {
         annots[file] = { skipped: true }
         await removeLabel(file)
@@ -133,6 +145,10 @@ Bun.serve({
 })
 
 const frames = await listFrames()
-console.log(`[label] ${frames.length} frames in ${path.relative(REPO_ROOT, RAW_DIR)}`)
+console.log(
+  `[label] ${frames.length} frames in ${path.relative(REPO_ROOT, RAW_DIR)}`,
+)
 console.log(`[label] open  http://localhost:${PORT}`)
-console.log(`[label] labels → ${path.relative(REPO_ROOT, LABELS_DIR)}/  state → ${path.relative(REPO_ROOT, ANNOT_PATH)}`)
+console.log(
+  `[label] labels → ${path.relative(REPO_ROOT, LABELS_DIR)}/  state → ${path.relative(REPO_ROOT, ANNOT_PATH)}`,
+)
