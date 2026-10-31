@@ -8,6 +8,7 @@
  *   bun scripts/eval/live-capture.mjs --check    # exit 1 below the target
  *   bun scripts/eval/live-capture.mjs --grid     # search the parameter space
  *   bun scripts/eval/live-capture.mjs --events   # print every event
+ *   bun scripts/eval/live-capture.mjs --opts '{"holdS":0.6}'  # try overrides
  *
  * A ✓ is assigned to the GT page whose timeRangeS contains its chosen
  * frame (temporal-first, as in lib/gt-match.mjs); none = non-page ✓.
@@ -119,6 +120,7 @@ export function replayAll(logs, opts = {}) {
       winners: sum('winners'),
       missAlerts: per.reduce((s, r) => s + r.misses.length, 0),
       missAlertsOnPage: per.reduce((s, r) => s + r.misses.filter((m) => m.pageId).length, 0),
+      missAlertsReal: per.reduce((s, r) => s + r.misses.filter((m) => m.real).length, 0),
     },
   }
 }
@@ -132,17 +134,17 @@ export function meetsTarget(total) {
 }
 
 function printTable(res) {
-  console.log('| 動画 | 正解ページ | ✓が出たページ | ✓ 総数 | 重複✓ | ページ以外の✓ | 抜け | 赤（まだ撮れていません） |')
-  console.log('|---|---|---|---|---|---|---|---|')
+  console.log('| 動画 | 正解ページ | ✓が出たページ | ✓ 総数 | 重複✓ | ページ以外の✓ | 抜け | 赤（まだ撮れていません） | 赤のうち✓が出なかったページ |')
+  console.log('|---|---|---|---|---|---|---|---|---|')
   for (const r of res.per) {
     const m = r.metrics
     console.log(
-      `| ${r.id} | ${m.gtPages} | ${m.matchedPages} | ${m.winners} | ${m.duplicates} | ${m.falsePositives} | ${m.missedPages.join(', ') || '—'} | ${r.misses.length} |`,
+      `| ${r.id} | ${m.gtPages} | ${m.matchedPages} | ${m.winners} | ${m.duplicates} | ${m.falsePositives} | ${m.missedPages.join(', ') || '—'} | ${r.misses.length} | ${r.misses.filter((x) => x.real).length} |`,
     )
   }
   const t = res.total
   console.log(
-    `| 合計 | ${t.gtPages} | ${t.matchedPages} | ${t.winners} | ${t.duplicates} | ${t.falsePositives} | ${t.gtPages - t.matchedPages} | ${t.missAlerts} |`,
+    `| 合計 | ${t.gtPages} | ${t.matchedPages} | ${t.winners} | ${t.duplicates} | ${t.falsePositives} | ${t.gtPages - t.matchedPages} | ${t.missAlerts} | ${t.missAlertsReal} |`,
   )
 }
 
@@ -155,15 +157,18 @@ if (import.meta.main) {
   }
 
   if (args.includes('--grid')) {
+    // The neighbourhood LIVE_CAPTURE_DEFAULTS was picked from (a wider
+    // first pass found holdS ≤ 0.6, changeS 0.2 and a frozen post-capture
+    // reference necessary for ≥ 21/22).
     const grid = {
-      holdS: [0.6, 0.8, 1.0],
-      changeDist: [90, 110, 130],
-      changeS: [0.2, 0.3, 0.4],
+      holdS: [0.5, 0.6, 0.7, 0.8],
+      changeDist: [80, 90, 100, 110],
+      changeS: [0.2, 0.3],
       gapS: [1.0, 1.5, 2.0],
-      sameDist: [60, 80, 100],
-      minAreaFrac: [0.01, 0.05],
-      minConfidence: [0.25, 0.4],
-      maxMotion: [0.03, 0.05, 0.08, 0.12, Infinity],
+      sameDist: [30, 50, 70],
+      minConfidence: [0.25, 0.4, 0.5],
+      maxMotion: [0.05, 0.06, 0.07, 0.08, 0.12, Infinity],
+      missMinS: [0.3, 0.6],
     }
     const keys = Object.keys(grid)
     const rows = []
@@ -187,8 +192,10 @@ if (import.meta.main) {
     process.exit(0)
   }
 
-  const res = replayAll(logs)
-  console.log('LIVE_CAPTURE_DEFAULTS', JSON.stringify(LIVE_CAPTURE_DEFAULTS))
+  const optsIdx = args.indexOf('--opts')
+  const overrides = optsIdx >= 0 ? JSON.parse(args[optsIdx + 1]) : {}
+  const res = replayAll(logs, overrides)
+  console.log('options', JSON.stringify({ ...LIVE_CAPTURE_DEFAULTS, ...overrides }))
   printTable(res)
   if (args.includes('--events')) {
     for (const r of res.per) {
@@ -199,8 +206,7 @@ if (import.meta.main) {
           e.type === 'captured' || e.type === 'missed'
             ? ` best=${e.best.t.toFixed(1)}s page=${pageAt(logs.find((l) => l.id === r.id).manifest, e.best.t) ?? '-'}`
             : ''
-        const extra = e.type === 'captured' && e.duplicateOf ? ` dupOf=#${e.duplicateOf}` : ''
-        console.log(`${e.t.toFixed(1)}s ${e.type}${e.pageNo ? ' #' + e.pageNo : ''}${a}${extra}`)
+        console.log(`${e.t.toFixed(1)}s ${e.type}${e.pageNo ? ' #' + e.pageNo : ''}${a}`)
       }
     }
   }

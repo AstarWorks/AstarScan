@@ -8,19 +8,20 @@
  *
  *   - A frame shows a page when the detector is confident enough and the
  *     quad is large enough. There is NO blur / texture gate: Tenengrad
- *     measures text density, and rejected sharp, illustration-heavy pages
+ *     measures text density and rejected sharp, illustration-heavy pages
  *     as "blurry". Sharpness only ranks frames inside a hold (`score`).
- *   - A page is "held" while its quad stays still (corner motion below
- *     `maxMotion`). After `holdS` of stillness the best-scoring frame seen
- *     in the hold so far is emitted as `captured`.
+ *   - A page is "held" while its quad stays still (corner motion at or
+ *     below `maxMotion`). After `holdS` of stillness the best-scoring frame
+ *     seen in the hold so far is emitted as `captured`.
  *   - A pHash jump beyond `changeDist` that persists for `changeS` ends the
- *     hold and starts a new one (page turned). A hold that ends without a
- *     capture after being visible for `missMinS` is reported as `missed`.
- *   - Detection dropping out for up to `gapS` does not end the hold. When a
- *     hold re-forms within `gapS` of a captured page and its picture is
- *     within `sameDist`, it continues that page (`resumed`, no second ✓).
- *     Later look-alikes are still captured but flagged with `duplicateOf`
- *     — the user decides, nothing is dropped automatically.
+ *     hold and starts a new one (page turned). After a capture the
+ *     reference picture is frozen, so a hold cannot drift onto the next
+ *     page through a chain of similar-looking frames.
+ *   - A hold that ends without a capture after being visible for
+ *     `missMinS` is reported as `missed`.
+ *   - Detection dropping out for up to `gapS` does not end the hold. A hold
+ *     that re-forms within `gapS` of the last captured page with a picture
+ *     within `sameDist` continues that page (`resumed`, no second ✓).
  *
  * Pure: no DOM, no OpenCV. Callers feed `LiveFrame`s and react to events.
  */
@@ -30,26 +31,26 @@ import { hamming } from './hash.js'
 
 export const LIVE_CAPTURE_DEFAULTS = {
   /** Detector confidence floor for "a page is in view". */
-  minConfidence: 0.25,
+  minConfidence: 0.5,
   /** Quad area floor (fraction of the source frame). */
   minAreaFrac: 0.01,
   /** Mean corner displacement between consecutive samples, as a fraction
    *  of the frame diagonal, at or below which the page counts as still. */
-  maxMotion: 0.06,
+  maxMotion: 0.07,
   /** Seconds of stillness before a page is captured. */
-  holdS: 0.8,
+  holdS: 0.6,
   /** pHash (256-bit) distance to the hold's reference frame above which a
    *  frame shows a different picture. */
-  changeDist: 100,
+  changeDist: 90,
   /** Seconds a different picture must persist to count as a page turn. */
-  changeS: 0.3,
+  changeS: 0.2,
   /** Seconds of dropped detection tolerated without ending the page. */
   gapS: 1.5,
-  /** pHash distance at or below which a new hold looks like a captured
-   *  page (resume within `gapS`, duplicate candidate beyond). */
-  sameDist: 70,
+  /** pHash distance at or below which a re-formed hold is the page that
+   *  was just captured (within `gapS`). */
+  sameDist: 50,
   /** Seconds an uncaptured hold must have been visible to report a miss. */
-  missMinS: 0.3,
+  missMinS: 0.6,
 } as const
 
 export type LiveCaptureOptions = { -readonly [K in keyof typeof LIVE_CAPTURE_DEFAULTS]: number }
@@ -67,30 +68,22 @@ export interface LiveFrame<T = unknown> {
   score: number
   /** 256-bit pHash of the warped page; null when not computed. */
   hash: bigint | null
-  /** Caller payload (warped blob etc.), handed back on events. */
+  /** Caller payload, handed back on events. */
   data: T
 }
 
 export type LiveCaptureEvent<T = unknown> =
   | { type: 'hold'; holdId: number; progress: number; t: number }
-  | {
-      type: 'captured'
-      holdId: number
-      pageNo: number
-      best: LiveFrame<T>
-      /** pageNo of an earlier captured page this one looks like, or null. */
-      duplicateOf: number | null
-      t: number
-    }
+  | { type: 'captured'; holdId: number; pageNo: number; best: LiveFrame<T>; startT: number; t: number }
   | { type: 'resumed'; holdId: number; pageNo: number; t: number }
-  | {
-      type: 'missed'
-      holdId: number
-      best: LiveFrame<T>
-      startT: number
-      endT: number
-      t: number
-    }
+  | { type: 'missed'; holdId: number; best: LiveFrame<T>; startT: number; endT: number; t: number }
+
+/** Time span during which a captured page was on screen. */
+export interface LivePageSpan {
+  pageNo: number
+  startT: number
+  endT: number
+}
 
 /** Mean corner displacement between two quads / frame diagonal. */
 export function quadMotion(a: Quad, b: Quad, frameW: number, frameH: number): number {
@@ -117,10 +110,8 @@ interface Hold<T> {
   pending: LiveFrame<T>[]
 }
 
-interface CapturedRef {
-  pageNo: number
+interface CapturedRef extends LivePageSpan {
   hash: bigint
-  lastSeenT: number
 }
 
 const EPS = 1e-6
@@ -134,6 +125,11 @@ export class LiveCaptureJudge<T = unknown> {
 
   constructor(opts: Partial<LiveCaptureOptions> = {}) {
     this.opts = { ...LIVE_CAPTURE_DEFAULTS, ...opts }
+  }
+
+  /** Spans of every captured page so far, in capture order. */
+  get pages(): LivePageSpan[] {
+    return this.#captured.map(({ pageNo, startT, endT }) => ({ pageNo, startT, endT }))
   }
 
   isPage(f: Pick<LiveFrame, 'confidence' | 'areaFrac' | 'hash'>): boolean {
@@ -170,7 +166,9 @@ export class LiveCaptureJudge<T = unknown> {
       h.lastSeenT = f.t
       if (f.score > h.best.score) {
         h.best = f
-        h.ref = f.hash
+        // Once captured, the reference stays on the captured picture so
+        // the hold cannot drift onto the next page.
+        if (h.pageNo === null) h.ref = f.hash
       }
       if (!still) h.stillSinceT = null
       else if (h.stillSinceT === null) h.stillSinceT = f.t
@@ -218,11 +216,11 @@ export class LiveCaptureJudge<T = unknown> {
     const prev = this.#captured[this.#captured.length - 1]
     if (
       prev &&
-      first.t - prev.lastSeenT <= this.opts.gapS + EPS &&
+      first.t - prev.endT <= this.opts.gapS + EPS &&
       hamming(hold.ref, prev.hash) <= this.opts.sameDist
     ) {
       hold.pageNo = prev.pageNo
-      prev.lastSeenT = last.t
+      prev.endT = last.t
       out.push({ type: 'resumed', holdId: hold.id, pageNo: prev.pageNo, t: last.t })
       return
     }
@@ -234,24 +232,15 @@ export class LiveCaptureJudge<T = unknown> {
     if (!h) return
     if (h.pageNo !== null) {
       const c = this.#captured.find((x) => x.pageNo === h.pageNo)
-      if (c) c.lastSeenT = t
+      if (c) c.endT = t
       return
     }
     const held = h.stillSinceT === null ? 0 : t - h.stillSinceT
     if (held + EPS >= this.opts.holdS) {
-      let duplicateOf: number | null = null
-      let bestD = Infinity
-      for (const c of this.#captured) {
-        const d = hamming(h.ref, c.hash)
-        if (d <= this.opts.sameDist && d < bestD) {
-          bestD = d
-          duplicateOf = c.pageNo
-        }
-      }
       const pageNo = this.#captured.length + 1
       h.pageNo = pageNo
-      this.#captured.push({ pageNo, hash: h.ref, lastSeenT: t })
-      out.push({ type: 'captured', holdId: h.id, pageNo, best: h.best, duplicateOf, t })
+      this.#captured.push({ pageNo, hash: h.ref, startT: h.startT, endT: t })
+      out.push({ type: 'captured', holdId: h.id, pageNo, best: h.best, startT: h.startT, t })
       return
     }
     out.push({ type: 'hold', holdId: h.id, progress: Math.max(0, held / this.opts.holdS), t })
@@ -262,14 +251,119 @@ export class LiveCaptureJudge<T = unknown> {
     this.#hold = null
     if (!h || h.pageNo !== null) return
     if (h.lastSeenT - h.startT + EPS >= this.opts.missMinS) {
-      out.push({
-        type: 'missed',
-        holdId: h.id,
-        best: h.best,
-        startT: h.startT,
-        endT: h.lastSeenT,
-        t,
-      })
+      out.push({ type: 'missed', holdId: h.id, best: h.best, startT: h.startT, endT: h.lastSeenT, t })
     }
   }
+}
+
+// ---------------------------------------------------------------------------
+// End-of-scan report
+// ---------------------------------------------------------------------------
+
+export type CaptureRowKind = 'captured' | 'duplicate' | 'recovered' | 'missed'
+
+export interface CaptureRow {
+  kind: CaptureRowKind
+  /** Start of the row's time span (for ordering). */
+  t: number
+  /** Live page behind a captured / duplicate row. */
+  livePageNo?: number
+  /** Post-scan cluster behind the row, when one matched. */
+  clusterKey?: number
+  /** Live page this duplicate row repeats. */
+  duplicateOf?: number
+  /** Span of the miss behind a missed row, or behind a recovered row
+   *  whose page was reported missed during the scan. */
+  missSpan?: { startT: number; endT: number }
+}
+
+export interface ReportCluster {
+  key: number
+  /** Scan-time seconds of every member frame. */
+  memberT: readonly number[]
+}
+
+const overlapCount = (ts: readonly number[], a: number, b: number): number =>
+  ts.reduce((n, t) => (t >= a - EPS && t <= b + EPS ? n + 1 : n), 0)
+
+/**
+ * Reconcile what the user saw during the scan (live ✓ and misses) with the
+ * post-scan pass (clusters from `clusterBySegments`), so the report keeps
+ * the two apart:
+ *
+ *   - captured   live ✓ (first live page of its cluster, or unclustered)
+ *   - duplicate  a further live ✓ that landed in the same cluster
+ *   - recovered  a cluster nobody saw ✓ for — "後から拾った"
+ *   - missed     a miss that no cluster recovered and no ✓ covered
+ *
+ * Each live page joins the cluster with the most member frames inside its
+ * span. A miss whose span overlaps a captured cluster is dropped (the page
+ * was captured after all); one overlapping a recovered cluster marks it.
+ */
+export function buildCaptureReport(
+  live: readonly LivePageSpan[],
+  misses: readonly { startT: number; endT: number }[],
+  clusters: readonly ReportCluster[],
+): CaptureRow[] {
+  const liveByCluster = new Map<number, LivePageSpan[]>()
+  const unclustered: LivePageSpan[] = []
+  for (const p of live) {
+    let bestKey: number | null = null
+    let bestN = 0
+    for (const c of clusters) {
+      const n = overlapCount(c.memberT, p.startT, p.endT)
+      if (n > bestN) {
+        bestN = n
+        bestKey = c.key
+      }
+    }
+    if (bestKey === null) unclustered.push(p)
+    else liveByCluster.set(bestKey, [...(liveByCluster.get(bestKey) ?? []), p])
+  }
+
+  const rows: CaptureRow[] = []
+  const recoveredRows = new Map<number, CaptureRow>()
+  for (const c of clusters) {
+    const lives = liveByCluster.get(c.key)
+    if (lives?.length) {
+      const [first, ...rest] = [...lives].sort((a, b) => a.startT - b.startT)
+      rows.push({ kind: 'captured', t: first!.startT, livePageNo: first!.pageNo, clusterKey: c.key })
+      for (const d of rest) {
+        rows.push({
+          kind: 'duplicate',
+          t: d.startT,
+          livePageNo: d.pageNo,
+          clusterKey: c.key,
+          duplicateOf: first!.pageNo,
+        })
+      }
+    } else {
+      const row: CaptureRow = { kind: 'recovered', t: Math.min(...c.memberT), clusterKey: c.key }
+      recoveredRows.set(c.key, row)
+      rows.push(row)
+    }
+  }
+  for (const p of unclustered) rows.push({ kind: 'captured', t: p.startT, livePageNo: p.pageNo })
+
+  for (const m of misses) {
+    let hit: ReportCluster | null = null
+    let hitN = 0
+    for (const c of clusters) {
+      const n = overlapCount(c.memberT, m.startT, m.endT)
+      if (n > hitN) {
+        hitN = n
+        hit = c
+      }
+    }
+    const coveredByLive = live.some((p) => p.startT <= m.endT + EPS && p.endT >= m.startT - EPS)
+    if (hit) {
+      const rec = recoveredRows.get(hit.key)
+      if (rec) rec.missSpan ??= { startT: m.startT, endT: m.endT }
+      continue
+    }
+    if (coveredByLive) continue
+    rows.push({ kind: 'missed', t: m.startT, missSpan: { startT: m.startT, endT: m.endT } })
+  }
+
+  return rows.sort((a, b) => a.t - b.t)
 }
