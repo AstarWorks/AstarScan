@@ -32,6 +32,8 @@ import {
   RESCUE_MIN_AREA_FRAC,
   RESCUE_MIN_CONFIDENCE,
   RESCUE_MIN_TENENGRAD,
+  LiveCaptureJudge,
+  buildCaptureReport,
   clusterBySegments,
   combinedScore,
   mergeClusters,
@@ -43,6 +45,10 @@ import {
   updateClusterCrop,
   verifySameText,
   type CanvasLike,
+  type CaptureRow,
+  type LiveCaptureEvent,
+  type LiveFrame,
+  type LivePageSpan,
   type SegmentCluster,
   type SegmentHooks,
 } from '@astarworks/scan-core/pipeline'
@@ -65,6 +71,14 @@ import {
 } from '~/services/llm-frame-validator'
 import { pickBestFrameByLlm, type PickResult } from '~/services/llm-best-frame'
 import { arePairSameCard } from '~/services/llm-card-pair'
+import {
+  beepCaptured,
+  blobToImageCanvas,
+  createStillCapturer,
+  vibrateCaptured,
+  type StillCapturer,
+} from '~/services/capture-feedback'
+import type { ReportViewRow } from '~/components/CaptureReport.vue'
 import {
   clearSession,
   loadSession,
@@ -103,6 +117,10 @@ interface Page {
   /** Candidate frames behind this page. 1 means nothing to split or
    *  re-pick from. */
   memberCount?: number
+  /** Live page number (✓ order during the scan) behind this page. */
+  livePageNo?: number
+  /** Start of the miss this page was retaken for. */
+  retakeOf?: number
 }
 
 const LONG_SIDE_DEFAULT = 1200 // mode 別: card 1010 / a4 1696 / receipt 1500
@@ -239,11 +257,257 @@ function detachRepair(p: Page): Page {
   return next
 }
 
+// ---------------------------------------------------------------------------
+// Live capture feedback (✓ / missed during the scan)
+//
+// scan-core `LiveCaptureJudge` sees every sampled frame — no blur gate —
+// and decides the ✓ moment and the misses. At each ✓ a full-resolution
+// still is taken (ImageCapture) and becomes that page's image; where the
+// platform cannot, the hold's best video frame is kept, and the page
+// records which one it got. After the scan, `buildCaptureReport`
+// reconciles the live result with the post-scan clusters so pages the
+// user never saw ✓ for are listed apart ("後から拾った").
+// ---------------------------------------------------------------------------
+
+interface LiveFrameData {
+  idx: number
+  warped: HTMLCanvasElement | null
+}
+
+interface LiveShot {
+  blob: Blob
+  dataUrl: string
+  width: number
+  height: number
+  source: 'photo' | 'video'
+}
+
+type LiveSignal = 'none' | 'hold' | 'captured' | 'missed'
+
+interface StripChip {
+  id: string
+  kind: 'captured' | 'missed'
+  thumb: string
+}
+
+const liveSignal = ref<LiveSignal>('none')
+const liveProgress = ref(0)
+/** Bottom band during the scan: every ✓ and every miss, in order. */
+const liveStrip = ref<StripChip[]>([])
+/** End-of-scan table rows (view model of the last report). */
+const reportView = ref<ReportViewRow[]>([])
+/** Miss start time of the row being retaken; null when not retaking. */
+const retakeTarget = ref<number | null>(null)
+
+let judge: LiveCaptureJudge<LiveFrameData> | null = null
+let stillCapturer: StillCapturer | null = null
+let signalTimer: ReturnType<typeof setTimeout> | null = null
+let lastJudgeT = 0
+/** Judge time (s) of every sampled frame, by sample index. The clusters
+ *  speak in sample indices; the live spans in judge time. */
+let frameTimes: number[] = []
+let pendingShots: Promise<unknown>[] = []
+
+/** What the current scan showed live — kept for report rebuilds. */
+interface ScanLive {
+  spans: LivePageSpan[]
+  misses: { startT: number; endT: number; thumb: string }[]
+  shots: Map<number, LiveShot>
+}
+let scanLive: ScanLive = { spans: [], misses: [], shots: new Map() }
+/** Retaken pages, keyed by the start time of the miss they replace. */
+const retakes = new Map<number, LiveShot>()
+/** Live pages the user removed from the output. */
+const removedLive = new Set<number>()
+
+function setSignal(kind: LiveSignal, stickyMs = 0): void {
+  // A ✓ or a miss stays visible for a moment even if the next page's hold
+  // starts right away.
+  if (kind === 'hold' && signalTimer) return
+  if (signalTimer) {
+    clearTimeout(signalTimer)
+    signalTimer = null
+  }
+  liveSignal.value = kind
+  if (stickyMs > 0) {
+    signalTimer = setTimeout(() => {
+      signalTimer = null
+      liveSignal.value = 'none'
+      renderOverlay()
+    }, stickyMs)
+  }
+  renderOverlay()
+}
+
+function thumbOf(canvas: HTMLCanvasElement): string {
+  return downscaleToLongSide(canvas, 120).toDataURL('image/jpeg', 0.6)
+}
+
+function startLive(track: MediaStreamTrack | undefined): void {
+  judge = new LiveCaptureJudge<LiveFrameData>()
+  stillCapturer = createStillCapturer(track)
+  lastJudgeT = 0
+  pendingShots = []
+  liveStrip.value = []
+  liveProgress.value = 0
+  if (signalTimer) clearTimeout(signalTimer)
+  signalTimer = null
+  liveSignal.value = 'none'
+}
+
+function feedLive(frame: LiveFrame<LiveFrameData>): void {
+  if (!judge) return
+  lastJudgeT = frame.t
+  const events = judge.push(frame)
+  if (debugMode.value) {
+    console.debug(
+      `[live] t=${frame.t.toFixed(2)} conf=${frame.confidence.toFixed(2)} area=${frame.areaFrac.toFixed(2)}`,
+      events.filter((e) => e.type !== 'hold').map((e) => e.type).join(',') ||
+        events.map((e) => (e.type === 'hold' ? `hold ${e.progress.toFixed(2)}` : '')).join(''),
+    )
+  }
+  for (const e of events) onLiveEvent(e)
+}
+
+/** Close the live judge (may report a final miss) and wait for stills. */
+async function endLive(): Promise<void> {
+  if (judge) for (const e of judge.finish(lastJudgeT)) onLiveEvent(e)
+  await Promise.allSettled(pendingShots)
+  pendingShots = []
+}
+
+function onLiveEvent(e: LiveCaptureEvent<LiveFrameData>): void {
+  switch (e.type) {
+    case 'hold':
+      liveProgress.value = e.progress
+      setSignal('hold')
+      break
+    case 'captured': {
+      liveProgress.value = 1
+      setSignal('captured', 700)
+      vibrateCaptured()
+      beepCaptured()
+      const warped = e.best.data.warped
+      if (!warped) break
+      liveStrip.value = [
+        ...liveStrip.value,
+        { id: `l${e.pageNo}`, kind: 'captured', thumb: thumbOf(warped) },
+      ]
+      const target = retakeTarget.value
+      // A retake ends at its first ✓.
+      if (target !== null) retakeTarget.value = null
+      const p = takeShot(warped).then(async (shot) => {
+        if (target !== null) {
+          await finishRetake(target, shot)
+        } else {
+          scanLive.shots.set(e.pageNo, shot)
+        }
+      })
+      pendingShots.push(p.catch((err) => console.warn('[live] shot failed', err)))
+      break
+    }
+    case 'missed': {
+      setSignal('missed', 1500)
+      const warped = e.best.data.warped
+      const thumb = warped ? thumbOf(warped) : ''
+      scanLive.misses.push({ startT: e.startT, endT: e.endT, thumb })
+      liveStrip.value = [...liveStrip.value, { id: `m${e.startT}`, kind: 'missed', thumb }]
+      break
+    }
+    case 'resumed':
+      break
+  }
+}
+
+/** Longest edge of a quad, in its own pixel space. */
+function quadLongEdge(q: Quad): number {
+  const d = (a: { x: number; y: number }, b: { x: number; y: number }) =>
+    Math.hypot(a.x - b.x, a.y - b.y)
+  return Math.max(d(q.tl, q.tr), d(q.bl, q.br), d(q.tl, q.bl), d(q.tr, q.br))
+}
+
+/** Detection is serialized: the ORT session must not run two inferences at
+ *  once, and the still is detected while the frame loop keeps running. */
+let detectChain: Promise<unknown> = Promise.resolve()
+function detectSerial(canvas: HTMLCanvasElement): ReturnType<typeof detectDocument> {
+  const next = detectChain.then(() => detectDocument(canvas))
+  detectChain = next.catch(() => null)
+  return next
+}
+
+/**
+ * The page image for a ✓: a full-resolution still when the camera can
+ * take one and the page is found in it, else the hold's best video frame.
+ */
+async function takeShot(videoWarped: HTMLCanvasElement): Promise<LiveShot> {
+  const photo = await stillCapturer?.take()
+  if (photo) {
+    try {
+      const full = await blobToImageCanvas(photo)
+      // Detect on a reduced copy (detector input is small anyway), then
+      // crop the full-resolution still with the scaled-up quad.
+      const small = downscaleToLongSide(full, 1280)
+      const det = await detectSerial(small)
+      if (det && judge && det.confidence >= judge.opts.minConfidence) {
+        const quad = scaleQuad(det.quad, small.width, small.height, full.width, full.height)
+        const warped = rotateAndCropQuad(full, quad, Math.round(quadLongEdge(quad)), 0.03)
+        const blob = await canvasToJpegBlob(warped, 0.9)
+        return {
+          blob,
+          dataUrl: await blobToDataUrl(blob),
+          width: warped.width,
+          height: warped.height,
+          source: 'photo',
+        }
+      }
+    } catch (err) {
+      console.warn('[live] still could not be cropped, using the video frame', err)
+    }
+  }
+  const blob = await canvasToJpegBlob(videoWarped, 0.85)
+  return {
+    blob,
+    dataUrl: await blobToDataUrl(blob),
+    width: videoWarped.width,
+    height: videoWarped.height,
+    source: 'video',
+  }
+}
+
+function shotPage(id: string, shot: LiveShot, capturedAt: number): Page {
+  return {
+    id,
+    dataUrl: shot.dataUrl,
+    width: shot.width,
+    height: shot.height,
+    capturedAt,
+  }
+}
+
+const rowIdOf = (r: CaptureRow): string =>
+  r.missSpan ? `m${r.missSpan.startT}` : r.livePageNo !== undefined ? `l${r.livePageNo}` : `c${r.clusterKey}`
+
+/**
+ * Build the output pages and the end-of-scan table from the cluster array
+ * (the repair controls' source of truth) plus what the scan showed live.
+ */
 async function buildPagesFromClusters(
   cs: readonly SegmentCluster<ScanRecord>[],
 ): Promise<Page[]> {
+  const report = buildCaptureReport(
+    scanLive.spans,
+    scanLive.misses,
+    cs.map((c) => ({
+      key: c.winner.idx,
+      memberT: c.members.map((m) => frameTimes[m.idx] ?? m.t_s),
+    })),
+  )
+  const byKey = new Map(cs.map((c) => [c.winner.idx, c]))
   const pages: Page[] = []
-  for (const c of cs) {
+  const rows: ReportViewRow[] = []
+  const base = preScanPages.value.length
+
+  const clusterPage = async (c: SegmentCluster<ScanRecord>): Promise<Page> => {
     const w = c.winner
     // Derived from the scan and the winner frame, so a page keeps its
     // identity across repairs that don't touch it (stable Vue key, stable
@@ -265,8 +529,59 @@ async function buildPagesFromClusters(
       if (bestFramePick) dbg.bestFramePick = bestFramePick
       page.llmDebug = dbg
     }
-    pages.push(page)
+    return page
   }
+
+  for (const r of report) {
+    const id = rowIdOf(r)
+    const c = r.clusterKey !== undefined ? byKey.get(r.clusterKey) : undefined
+    const retake = r.missSpan ? retakes.get(r.missSpan.startT) : undefined
+    let page: Page | null = null
+    let kind: ReportViewRow['kind'] = r.kind
+    let source: ReportViewRow['source'] = null
+    let thumb: string | null = null
+
+    if (retake && r.missSpan) {
+      page = { ...shotPage(`s${scanId.value}-r${r.missSpan.startT}`, retake, performance.now()), retakeOf: r.missSpan.startT }
+      kind = 'captured'
+      source = retake.source
+    } else if (r.kind === 'missed') {
+      thumb = scanLive.misses.find((m) => m.startT === r.missSpan?.startT)?.thumb || null
+    } else if (r.kind === 'recovered') {
+      if (c) page = await clusterPage(c)
+    } else if (r.livePageNo !== undefined) {
+      if (removedLive.has(r.livePageNo)) continue
+      const shot = scanLive.shots.get(r.livePageNo)
+      if (shot) {
+        page = { ...shotPage(`s${scanId.value}-l${r.livePageNo}`, shot, performance.now()), livePageNo: r.livePageNo }
+        source = shot.source
+        // The first live page of a cluster stands for the cluster in the
+        // repair controls; a duplicate does not (one key, one page).
+        if (r.kind === 'captured' && c) {
+          page.clusterKey = c.winner.idx
+          page.memberCount = c.members.length
+        }
+      } else if (c && r.kind === 'captured') {
+        page = await clusterPage(c)
+      }
+    }
+    if (page) pages.push(page)
+    rows.push({
+      id,
+      kind,
+      no: page ? base + pages.length : null,
+      thumb: page?.dataUrl ?? thumb,
+      source,
+      duplicateOfNo: null,
+      canRetake: !retake && !!r.missSpan,
+      pageId: page?.id ?? null,
+    })
+    if (r.kind === 'duplicate' && r.duplicateOf !== undefined) {
+      const orig = rows.find((x) => x.id === `l${r.duplicateOf}`)
+      rows[rows.length - 1]!.duplicateOfNo = orig?.no ?? null
+    }
+  }
+  reportView.value = rows
   return pages
 }
 
@@ -725,7 +1040,8 @@ async function finalizeScan(
     }
   }
 
-  // ---- Build Pages from clusters ----
+  // ---- Build Pages from clusters + what the scan showed live ----
+  scanLive.spans = judge?.pages ?? []
   llmProgress.value = null
   scanId.value += 1
   preScanPages.value = captured.value.map(detachRepair)
@@ -783,24 +1099,48 @@ function blobToCanvas(
 
 async function processFrame(
   video: HTMLVideoElement,
-  opts: { enableLlm: boolean } = { enableLlm: false },
+  opts: {
+    enableLlm?: boolean
+    /** Scan time in seconds (video time / wall clock) for the live judge. */
+    t: number
+    /** False during a retake: feed the live judge only, keep no records. */
+    collect?: boolean
+  },
 ): Promise<void> {
   if (!detectorReady) return
   if (video.readyState < 2 || video.videoWidth === 0) return
+  const collect = opts.collect !== false
 
   // Temporal identity for the segment pipeline: the sample counter is the
   // frame index (10 fps → idx gap of 10 ≈ 1 s), matching the eval harness.
   const idx = sampledFrames
   const t_s = idx * SAMPLE_INTERVAL_S
-  sampledFrames += 1
+  if (collect) {
+    sampledFrames += 1
+    frameTimes[idx] = opts.t
+  }
 
   const work = document.createElement('canvas')
   work.width = video.videoWidth
   work.height = video.videoHeight
   work.getContext('2d', { willReadFrequently: true })?.drawImage(video, 0, 0)
 
-  const detection = await detectDocument(work)
+  const detection = await detectSerial(work)
+  const liveBase = {
+    t: opts.t,
+    frameW: work.width,
+    frameH: work.height,
+  }
   if (!detection) {
+    feedLive({
+      ...liveBase,
+      confidence: 0,
+      quad: null,
+      areaFrac: 0,
+      score: 0,
+      hash: null,
+      data: { idx, warped: null },
+    })
     lastOverlayInfo = {
       quad: null,
       laplacian: 0,
@@ -817,6 +1157,15 @@ async function processFrame(
   }
 
   if (detection.confidence < MIN_CONFIDENCE) {
+    feedLive({
+      ...liveBase,
+      confidence: detection.confidence,
+      quad: detection.quad,
+      areaFrac: 0,
+      score: 0,
+      hash: null,
+      data: { idx, warped: null },
+    })
     lastOverlayInfo = {
       quad: detection.quad,
       laplacian: 0,
@@ -847,6 +1196,32 @@ async function processFrame(
   const ten = computeTenengrad(warped)
   const areaFrac = quadArea(detection.quad) / (work.width * work.height)
   const score = combinedScore(lap, ten, detection.confidence, areaFrac)
+
+  // Live ✓ / miss judgment sees every detected frame — no blur gate.
+  feedLive({
+    ...liveBase,
+    confidence: detection.confidence,
+    quad: detection.quad,
+    areaFrac,
+    score,
+    hash,
+    data: { idx, warped },
+  })
+  if (!collect) {
+    lastOverlayInfo = {
+      quad: detection.quad,
+      laplacian: lap,
+      tenengrad: ten,
+      area: areaFrac,
+      confidence: detection.confidence,
+      score,
+      source: detection.source,
+      srcW: work.width,
+      srcH: work.height,
+    }
+    renderOverlay()
+    return
+  }
 
   /** Reduced source frame + the detected quad mapped into its pixel space
    *  — the only inputs a later corner correction can re-warp from. The
@@ -937,7 +1312,7 @@ async function processFrame(
   // dropped at the source — they shouldn't compete for "best in cluster"
   // and they shouldn't show up in the strip drawer at all.
   let validatorResult: ValidationResult | undefined
-  if (opts.enableLlm && llmAvailable.value) {
+  if (opts.enableLlm === true && llmAvailable.value) {
     try {
       const dataUrl = warped.toDataURL('image/jpeg', 0.75)
       validatorResult = await validateFrame(dataUrl)
@@ -1039,51 +1414,88 @@ function bufferedMb(): string {
   return `mem warp=${mb(warp)}MB  src=${mb(src)}MB`
 }
 
+const SIGNAL_COLOR: Record<LiveSignal, string> = {
+  none: 'rgba(255, 255, 255, 0.7)',
+  hold: '#facc15',
+  captured: '#22c55e',
+  missed: '#ef4444',
+}
+
+/**
+ * Viewport overlay: the detected page outline colored by the live judge —
+ * yellow + progress while held, green at ✓, red when a page was turned
+ * before it was captured. `?debug=1` adds the metric readout.
+ */
 function renderOverlay(): void {
-  if (!debugMode.value) return
   const canvas = overlayRef.value
   const video = videoRef.value
-  const info = lastOverlayInfo
-  if (!canvas || !video || !info) return
+  if (!canvas || !video) return
   const rect = video.getBoundingClientRect()
-  if (canvas.width !== rect.width || canvas.height !== rect.height) {
+  if (canvas.width !== Math.round(rect.width) || canvas.height !== Math.round(rect.height)) {
     canvas.width = Math.round(rect.width)
     canvas.height = Math.round(rect.height)
   }
   const ctx = canvas.getContext('2d')
   if (!ctx) return
   ctx.clearRect(0, 0, canvas.width, canvas.height)
+  if (phase.value !== 'scanning') return
+  const info = lastOverlayInfo
+  const signal = liveSignal.value
+  const color = SIGNAL_COLOR[signal]
 
-  // Map source coords → on-screen coords. Video uses object-fit: contain,
-  // so compute letterboxed viewport the same way.
-  const scale = Math.min(canvas.width / info.srcW, canvas.height / info.srcH)
-  const dispW = info.srcW * scale
-  const dispH = info.srcH * scale
-  const offX = (canvas.width - dispW) / 2
-  const offY = (canvas.height - dispH) / 2
-  const toScreen = (p: { x: number; y: number }) => ({
-    x: offX + p.x * scale,
-    y: offY + p.y * scale,
-  })
-
-  if (info.quad) {
-    ctx.strokeStyle = '#22c55e'
-    ctx.lineWidth = 3
+  if (info?.quad) {
+    // Map source coords → on-screen coords. Video uses object-fit: contain,
+    // so compute the letterboxed viewport the same way.
+    const scale = Math.min(canvas.width / info.srcW, canvas.height / info.srcH)
+    const offX = (canvas.width - info.srcW * scale) / 2
+    const offY = (canvas.height - info.srcH * scale) / 2
+    const toScreen = (p: { x: number; y: number }) => ({
+      x: offX + p.x * scale,
+      y: offY + p.y * scale,
+    })
+    ctx.strokeStyle = color
+    ctx.lineWidth = signal === 'none' ? 2 : 5
     ctx.beginPath()
     const pts = [info.quad.tl, info.quad.tr, info.quad.br, info.quad.bl]
     pts.forEach((p, i) => {
-      const s = toScreen(p)
-      if (i === 0) ctx.moveTo(s.x, s.y)
-      else ctx.lineTo(s.x, s.y)
+      const sp = toScreen(p)
+      if (i === 0) ctx.moveTo(sp.x, sp.y)
+      else ctx.lineTo(sp.x, sp.y)
     })
     ctx.closePath()
     ctx.stroke()
-  } else {
-    ctx.fillStyle = 'rgba(239, 68, 68, 0.9)'
-    ctx.font = '16px system-ui, sans-serif'
-    ctx.fillText('no quad', 12, 28)
   }
 
+  if (signal === 'hold' || signal === 'captured') {
+    const w = canvas.width - 32
+    const p = signal === 'captured' ? 1 : Math.min(1, liveProgress.value)
+    ctx.fillStyle = 'rgba(15, 23, 42, 0.55)'
+    ctx.fillRect(16, 16, w, 10)
+    ctx.fillStyle = color
+    ctx.fillRect(16, 16, w * p, 10)
+  }
+  if (signal === 'captured') {
+    ctx.fillStyle = color
+    ctx.font = 'bold 56px system-ui, sans-serif'
+    ctx.textAlign = 'center'
+    ctx.fillText('✓', canvas.width / 2, canvas.height / 2 + 20)
+    ctx.textAlign = 'start'
+  }
+  if (signal === 'missed') {
+    const text = 'まだ撮れていません'
+    ctx.font = 'bold 20px system-ui, sans-serif'
+    const tw = ctx.measureText(text).width
+    const x = (canvas.width - tw) / 2
+    ctx.fillStyle = 'rgba(239, 68, 68, 0.92)'
+    ctx.fillRect(x - 14, 14, tw + 28, 38)
+    ctx.fillStyle = '#fff'
+    ctx.fillText(text, x, 40)
+    ctx.strokeStyle = color
+    ctx.lineWidth = 6
+    ctx.strokeRect(3, 3, canvas.width - 6, canvas.height - 6)
+  }
+
+  if (!debugMode.value || !info) return
   ctx.fillStyle = 'rgba(15, 23, 42, 0.75)'
   ctx.fillRect(8, canvas.height - 114, 340, 106)
   ctx.fillStyle = '#e2e8f0'
@@ -1110,6 +1522,11 @@ function resetPipelineState(): void {
   preScanPages.value = []
   mergeSelection.value = []
   bufferTruncated.value = false
+  frameTimes = []
+  scanLive = { spans: [], misses: [], shots: new Map() }
+  retakes.clear()
+  removedLive.clear()
+  reportView.value = []
   closeMembers()
   closeQuadEdit()
   if (overlayRef.value) {
@@ -1150,6 +1567,7 @@ async function startFromFile(): Promise<void> {
 
     captured.value = []
     resetPipelineState()
+    startLive(undefined)
     statusText.value = '検出器初期化中…'
     const detectorP = ensureDetector()
 
@@ -1181,7 +1599,7 @@ async function startFromFile(): Promise<void> {
               total: sampledFrames,
             }
           }
-          await processFrame(video, { enableLlm })
+          await processFrame(video, { enableLlm, t: video.currentTime })
         }
         if (!video.ended) video.requestVideoFrameCallback(step)
         else resolve()
@@ -1190,6 +1608,7 @@ async function startFromFile(): Promise<void> {
       video.onended = () => resolve()
     })
 
+    await endLive()
     statusText.value = `選抜中… (候補 ${acceptedRecords.length})`
     await finalizeScan({ enableLlm })
 
@@ -1221,7 +1640,13 @@ function pickFile(): Promise<File | null> {
 // Live-camera mode
 // ---------------------------------------------------------------------------
 
-async function startCamera(): Promise<void> {
+/**
+ * Start the camera. With `retakeOf` (start time of a missed page) this is a
+ * retake: no records are collected, and the first ✓ replaces that miss in
+ * the report and stops the camera.
+ */
+async function startCamera(retakeOf?: number): Promise<void> {
+  const retaking = typeof retakeOf === 'number'
   phase.value = 'loading'
   errorText.value = ''
   try {
@@ -1237,6 +1662,7 @@ async function startCamera(): Promise<void> {
       },
       audio: false,
     })
+    video.removeAttribute('src')
     video.srcObject = mediaStream.value
     await video.play()
 
@@ -1246,23 +1672,26 @@ async function startCamera(): Promise<void> {
     await ensureDetector()
 
     // Keep existing captured list (camera is "add more"), just reset counters.
-    resetPipelineState()
+    if (!retaking) resetPipelineState()
+    startLive(mediaStream.value.getVideoTracks()[0])
+    retakeTarget.value = retaking ? retakeOf : null
     phase.value = 'scanning'
-    statusText.value = '書類を映してください'
+    statusText.value = ''
 
-    let lastSampleT = performance.now() - 10000
+    const t0 = performance.now()
+    let lastSampleT = t0 - 10000
     const loop = async () => {
-      if (phase.value !== 'scanning') return
+      if (phase.value !== 'scanning' || !mediaStream.value) return
       const now = performance.now()
       if (now - lastSampleT >= SAMPLE_INTERVAL_S * 1000) {
         lastSampleT = now
-        await processFrame(video)
-        statusText.value = `検出 ${detectedFrames}/${sampledFrames} / 候補 ${acceptedRecords.length}`
+        await processFrame(video, { t: (now - t0) / 1000, collect: !retaking })
       }
       video.requestVideoFrameCallback(loop)
     }
     video.requestVideoFrameCallback(loop)
   } catch (err) {
+    retakeTarget.value = null
     phase.value = 'error'
     errorText.value =
       err instanceof Error ? err.message : 'カメラ起動に失敗しました'
@@ -1270,22 +1699,54 @@ async function startCamera(): Promise<void> {
   }
 }
 
-async function stopCamera(): Promise<void> {
+function releaseCamera(): void {
   mediaStream.value?.getTracks().forEach((t) => t.stop())
   mediaStream.value = null
   const video = videoRef.value
   if (video) video.srcObject = null
+}
+
+async function stopCamera(): Promise<void> {
+  // Retake abandoned before a ✓: nothing changes.
+  if (retakeTarget.value !== null) {
+    retakeTarget.value = null
+    releaseCamera()
+    judge = null
+    phase.value = captured.value.length > 0 || reportView.value.length > 0 ? 'done' : 'idle'
+    return
+  }
+  releaseCamera()
 
   // Run Stage 2 selection on whatever the user captured this session.
   // Live camera path intentionally skips LLM — per-frame Gemma 4 would
   // make stop→done feel unresponsive (10+ s per cluster).
   phase.value = 'loading'
+  await endLive()
   statusText.value = `選抜中… (候補 ${acceptedRecords.length})`
   await finalizeScan({ enableLlm: false })
 
-  phase.value = captured.value.length > 0 ? 'done' : 'idle'
+  phase.value =
+    captured.value.length > 0 || reportView.value.length > 0 ? 'done' : 'idle'
   statusText.value =
     captured.value.length > 0 ? `完了: ${captured.value.length} 枚` : ''
+}
+
+function retakeRow(rowId: string): void {
+  if (!rowId.startsWith('m')) return
+  void startCamera(Number(rowId.slice(1)))
+}
+
+/** First ✓ of a retake: it fills the missed row and the camera stops. */
+async function finishRetake(missStartT: number, shot: LiveShot): Promise<void> {
+  retakes.set(missStartT, shot)
+  releaseCamera()
+  judge = null
+  captured.value = [
+    ...preScanPages.value,
+    ...(await buildPagesFromClusters(repairClusters.value)),
+  ]
+  phase.value = 'done'
+  void saveSession(captured.value.map(pageToStored))
 }
 
 // ---------------------------------------------------------------------------
@@ -1296,8 +1757,16 @@ function removePage(id: string): void {
   // A page backed by a cluster must be removed through the cluster, or the
   // next repair would rebuild it from clusters that still contain it.
   const page = captured.value.find((p) => p.id === id)
+  // Live / retaken pages are rebuilt from the report on every repair, so
+  // their removal is remembered there, not just in the list.
+  if (page?.livePageNo !== undefined) removedLive.add(page.livePageNo)
+  if (page?.retakeOf !== undefined) retakes.delete(page.retakeOf)
   if (page?.clusterKey !== undefined) {
     void repairRemove(page.clusterKey)
+    return
+  }
+  if (page?.livePageNo !== undefined || page?.retakeOf !== undefined) {
+    void applyRepair(repairClusters.value)
     return
   }
   captured.value = captured.value.filter((p) => p.id !== id)
@@ -1547,7 +2016,6 @@ function pageIndexById(id: string): number {
         muted
       />
       <canvas
-        v-if="debugMode"
         ref="overlayRef"
         class="viewport__overlay"
         :class="{
@@ -1672,7 +2140,26 @@ raw: {{ selectedPage.llmDebug.bestFramePick.raw }}</pre
       <div v-else-if="phase === 'error'" class="splash splash--error">
         <p class="splash__error">{{ errorText }}</p>
       </div>
+
+      <ol v-if="phase === 'scanning' && liveStrip.length" class="live-strip">
+        <li
+          v-for="chip in liveStrip"
+          :key="chip.id"
+          :class="`live-strip__chip live-strip__chip--${chip.kind}`"
+        >
+          <img v-if="chip.thumb" :src="chip.thumb" alt="" />
+          <span class="live-strip__mark">{{ chip.kind === 'captured' ? '✓' : '!' }}</span>
+        </li>
+      </ol>
     </section>
+
+    <CaptureReport
+      v-if="phase === 'done' && reportView.length > 0"
+      :rows="reportView"
+      :retake-busy="retakeTarget !== null"
+      @retake="retakeRow"
+      @remove="removePage"
+    />
 
     <details
       v-if="captured.length > 0"
@@ -1761,7 +2248,7 @@ raw: {{ selectedPage.llmDebug.bestFramePick.raw }}</pre
 
     <footer class="controls">
       <template v-if="phase === 'idle' || phase === 'error'">
-        <button class="btn btn--primary" type="button" @click="startCamera">
+        <button class="btn btn--primary" type="button" @click="startCamera()">
           カメラで撮影
         </button>
         <button class="btn btn--secondary" type="button" @click="startFromFile">
@@ -1780,7 +2267,7 @@ raw: {{ selectedPage.llmDebug.bestFramePick.raw }}</pre
 
       <template v-else-if="phase === 'scanning'">
         <button class="btn btn--secondary" type="button" @click="stopCamera">
-          {{ mediaStream ? '停止' : '処理中…' }}
+          {{ mediaStream ? (retakeTarget !== null ? 'やめる' : '停止') : '処理中…' }}
         </button>
       </template>
 
@@ -1793,7 +2280,7 @@ raw: {{ selectedPage.llmDebug.bestFramePick.raw }}</pre
         >
           {{ pdfExporting ? 'PDF 生成中…' : `PDF 出力 (${captured.length})` }}
         </button>
-        <button class="btn btn--secondary" type="button" @click="startCamera">
+        <button class="btn btn--secondary" type="button" @click="startCamera()">
           追加撮影
         </button>
         <button class="btn btn--secondary" type="button" @click="startFromFile">
@@ -1821,6 +2308,54 @@ raw: {{ selectedPage.llmDebug.bestFramePick.raw }}</pre
 </template>
 
 <style scoped>
+.live-strip {
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  display: flex;
+  gap: 6px;
+  margin: 0;
+  padding: 8px 12px;
+  list-style: none;
+  overflow-x: auto;
+  background: linear-gradient(to top, rgba(15, 23, 42, 0.8), rgba(15, 23, 42, 0));
+  z-index: 3;
+}
+.live-strip__chip {
+  position: relative;
+  flex: 0 0 auto;
+  width: 40px;
+  height: 52px;
+  border-radius: 6px;
+  border: 3px solid;
+  overflow: hidden;
+  background: rgba(148, 163, 184, 0.4);
+}
+.live-strip__chip--captured {
+  border-color: #22c55e;
+}
+.live-strip__chip--missed {
+  border-color: #ef4444;
+}
+.live-strip__chip img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+.live-strip__mark {
+  position: absolute;
+  right: 1px;
+  bottom: 0;
+  font-weight: 800;
+  font-size: 14px;
+  line-height: 1;
+  color: #fff;
+  text-shadow: 0 0 3px #000;
+}
+.live-strip__chip--missed .live-strip__mark {
+  color: #fecaca;
+}
 .app {
   display: flex;
   flex-direction: column;
