@@ -56,9 +56,9 @@ apps/web/public/models/ocr/*.onnx
 # Run `scripts/download-siglip-model.sh` to fetch it.
 apps/web/public/models/siglip-*.onnx
 
-# Document corner detector — fine-tuned per-deployment, see
-# docs/training-doc-corners.md. Untracked so each fork can train its own.
-apps/web/public/models/doc-corners.onnx
+# Document corner detector (apps/web/public/models/doc-corners.onnx) is
+# committed so every deploy and preview ships it; retrain per
+# docs/training-doc-corners.md to replace it.
 
 # Corner labeler outputs (scripts/label). annotations.json is the
 # source-of-truth labeling effort and SHOULD be committed; everything
