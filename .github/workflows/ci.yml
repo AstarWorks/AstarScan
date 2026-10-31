@@ -1,10 +1,10 @@
 name: CI
 
 on:
+  # Every branch: main deploys to production, other branches upload a
+  # preview version (see the `preview` job) without touching production.
   push:
-    branches: [main]
   pull_request:
-    branches: [main]
   workflow_dispatch:
 
 concurrency:
@@ -58,6 +58,77 @@ jobs:
           accountId: ${{ vars.CLOUDFLARE_ACCOUNT_ID }}
           packageManager: bun
           command: deploy
+
+  preview:
+    name: Preview upload (non-main branches)
+    needs: ci
+    # Uploads a new Worker version with a branch preview alias. Uses
+    # `wrangler versions upload`, which never changes the version serving
+    # production traffic (only `wrangler deploy` on main does that).
+    if: github.event_name == 'push' && github.ref != 'refs/heads/main'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: latest
+
+      - run: bun install
+
+      - name: Build
+        run: bun run build
+
+      - name: Compute preview alias
+        id: alias
+        env:
+          BRANCH: ${{ github.ref_name }}
+        run: |
+          # lowercase, [a-z0-9-] only, no leading/trailing/double dashes.
+          alias=$(printf '%s' "$BRANCH" | tr '[:upper:]' '[:lower:]' | sed -E 's/[^a-z0-9-]+/-/g; s/-+/-/g; s/^-+//; s/-+$//')
+          # Alias must start with a letter.
+          case "$alias" in [a-z]*) ;; *) alias="b-$alias" ;; esac
+          # <alias>-astar-scan must fit in a 63-char DNS label.
+          alias=$(printf '%s' "$alias" | cut -c1-50 | sed -E 's/-+$//')
+          echo "alias=$alias" >> "$GITHUB_OUTPUT"
+
+      - name: Upload preview version
+        id: upload
+        uses: cloudflare/wrangler-action@v3
+        with:
+          apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          accountId: ${{ vars.CLOUDFLARE_ACCOUNT_ID }}
+          packageManager: bun
+          wranglerVersion: '4.40.0'
+          command: versions upload --preview-alias ${{ steps.alias.outputs.alias }}
+
+      - name: Write preview URL to job summary
+        env:
+          OUTPUT: ${{ steps.upload.outputs.command-output }}
+          ALIAS: ${{ steps.alias.outputs.alias }}
+          BRANCH: ${{ github.ref_name }}
+        run: |
+          alias_url=$(printf '%s\n' "$OUTPUT" | grep -oE 'https://[^ ]+' | grep -E "^https://$ALIAS-" | head -n1 || true)
+          version_url=$(printf '%s\n' "$OUTPUT" | grep -oE 'https://[^ ]+\.workers\.dev' | grep -vE "^https://$ALIAS-" | head -n1 || true)
+          version_id=$(printf '%s\n' "$OUTPUT" | grep -oE 'Worker Version ID: [0-9a-f-]+' | head -n1 | sed 's/.*: //' || true)
+          {
+            echo "## Preview (production is NOT changed)"
+            echo ""
+            echo "| | |"
+            echo "|---|---|"
+            echo "| Branch | \`$BRANCH\` |"
+            echo "| Alias URL | ${alias_url:-not found in wrangler output} |"
+            echo "| Version URL | ${version_url:-not found in wrangler output} |"
+            echo "| Version ID | \`${version_id:-unknown}\` |"
+            echo ""
+            echo "Uploaded with \`wrangler versions upload\`; production keeps serving the version last deployed from main."
+          } >> "$GITHUB_STEP_SUMMARY"
+          if [ -z "$alias_url" ]; then
+            echo "::warning::Preview alias URL not found in wrangler output"
+            printf '%s\n' "$OUTPUT"
+          fi
 
   android:
     name: Build Android APK (experimental)
