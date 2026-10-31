@@ -48,6 +48,10 @@ jobs:
 
       - run: bun install
 
+      # opencv.js / ort WASM are git-ignored; see the script for the list.
+      - name: Fetch public assets
+        run: bash scripts/fetch-public-assets.sh
+
       - name: Build
         run: bun run build
 
@@ -77,6 +81,10 @@ jobs:
           bun-version: latest
 
       - run: bun install
+
+      # opencv.js / ort WASM are git-ignored; see the script for the list.
+      - name: Fetch public assets
+        run: bash scripts/fetch-public-assets.sh
 
       - name: Build
         run: bun run build
@@ -149,6 +157,8 @@ jobs:
           prod_build=$(curl -sS "$PROD_URL/_nuxt/builds/latest.json" | jq -r '.id' || echo unknown)
           has_app=no
           grep -q 'id="__nuxt"' page.html && has_app=yes
+          opencv_status=$(curl -sS -o /dev/null -w '%{http_code}' "$ALIAS_URL/opencv.js" || echo 000)
+          ort_status=$(curl -sS -o /dev/null -w '%{http_code}' "$ALIAS_URL/ort/ort-wasm-simd-threaded.jsep.wasm" || echo 000)
           {
             echo ""
             echo "### Check"
@@ -157,13 +167,19 @@ jobs:
             echo "|---|---|"
             echo "| Preview HTTP status | $status |"
             echo "| Preview serves the Nuxt app shell | $has_app |"
+            echo "| \`/opencv.js\` HTTP status | $opencv_status |"
+            echo "| \`/ort/ort-wasm-simd-threaded.jsep.wasm\` HTTP status | $ort_status |"
             echo "| Build ID of this commit | \`$local_build\` |"
             echo "| Build ID served by preview | \`$preview_build\` |"
             echo "| Build ID served by production ($PROD_URL) | \`$prod_build\` |"
           } >> "$GITHUB_STEP_SUMMARY"
-          echo "status=$status app=$has_app local=$local_build preview=$preview_build prod=$prod_build"
+          echo "status=$status app=$has_app local=$local_build preview=$preview_build prod=$prod_build opencv=$opencv_status ort=$ort_status"
           if [ "$status" != 200 ] || [ "$has_app" != yes ] || [ "$preview_build" != "$local_build" ]; then
             echo "::error::Preview does not serve this commit's build"
+            exit 1
+          fi
+          if [ "$opencv_status" != 200 ] || [ "$ort_status" != 200 ]; then
+            echo "::error::Preview is missing runtime assets (opencv.js=$opencv_status, ort jsep wasm=$ort_status)"
             exit 1
           fi
           if [ "$prod_build" = "$local_build" ]; then
