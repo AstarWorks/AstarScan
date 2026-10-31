@@ -8,6 +8,7 @@
  *   bun scripts/eval/live-capture.mjs --check    # exit 1 below the target
  *   bun scripts/eval/live-capture.mjs --grid     # search the parameter space
  *   bun scripts/eval/live-capture.mjs --events   # print every event
+ *   bun scripts/eval/live-capture.mjs --misses   # classify every red alert
  *   bun scripts/eval/live-capture.mjs --opts '{"holdS":0.6}'  # try overrides
  *
  * A ✓ is assigned to the GT page whose timeRangeS contains its chosen
@@ -16,7 +17,15 @@
  * function regress.mjs reports.
  *
  * Target (task spec): ✓ on ≥ 21 of the 22 real pages, duplicate ✓ ≤ 3,
- * non-page ✓ = 0.
+ * non-page ✓ = 0, and no red alert ("まだ撮れていません") unless the page
+ * really got no ✓.
+ *
+ * Every red alert is classified (`--misses`) by the GT page under its
+ * best frame and the ✓ events of that page:
+ *   real          the page never got a ✓ (a true miss)
+ *   before-✓      the page got its ✓ right after (placed / settling)
+ *   after-✓       the page had its ✓ already (re-gripped / taken away)
+ *   non-page      no GT page under the frame (desk, hand, mid-turn)
  */
 
 import path from 'node:path'
@@ -38,7 +47,12 @@ const GT_DIR = path.join(REPO_ROOT, 'test/fixtures/gt')
 const FRAME_W = 720
 const FRAME_H = 1280
 
-export const TARGET = { minMatched: 21, maxDuplicates: 3, maxNonPage: 0 }
+export const TARGET = {
+  minMatched: 21,
+  maxDuplicates: 3,
+  maxNonPage: 0,
+  maxFalseAlerts: 0,
+}
 
 export async function loadGtLogs() {
   const out = []
@@ -107,7 +121,19 @@ export function replay(log, opts = {}) {
   )
   const missRows = misses.map((e) => {
     const pageId = pageAt(log.manifest, e.best.t)
-    return { ...e, pageId, real: pageId !== null && !capturedPages.has(pageId) }
+    const real = pageId !== null && !capturedPages.has(pageId)
+    const capT = assignments
+      .filter((a) => a.pageId === pageId)
+      .map((a) => a.t_s)
+    const kind =
+      pageId === null
+        ? 'non-page'
+        : real
+          ? 'real'
+          : capT.some((t) => t >= e.startT)
+            ? 'before-✓'
+            : 'after-✓'
+    return { ...e, pageId, real, kind }
   })
   return { events, assignments, metrics, misses: missRows }
 }
@@ -140,7 +166,8 @@ export function meetsTarget(total) {
   return (
     total.matchedPages >= TARGET.minMatched &&
     total.duplicates <= TARGET.maxDuplicates &&
-    total.falsePositives <= TARGET.maxNonPage
+    total.falsePositives <= TARGET.maxNonPage &&
+    total.missAlerts - total.missAlertsReal <= TARGET.maxFalseAlerts
   )
 }
 
@@ -181,6 +208,7 @@ if (import.meta.main) {
       sameDist: [30, 50, 70],
       minConfidence: [0.25, 0.4, 0.5],
       maxMotion: [0.05, 0.06, 0.07, 0.08, 0.12, Infinity],
+      leaveS: [0.5, 1.0, 1.5],
       missMinS: [0.3, 0.6],
     }
     const keys = Object.keys(grid)
@@ -199,6 +227,9 @@ if (import.meta.main) {
         b.total.matchedPages - a.total.matchedPages ||
         a.total.falsePositives - b.total.falsePositives ||
         a.total.duplicates - b.total.duplicates ||
+        a.total.missAlerts -
+          a.total.missAlertsReal -
+          (b.total.missAlerts - b.total.missAlertsReal) ||
         a.total.missAlerts - b.total.missAlerts,
     )
     for (const r of rows.slice(0, 40))
@@ -225,6 +256,17 @@ if (import.meta.main) {
             : ''
         console.log(
           `${e.t.toFixed(1)}s ${e.type}${e.pageNo ? ' #' + e.pageNo : ''}${a}`,
+        )
+      }
+    }
+  }
+  if (args.includes('--misses')) {
+    console.log('\n| 動画 | 赤の時刻 | 映っていた範囲 | ページ | 分類 |')
+    console.log('|---|---|---|---|---|')
+    for (const r of res.per) {
+      for (const m of r.misses) {
+        console.log(
+          `| ${r.id} | ${m.t.toFixed(1)}s | ${m.startT.toFixed(1)}–${m.endT.toFixed(1)}s | ${m.pageId ?? '—'} | ${m.kind} |`,
         )
       }
     }

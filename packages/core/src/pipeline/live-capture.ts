@@ -17,8 +17,17 @@
  *     hold and starts a new one (page turned). After a capture the
  *     reference picture is frozen, so a hold cannot drift onto the next
  *     page through a chain of similar-looking frames.
- *   - A hold that ends without a capture after being visible for
- *     `missMinS` is reported as `missed`.
+ *   - Misses are NOT decided per hold. pHash flickers by 50–110 bits
+ *     between consecutive frames of the same hand-held page, so holds
+ *     split while a page is being placed, settled or re-gripped; reporting
+ *     every uncaptured hold flagged pages that were ✓'d a moment before or
+ *     after (8 of 9 alerts in the GT replay). Instead the judge tracks the
+ *     stretch during which a page stays in view. When no page has been
+ *     seen for `leaveS` the page has left the view — "it went away without
+ *     being captured" — and a stretch that showed a page for `missMinS`
+ *     without any ✓ is reported as `missed`. A page swapped for the next
+ *     one without ever leaving the view is therefore not flagged live; the
+ *     end-of-scan report still lists it (`recovered` / `missed`).
  *   - Detection dropping out for up to `gapS` does not end the hold. A hold
  *     that re-forms within `gapS` of the last captured page with a picture
  *     within `sameDist` continues that page (`resumed`, no second ✓).
@@ -49,7 +58,12 @@ export const LIVE_CAPTURE_DEFAULTS = {
   /** pHash distance at or below which a re-formed hold is the page that
    *  was just captured (within `gapS`). */
   sameDist: 50,
-  /** Seconds an uncaptured hold must have been visible to report a miss. */
+  /** Seconds without any page in view after which the page counts as
+   *  having left the view: the stretch ends and, if it got no ✓, is
+   *  reported as missed. Replay gives the same result for 0.5–1.5 s; the
+   *  middle of that range is used. */
+  leaveS: 1.0,
+  /** Seconds an uncaptured stretch must have been visible to report a miss. */
   missMinS: 0.6,
 } as const
 
@@ -135,6 +149,17 @@ interface CapturedRef extends LivePageSpan {
   hash: bigint
 }
 
+/** A stretch during which some page stayed in view (see `leaveS`). */
+interface Visit<T> {
+  startT: number
+  lastSeenT: number
+  best: LiveFrame<T>
+  /** Latest hold seen in the stretch (reported on the miss). */
+  holdId: number
+  /** A ✓ (or a resumed ✓ page) happened during the stretch. */
+  captured: boolean
+}
+
 const EPS = 1e-6
 
 export class LiveCaptureJudge<T = unknown> {
@@ -143,6 +168,7 @@ export class LiveCaptureJudge<T = unknown> {
   #captured: CapturedRef[] = []
   #nextHoldId = 1
   #prevQuad: Quad | null = null
+  #visit: Visit<T> | null = null
 
   constructor(opts: Partial<LiveCaptureOptions> = {}) {
     this.opts = { ...LIVE_CAPTURE_DEFAULTS, ...opts }
@@ -178,14 +204,41 @@ export class LiveCaptureJudge<T = unknown> {
     const h = this.#hold
 
     if (!this.isPage(f) || f.hash === null) {
-      if (h && f.t - h.lastSeenT > o.gapS + EPS) this.#close(f.t, out)
+      if (h && f.t - h.lastSeenT > o.gapS + EPS) this.#close()
+      if (this.#visit && f.t - this.#visit.lastSeenT > o.leaveS + EPS)
+        this.#closeVisit(f.t, out)
       return out
     }
 
+    const v = this.#visit
+    if (v && f.t - v.lastSeenT > o.leaveS + EPS) this.#closeVisit(f.t, out)
+    const visit = (this.#visit ??= {
+      startT: f.t,
+      lastSeenT: f.t,
+      best: f,
+      holdId: 0,
+      captured: false,
+    })
+    visit.lastSeenT = f.t
+    if (f.score > visit.best.score) visit.best = f
+    this.#pushPage(f, still, out)
+    const hold = this.#hold
+    if (hold) {
+      visit.holdId = hold.id
+      if (hold.pageNo !== null) visit.captured = true
+    }
+    return out
+  }
+
+  #pushPage(f: LiveFrame<T>, still: boolean, out: LiveCaptureEvent<T>[]): void {
+    const o = this.opts
+    const h = this.#hold
+    if (f.hash === null) return
+
     if (!h || f.t - h.lastSeenT > o.gapS + EPS) {
-      if (h) this.#close(f.t, out)
+      if (h) this.#close()
       this.#open([f], still, out)
-      return out
+      return
     }
 
     if (hamming(f.hash, h.ref) <= o.changeDist) {
@@ -200,7 +253,7 @@ export class LiveCaptureJudge<T = unknown> {
       if (!still) h.stillSinceT = null
       else if (h.stillSinceT === null) h.stillSinceT = f.t
       this.#progress(f.t, out)
-      return out
+      return
     }
 
     // Different picture. Only a change that persists is a page turn.
@@ -209,16 +262,16 @@ export class LiveCaptureJudge<T = unknown> {
     if (f.t - first.t >= o.changeS - EPS) {
       const seed = h.pending
       h.pending = []
-      this.#close(f.t, out)
+      this.#close()
       this.#open(seed, still, out)
     }
-    return out
   }
 
-  /** End of scan: closes the open hold (may emit `missed`). */
+  /** End of scan: closes the open hold and stretch (may emit `missed`). */
   finish(t: number): LiveCaptureEvent<T>[] {
     const out: LiveCaptureEvent<T>[] = []
-    this.#close(t, out)
+    this.#close()
+    this.#closeVisit(t, out)
     return out
   }
 
@@ -294,17 +347,26 @@ export class LiveCaptureJudge<T = unknown> {
     })
   }
 
-  #close(t: number, out: LiveCaptureEvent<T>[]): void {
-    const h = this.#hold
+  /** Ends the current hold. An uncaptured hold is not a miss by itself:
+   *  holds split on pHash noise while the same page settles or is
+   *  re-gripped, so misses are decided per stretch (`#closeVisit`). */
+  #close(): void {
     this.#hold = null
-    if (!h || h.pageNo !== null) return
-    if (h.lastSeenT - h.startT + EPS >= this.opts.missMinS) {
+  }
+
+  /** The page left the view (or the scan ended). A stretch that showed a
+   *  page for `missMinS` without any ✓ is reported as missed. */
+  #closeVisit(t: number, out: LiveCaptureEvent<T>[]): void {
+    const v = this.#visit
+    this.#visit = null
+    if (!v || v.captured) return
+    if (v.lastSeenT - v.startT + EPS >= this.opts.missMinS) {
       out.push({
         type: 'missed',
-        holdId: h.id,
-        best: h.best,
-        startT: h.startT,
-        endT: h.lastSeenT,
+        holdId: v.holdId,
+        best: v.best,
+        startT: v.startT,
+        endT: v.lastSeenT,
         t,
       })
     }
