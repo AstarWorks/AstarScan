@@ -362,8 +362,15 @@ function feedLive(frame: LiveFrame<LiveFrameData>): void {
   if (debugMode.value) {
     console.debug(
       `[live] t=${frame.t.toFixed(2)} conf=${frame.confidence.toFixed(2)} area=${frame.areaFrac.toFixed(2)}`,
-      events.filter((e) => e.type !== 'hold').map((e) => e.type).join(',') ||
-        events.map((e) => (e.type === 'hold' ? `hold ${e.progress.toFixed(2)}` : '')).join(''),
+      events
+        .filter((e) => e.type !== 'hold')
+        .map((e) => e.type)
+        .join(',') ||
+        events
+          .map((e) =>
+            e.type === 'hold' ? `hold ${e.progress.toFixed(2)}` : '',
+          )
+          .join(''),
     )
   }
   for (const e of events) onLiveEvent(e)
@@ -403,7 +410,9 @@ function onLiveEvent(e: LiveCaptureEvent<LiveFrameData>): void {
           scanLive.shots.set(e.pageNo, shot)
         }
       })
-      pendingShots.push(p.catch((err) => console.warn('[live] shot failed', err)))
+      pendingShots.push(
+        p.catch((err) => console.warn('[live] shot failed', err)),
+      )
       break
     }
     case 'missed': {
@@ -411,7 +420,10 @@ function onLiveEvent(e: LiveCaptureEvent<LiveFrameData>): void {
       const warped = e.best.data.warped
       const thumb = warped ? thumbOf(warped) : ''
       scanLive.misses.push({ startT: e.startT, endT: e.endT, thumb })
-      liveStrip.value = [...liveStrip.value, { id: `m${e.startT}`, kind: 'missed', thumb }]
+      liveStrip.value = [
+        ...liveStrip.value,
+        { id: `m${e.startT}`, kind: 'missed', thumb },
+      ]
       break
     }
     case 'resumed':
@@ -429,7 +441,9 @@ function quadLongEdge(q: Quad): number {
 /** Detection is serialized: the ORT session must not run two inferences at
  *  once, and the still is detected while the frame loop keeps running. */
 let detectChain: Promise<unknown> = Promise.resolve()
-function detectSerial(canvas: HTMLCanvasElement): ReturnType<typeof detectDocument> {
+function detectSerial(
+  canvas: HTMLCanvasElement,
+): ReturnType<typeof detectDocument> {
   const next = detectChain.then(() => detectDocument(canvas))
   detectChain = next.catch(() => null)
   return next
@@ -449,8 +463,19 @@ async function takeShot(videoWarped: HTMLCanvasElement): Promise<LiveShot> {
       const small = downscaleToLongSide(full, 1280)
       const det = await detectSerial(small)
       if (det && judge && det.confidence >= judge.opts.minConfidence) {
-        const quad = scaleQuad(det.quad, small.width, small.height, full.width, full.height)
-        const warped = rotateAndCropQuad(full, quad, Math.round(quadLongEdge(quad)), 0.03)
+        const quad = scaleQuad(
+          det.quad,
+          small.width,
+          small.height,
+          full.width,
+          full.height,
+        )
+        const warped = rotateAndCropQuad(
+          full,
+          quad,
+          Math.round(quadLongEdge(quad)),
+          0.03,
+        )
         const blob = await canvasToJpegBlob(warped, 0.9)
         return {
           blob,
@@ -461,7 +486,10 @@ async function takeShot(videoWarped: HTMLCanvasElement): Promise<LiveShot> {
         }
       }
     } catch (err) {
-      console.warn('[live] still could not be cropped, using the video frame', err)
+      console.warn(
+        '[live] still could not be cropped, using the video frame',
+        err,
+      )
     }
   }
   const blob = await canvasToJpegBlob(videoWarped, 0.85)
@@ -485,7 +513,11 @@ function shotPage(id: string, shot: LiveShot, capturedAt: number): Page {
 }
 
 const rowIdOf = (r: CaptureRow): string =>
-  r.missSpan ? `m${r.missSpan.startT}` : r.livePageNo !== undefined ? `l${r.livePageNo}` : `c${r.clusterKey}`
+  r.missSpan
+    ? `m${r.missSpan.startT}`
+    : r.livePageNo !== undefined
+      ? `l${r.livePageNo}`
+      : `c${r.clusterKey}`
 
 /**
  * Build the output pages and the end-of-scan table from the cluster array
@@ -542,18 +574,34 @@ async function buildPagesFromClusters(
     let thumb: string | null = null
 
     if (retake && r.missSpan) {
-      page = { ...shotPage(`s${scanId.value}-r${r.missSpan.startT}`, retake, performance.now()), retakeOf: r.missSpan.startT }
+      page = {
+        ...shotPage(
+          `s${scanId.value}-r${r.missSpan.startT}`,
+          retake,
+          performance.now(),
+        ),
+        retakeOf: r.missSpan.startT,
+      }
       kind = 'captured'
       source = retake.source
     } else if (r.kind === 'missed') {
-      thumb = scanLive.misses.find((m) => m.startT === r.missSpan?.startT)?.thumb || null
+      thumb =
+        scanLive.misses.find((m) => m.startT === r.missSpan?.startT)?.thumb ||
+        null
     } else if (r.kind === 'recovered') {
       if (c) page = await clusterPage(c)
     } else if (r.livePageNo !== undefined) {
       if (removedLive.has(r.livePageNo)) continue
       const shot = scanLive.shots.get(r.livePageNo)
       if (shot) {
-        page = { ...shotPage(`s${scanId.value}-l${r.livePageNo}`, shot, performance.now()), livePageNo: r.livePageNo }
+        page = {
+          ...shotPage(
+            `s${scanId.value}-l${r.livePageNo}`,
+            shot,
+            performance.now(),
+          ),
+          livePageNo: r.livePageNo,
+        }
         source = shot.source
         // The first live page of a cluster stands for the cluster in the
         // repair controls; a duplicate does not (one key, one page).
@@ -1431,7 +1479,10 @@ function renderOverlay(): void {
   const video = videoRef.value
   if (!canvas || !video) return
   const rect = video.getBoundingClientRect()
-  if (canvas.width !== Math.round(rect.width) || canvas.height !== Math.round(rect.height)) {
+  if (
+    canvas.width !== Math.round(rect.width) ||
+    canvas.height !== Math.round(rect.height)
+  ) {
     canvas.width = Math.round(rect.width)
     canvas.height = Math.round(rect.height)
   }
@@ -1712,7 +1763,8 @@ async function stopCamera(): Promise<void> {
     retakeTarget.value = null
     releaseCamera()
     judge = null
-    phase.value = captured.value.length > 0 || reportView.value.length > 0 ? 'done' : 'idle'
+    phase.value =
+      captured.value.length > 0 || reportView.value.length > 0 ? 'done' : 'idle'
     return
   }
   releaseCamera()
@@ -2148,7 +2200,9 @@ raw: {{ selectedPage.llmDebug.bestFramePick.raw }}</pre
           :class="`live-strip__chip live-strip__chip--${chip.kind}`"
         >
           <img v-if="chip.thumb" :src="chip.thumb" alt="" />
-          <span class="live-strip__mark">{{ chip.kind === 'captured' ? '✓' : '!' }}</span>
+          <span class="live-strip__mark">{{
+            chip.kind === 'captured' ? '✓' : '!'
+          }}</span>
         </li>
       </ol>
     </section>
@@ -2267,7 +2321,13 @@ raw: {{ selectedPage.llmDebug.bestFramePick.raw }}</pre
 
       <template v-else-if="phase === 'scanning'">
         <button class="btn btn--secondary" type="button" @click="stopCamera">
-          {{ mediaStream ? (retakeTarget !== null ? 'やめる' : '停止') : '処理中…' }}
+          {{
+            mediaStream
+              ? retakeTarget !== null
+                ? 'やめる'
+                : '停止'
+              : '処理中…'
+          }}
         </button>
       </template>
 
@@ -2319,7 +2379,11 @@ raw: {{ selectedPage.llmDebug.bestFramePick.raw }}</pre
   padding: 8px 12px;
   list-style: none;
   overflow-x: auto;
-  background: linear-gradient(to top, rgba(15, 23, 42, 0.8), rgba(15, 23, 42, 0));
+  background: linear-gradient(
+    to top,
+    rgba(15, 23, 42, 0.8),
+    rgba(15, 23, 42, 0)
+  );
   z-index: 3;
 }
 .live-strip__chip {
