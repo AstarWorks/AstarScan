@@ -19,7 +19,9 @@ same projection, so they are exact (up to the 0.1 px rounding in JSON).
 See README.md for the clip list and the JSON format.
 """
 import json, math, os, subprocess, sys
+os.environ.setdefault('OMP_NUM_THREADS', '1')  # one clip per core; avoid oversubscription
 import numpy as np, cv2
+cv2.setNumThreads(1)
 from PIL import Image, ImageDraw, ImageFont
 
 HERE = os.path.dirname(os.path.abspath(__file__))
