@@ -78,7 +78,19 @@ import {
   vibrateCaptured,
   type StillCapturer,
 } from '~/services/capture-feedback'
-import type { ReportViewRow } from '~/components/CaptureReport.vue'
+import type {
+  PrintedNoState,
+  ReportViewRow,
+} from '~/components/CaptureReport.vue'
+import { checkPageSequence } from '@astarworks/scan-core/pipeline'
+import {
+  isNativeScanner,
+  nativeErrorMessage,
+  nativeReadPage,
+  nativeSavePdf,
+  nativeScan,
+} from '~/services/native-scanner'
+import { readPageNumbers } from '~/services/page-number-reader'
 import {
   clearSession,
   loadSession,
@@ -121,6 +133,10 @@ interface Page {
   livePageNo?: number
   /** Start of the miss this page was retaken for. */
   retakeOf?: number
+  /** Android app: full-size ML Kit JPEG (`file://`) behind this page. */
+  nativeUri?: string
+  /** Android app: small JPEG for the list. */
+  thumb?: string
 }
 
 const LONG_SIDE_DEFAULT = 1200 // mode 別: card 1010 / a4 1696 / receipt 1500
@@ -847,6 +863,10 @@ onMounted(async () => {
   const saved = await loadSession()
   if (saved?.pages?.length) {
     captured.value = saved.pages.map(storedToPage)
+    if (nativeMode) {
+      phase.value = 'done'
+      queuePageNumbers(captured.value)
+    }
   }
 
   // WebGPU probe. Failing requestAdapter() (Firefox / Safari < 26 / older
@@ -1846,11 +1866,186 @@ function movePageDown(idx: number): void {
 }
 
 // ---------------------------------------------------------------------------
+// Android app: Google ML Kit Document Scanner
+// ---------------------------------------------------------------------------
+//
+// In the Android app the capture button opens ML Kit's scanner (edge
+// detection + auto-capture) instead of the web camera pipeline. Returned
+// pages go to the end-of-scan list; each page's printed number is read with
+// NDLOCR and the sequence is checked for missing / duplicated pages.
+
+const nativeMode = isNativeScanner()
+
+/** Long side of the in-webview copy (preview + page-number OCR). */
+const NATIVE_PREVIEW_LONG_SIDE = 1600
+
+type PageNoRead =
+  | { status: 'reading' }
+  | { status: 'done'; nums: number[] }
+  | { status: 'error' }
+
+const pageNoReads = ref<Record<string, PageNoRead>>({})
+let pageNoQueue: Promise<void> = Promise.resolve()
+
+function setPageNoRead(id: string, r: PageNoRead): void {
+  pageNoReads.value = { ...pageNoReads.value, [id]: r }
+}
+
+function queuePageNumbers(pages: readonly Page[]): void {
+  for (const p of pages) setPageNoRead(p.id, { status: 'reading' })
+  pageNoQueue = pageNoQueue.then(async () => {
+    let ready = true
+    try {
+      await initOcr((pr) => {
+        statusText.value = `ページ番号の読み取り準備中 ${pr.percent}%`
+      })
+    } catch (err) {
+      console.warn('[native] OCR init failed:', err)
+      ready = false
+    }
+    for (const [i, p] of pages.entries()) {
+      if (!captured.value.some((c) => c.id === p.id)) continue
+      if (!ready) {
+        setPageNoRead(p.id, { status: 'error' })
+        continue
+      }
+      statusText.value = `ページ番号を読み取り中 ${i + 1}/${pages.length}`
+      try {
+        setPageNoRead(p.id, {
+          status: 'done',
+          nums: await readPageNumbers(p.dataUrl),
+        })
+      } catch (err) {
+        console.warn(`[native] page number OCR failed for ${p.id}:`, err)
+        setPageNoRead(p.id, { status: 'error' })
+      }
+    }
+    statusText.value = ''
+  })
+}
+
+function rangeLabel(from: number, to: number): string {
+  return from === to ? `${from}` : `${from}〜${to}`
+}
+
+const nativeReportRows = computed<ReportViewRow[]>(() => {
+  const pages = captured.value
+  const reads = pages.map((p) => pageNoReads.value[p.id])
+  const seq = checkPageSequence(
+    reads.map((r) => (r?.status === 'done' ? r.nums : [])),
+  )
+  const rows: ReportViewRow[] = []
+  pages.forEach((p, i) => {
+    for (const m of seq.missing) {
+      if (m.beforeIndex !== i) continue
+      rows.push({
+        id: `gap-${m.from}-${m.to}`,
+        kind: 'missed',
+        no: null,
+        thumb: null,
+        source: null,
+        duplicateOfNo: null,
+        canRetake: false,
+        pageId: null,
+        printedNo: rangeLabel(m.from, m.to),
+        printedState: m.suspect ? 'suspect' : 'missing',
+      })
+    }
+    const r = reads[i]
+    const c = seq.pages[i]
+    let printedState: PrintedNoState
+    if (!r || r.status === 'reading') printedState = 'reading'
+    else if (r.status === 'error') printedState = 'failed'
+    else printedState = c?.state ?? 'unread'
+    const nums = r?.status === 'done' ? r.nums : []
+    const dupOf = c?.state === 'duplicate' ? c.duplicateOf : null
+    rows.push({
+      id: p.id,
+      kind: dupOf !== null ? 'duplicate' : 'captured',
+      no: i + 1,
+      thumb: p.thumb ?? p.dataUrl,
+      source: null,
+      duplicateOfNo: dupOf !== null ? dupOf + 1 : null,
+      canRetake: false,
+      pageId: p.id,
+      printedNo: nums.length > 0 ? nums.join('・') : null,
+      printedState,
+    })
+  })
+  return rows
+})
+
+const reportRows = computed<ReportViewRow[]>(() =>
+  nativeMode ? nativeReportRows.value : reportView.value,
+)
+
+async function startNativeScan(): Promise<void> {
+  phase.value = 'loading'
+  errorText.value = ''
+  statusText.value = 'スキャナー起動中…'
+  try {
+    const res = await nativeScan()
+    if (res.canceled || res.pages.length === 0) {
+      phase.value = captured.value.length > 0 ? 'done' : 'idle'
+      statusText.value = ''
+      return
+    }
+    statusText.value = '取り込み中…'
+    const now = Date.now()
+    const pages: Page[] = []
+    for (const [i, s] of res.pages.entries()) {
+      pages.push({
+        id: `n${now}-${i + 1}`,
+        dataUrl: await nativeReadPage(s.uri, NATIVE_PREVIEW_LONG_SIDE),
+        width: s.width,
+        height: s.height,
+        capturedAt: now,
+        nativeUri: s.uri,
+        thumb: s.thumb,
+      })
+    }
+    captured.value = [...captured.value, ...pages]
+    void saveSession(captured.value.map(pageToStored))
+    phase.value = 'done'
+    statusText.value = ''
+    queuePageNumbers(pages)
+  } catch (err) {
+    phase.value = 'error'
+    errorText.value = `スキャナーを起動できませんでした: ${nativeErrorMessage(err)}`
+    statusText.value = ''
+  }
+}
+
+const savedPdfPath = ref('')
+
+async function exportNativePdf(): Promise<void> {
+  pdfExporting.value = true
+  try {
+    const stamp = new Date()
+      .toISOString()
+      .replace(/[-:]/g, '')
+      .replace('T', '-')
+      .slice(0, 15)
+    const res = await nativeSavePdf(
+      captured.value.map((p) => p.nativeUri ?? p.dataUrl),
+      `astarscan-${stamp}`,
+      true,
+    )
+    savedPdfPath.value = res.path
+  } catch (err) {
+    errorText.value = `PDF を保存できませんでした: ${nativeErrorMessage(err)}`
+  } finally {
+    pdfExporting.value = false
+  }
+}
+
+// ---------------------------------------------------------------------------
 // PDF export
 // ---------------------------------------------------------------------------
 
 async function exportPdf(): Promise<void> {
   if (captured.value.length === 0 || pdfExporting.value) return
+  if (nativeMode) return exportNativePdf()
   pdfExporting.value = true
   try {
     const pdf = new jsPDF({
@@ -1980,6 +2175,8 @@ async function exportDebugJson(): Promise<void> {
 
 async function clearAll(): Promise<void> {
   captured.value = []
+  pageNoReads.value = {}
+  savedPdfPath.value = ''
   resetPipelineState()
   await clearSession()
   phase.value = 'idle'
@@ -2177,7 +2374,11 @@ raw: {{ selectedPage.llmDebug.bestFramePick.raw }}</pre
 
       <div v-if="phase === 'idle' && !selectedPage" class="splash">
         <h2 class="splash__title">書類の山をスマホで電子化</h2>
-        <p class="splash__tagline">
+        <p v-if="nativeMode" class="splash__tagline">
+          ページを続けてスキャンし、<br />
+          PDF にまとめます。
+        </p>
+        <p v-else class="splash__tagline">
           動画ファイルから自動で書類ページを抽出し、<br />
           PDF にまとめます。
         </p>
@@ -2207,9 +2408,17 @@ raw: {{ selectedPage.llmDebug.bestFramePick.raw }}</pre
       </ol>
     </section>
 
+    <p v-if="nativeMode && savedPdfPath" class="native-saved">
+      保存しました: {{ savedPdfPath }}
+    </p>
+    <p v-if="nativeMode && phase === 'done' && errorText" class="native-error">
+      {{ errorText }}
+    </p>
+
     <CaptureReport
-      v-if="phase === 'done' && reportView.length > 0"
-      :rows="reportView"
+      v-if="phase === 'done' && reportRows.length > 0"
+      :rows="reportRows"
+      :show-printed="nativeMode"
       :retake-busy="retakeTarget !== null"
       @retake="retakeRow"
       @remove="removePage"
@@ -2301,7 +2510,36 @@ raw: {{ selectedPage.llmDebug.bestFramePick.raw }}</pre
     </details>
 
     <footer class="controls">
-      <template v-if="phase === 'idle' || phase === 'error'">
+      <template v-if="nativeMode && phase === 'done'">
+        <button
+          class="btn btn--primary"
+          type="button"
+          :disabled="!canExport"
+          @click="exportPdf"
+        >
+          {{ pdfExporting ? 'PDF 保存中…' : `PDF 保存 (${captured.length})` }}
+        </button>
+        <button
+          class="btn btn--secondary"
+          type="button"
+          @click="startNativeScan"
+        >
+          追加スキャン
+        </button>
+        <button class="btn btn--ghost" type="button" @click="clearAll">
+          すべて削除
+        </button>
+      </template>
+
+      <template
+        v-else-if="nativeMode && (phase === 'idle' || phase === 'error')"
+      >
+        <button class="btn btn--primary" type="button" @click="startNativeScan">
+          スキャン
+        </button>
+      </template>
+
+      <template v-else-if="phase === 'idle' || phase === 'error'">
         <button class="btn btn--primary" type="button" @click="startCamera()">
           カメラで撮影
         </button>
@@ -2368,6 +2606,22 @@ raw: {{ selectedPage.llmDebug.bestFramePick.raw }}</pre
 </template>
 
 <style scoped>
+.native-saved,
+.native-error {
+  margin: 8px 16px 0;
+  padding: 8px 12px;
+  border-radius: 8px;
+  font-size: 13px;
+  word-break: break-all;
+}
+.native-saved {
+  background: #dcfce7;
+  color: #166534;
+}
+.native-error {
+  background: #fee2e2;
+  color: #991b1b;
+}
 .live-strip {
   position: absolute;
   left: 0;

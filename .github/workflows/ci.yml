@@ -188,12 +188,21 @@ jobs:
           fi
 
   android:
-    name: Build Android APK (experimental)
+    name: Build Android APK
     needs: ci
-    continue-on-error: true
-    if: github.ref == 'refs/heads/main' && github.event_name == 'push'
+    # Every pushed branch: build a debug-signed APK and publish it as a
+    # per-branch GitHub prerelease ("android-<branch>") with a stable URL.
+    if: github.event_name == 'push'
     runs-on: ubuntu-latest
-    timeout-minutes: 45
+    timeout-minutes: 60
+    permissions:
+      contents: write
+    outputs:
+      tag: ${{ steps.release.outputs.tag }}
+    env:
+      # The NDLOCR models (page-number reading) are not in the APK; the app
+      # fetches them once from the upstream repo (CORS *) and caches them.
+      VITE_MODEL_BASE_URL: https://raw.githubusercontent.com/ogwata/ndlocr-lite-web-ai/main/public/models
 
     steps:
       - uses: actions/checkout@v4
@@ -205,7 +214,8 @@ jobs:
       - uses: actions-rust-lang/setup-rust-toolchain@v1
         with:
           toolchain: stable
-          target: aarch64-linux-android
+          target: aarch64-linux-android,x86_64-linux-android
+          cache-workspaces: src-tauri -> target
 
       - uses: actions/setup-java@v4
         with:
@@ -220,13 +230,121 @@ jobs:
 
       - run: bun install
 
-      - name: Build frontend
-        run: bun run build
+      # opencv.js / ort WASM are git-ignored; see the script for the list.
+      - name: Fetch public assets
+        run: bash scripts/fetch-public-assets.sh
 
       - name: Initialize Android project
-        run: bun run tauri:android:init || true
-
-      - name: Build Android APK
-        run: bun run tauri:android:build
+        run: bunx tauri android init --ci
         env:
           NDK_HOME: ${{ env.ANDROID_SDK_ROOT }}/ndk/27.0.12077973
+
+      # arm64 for phones, x86_64 for the emulator check.
+      - name: Build Android APK
+        run: bunx tauri android build --apk --ci --target aarch64 --target x86_64
+        env:
+          NDK_HOME: ${{ env.ANDROID_SDK_ROOT }}/ndk/27.0.12077973
+
+      # Same debug key across runs so a newer APK installs over an older
+      # one. It is a throwaway debug key generated here, never committed.
+      - name: Restore debug keystore
+        uses: actions/cache@v4
+        with:
+          path: ~/.android-debug-keystore
+          key: android-debug-keystore-v1
+
+      - name: Sign APK with the debug key
+        run: |
+          set -euo pipefail
+          ks=~/.android-debug-keystore/debug.keystore
+          if [ ! -f "$ks" ]; then
+            mkdir -p "$(dirname "$ks")"
+            keytool -genkeypair -keystore "$ks" -alias androiddebugkey -storepass android -keypass android \
+              -keyalg RSA -keysize 2048 -validity 10000 -dname "CN=Android Debug,O=Android,C=US"
+          fi
+          bt=$(ls "$ANDROID_SDK_ROOT/build-tools" | sort -V | tail -n1)
+          unsigned=$(find src-tauri/gen/android/app/build/outputs/apk -name '*universal-release-unsigned.apk' | head -n1)
+          echo "unsigned: $unsigned (build-tools $bt)"
+          "$ANDROID_SDK_ROOT/build-tools/$bt/zipalign" -f -p 4 "$unsigned" aligned.apk
+          "$ANDROID_SDK_ROOT/build-tools/$bt/apksigner" sign --ks "$ks" --ks-pass pass:android --key-pass pass:android \
+            --out AstarScan-android.apk aligned.apk
+          "$ANDROID_SDK_ROOT/build-tools/$bt/apksigner" verify --print-certs AstarScan-android.apk
+          ls -l AstarScan-android.apk
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: android-apk
+          path: AstarScan-android.apk
+
+      - name: Publish prerelease
+        id: release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          BRANCH: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          alias=$(printf '%s' "$BRANCH" | tr '[:upper:]' '[:lower:]' | sed -E 's/[^a-z0-9-]+/-/g; s/-+/-/g; s/^-+//; s/-+$//')
+          tag="android-$alias"
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
+          git tag -f "$tag" "$GITHUB_SHA"
+          git push -f origin "refs/tags/$tag"
+          notes="Android 版 AstarScan（ML Kit Document Scanner）。ブランチ \`$BRANCH\` の ${GITHUB_SHA:0:7} から CI が作った debug 署名の APK です。"
+          if gh release view "$tag" >/dev/null 2>&1; then
+            gh release edit "$tag" --prerelease --title "Android $BRANCH" --notes "$notes"
+          else
+            gh release create "$tag" --prerelease --title "Android $BRANCH" --notes "$notes" --verify-tag
+          fi
+          gh release upload "$tag" AstarScan-android.apk --clobber
+          url="https://github.com/$GITHUB_REPOSITORY/releases/download/$tag/AstarScan-android.apk"
+          echo "APK: $url" >> "$GITHUB_STEP_SUMMARY"
+          echo "$url"
+
+  android-emulator:
+    name: Android emulator check (ML Kit scanner)
+    needs: android
+    if: github.event_name == 'push'
+    runs-on: ubuntu-latest
+    timeout-minutes: 50
+    permissions:
+      contents: write
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: android-apk
+
+      - name: Enable KVM
+        run: |
+          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm4all.rules
+          sudo udevadm control --reload-rules
+          sudo udevadm trigger --name-match=kvm
+
+      - name: Run the app on a Google Play emulator
+        uses: reactivecircus/android-emulator-runner@v2
+        with:
+          api-level: 34
+          target: google_apis_playstore
+          arch: x86_64
+          profile: pixel_6
+          disable-animations: true
+          emulator-options: -no-window -gpu swiftshader_indirect -noaudio -no-boot-anim -camera-back virtualscene -virtualscene-poster wall=${{ github.workspace }}/scripts/android/fixtures/page-1-no12.jpg
+          script: bash scripts/android/emulator-check.sh AstarScan-android.apk emulator-out
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: emulator-check
+          path: emulator-out
+
+      - name: Attach screenshots to the prerelease
+        if: always()
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ needs.android.outputs.tag }}
+        run: |
+          set -euo pipefail
+          [ -d emulator-out ] || exit 0
+          (cd emulator-out && zip -q -r ../emulator-check.zip .)
+          gh release upload "$TAG" emulator-check.zip --clobber
