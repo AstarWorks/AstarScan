@@ -33,6 +33,7 @@ import {
   decodeYoloOutput,
   letterboxToFloat32,
   type CanvasLike,
+  type PixelBox,
 } from '@astarworks/scan-core/pipeline'
 import type * as ort from 'onnxruntime-web'
 
@@ -43,6 +44,8 @@ const MODEL_URL = '/models/doc-corners.onnx'
 
 export interface YoloPoseDetection {
   quad: Quad
+  /** The model's box in frame pixels (closer to the page than `quad`). */
+  box: PixelBox
   /** Class confidence in [0, 1] from the winning anchor. */
   confidence: number
   /** Per-corner visibility (sigmoid) in [0, 1]; ≤ 0.3 means the model
@@ -76,10 +79,13 @@ export class YoloPoseBackend {
     // Letterbox math + (1, 17, 8400) decode are shared in scan-core
     // (pipeline/yolo-decode.ts); only the onnxruntime-web Tensor wrapping
     // happens here.
-    const { data, scale, padX, padY } = letterboxToFloat32(
+    // Landscape frames are turned to portrait first: the model was
+    // trained on portrait frames only (docs/corner-accuracy-investigation.md).
+    const { data, scale, padX, padY, rotation } = letterboxToFloat32(
       frame as unknown as CanvasLike,
       browserCreateCanvas,
       YOLO_INPUT_SIZE,
+      { rotateLandscape: true },
     )
     const tensor = new ortRuntime.Tensor('float32', data, [
       1,
@@ -101,10 +107,12 @@ export class YoloPoseBackend {
       scale,
       padX,
       padY,
+      rotation,
     )
     if (!det) return null
     return {
       quad: det.quad as Quad,
+      box: det.box,
       confidence: det.confidence,
       visibility: det.visibility,
     }

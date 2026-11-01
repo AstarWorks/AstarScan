@@ -36,6 +36,11 @@
  */
 
 import type { Quad } from '@astarworks/scan-core'
+import {
+  boxAgreement,
+  type CornerRefineResult,
+  type PixelBox,
+} from '@astarworks/scan-core/pipeline'
 
 import { loadOpenCV } from './opencv-loader'
 import { getPipelineOps } from './pipeline-ops'
@@ -58,6 +63,11 @@ export interface DocDetection {
   /** [0, 1]. YOLOv8 (when active): class confidence. OpenCV: 1.0. */
   confidence: number
   source: 'yolo-pose' | 'opencv'
+  /** YOLO only: quad area / model box area (`LiveCaptureJudge` does not
+   *  ✓ a frame below `minBoxAgreement`). */
+  boxAgreement?: number
+  /** YOLO only: the corners were snapped onto the paper edge. */
+  refined?: boolean
 }
 
 type MlState =
@@ -104,10 +114,17 @@ export async function detectDocument(
       try {
         const result = await mlState.backend.detect(frame)
         if (result && result.confidence >= ML_MIN_CONFIDENCE) {
+          // The keypoints shrink inside the page; snap them onto the paper
+          // edge found inside the model's box (scan-core corner-refine).
+          const r = refineCorners(frame, result.quad, result.box)
           return {
-            quad: result.quad,
+            quad: r ? r.quad : result.quad,
             confidence: result.confidence,
             source: 'yolo-pose',
+            boxAgreement: r
+              ? r.boxAgreement
+              : boxAgreement(result.quad, result.box),
+            refined: r?.refined ?? false,
           }
         }
         // Low confidence or no detection: skip the frame. Falling through
@@ -129,6 +146,27 @@ export function getDetectorSource(): 'yolo-pose' | 'opencv' | 'pending' {
   if (mlState.kind === 'ready') return 'yolo-pose'
   if (ENABLE_ML_DETECTOR && mlState.kind !== 'unavailable') return 'pending'
   return 'opencv'
+}
+
+/** Corner snap (scan-core corner-refine), or null when OpenCV is not
+ *  loaded or the snap throws — the model's corners are then used as-is. */
+function refineCorners(
+  frame: HTMLCanvasElement,
+  quad: Quad,
+  box: PixelBox,
+): CornerRefineResult | null {
+  const ops = getPipelineOps()
+  if (!ops) return null
+  try {
+    return ops.refineCorners(
+      frame as unknown as Parameters<typeof ops.refineCorners>[0],
+      quad,
+      box,
+    )
+  } catch (err) {
+    console.warn('[doc-detector] corner refine threw, using model corners', err)
+    return null
+  }
 }
 
 // ---------------------------------------------------------------------------

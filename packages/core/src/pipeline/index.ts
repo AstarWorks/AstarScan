@@ -18,6 +18,7 @@ export * from './cv-canvas.js'
 export * from './sharpness.js'
 export * from './warp.js'
 export * from './detect-otsu.js'
+export * from './corner-refine.js'
 export * from './orb.js'
 export * from './segment-cluster.js'
 export * from './cluster-repair.js'
@@ -30,6 +31,7 @@ import { createHashOps } from './hash.js'
 import { createSharpnessOps } from './sharpness.js'
 import { createWarpOps } from './warp.js'
 import { createOtsuDetector } from './detect-otsu.js'
+import { createCornerRefiner } from './corner-refine.js'
 import { createOrbOps } from './orb.js'
 
 /** Compose every cv/canvas-dependent op set in one call. */
@@ -39,6 +41,7 @@ export function createPipelineOps(deps: PipelineDeps) {
     ...createSharpnessOps(deps),
     ...createWarpOps(deps),
     ...createOtsuDetector(deps),
+    ...createCornerRefiner(deps),
     ...createOrbOps(deps),
   }
 }
