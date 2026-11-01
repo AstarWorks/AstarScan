@@ -3,6 +3,7 @@
 python3 -I synth.py OUT_DIR W H [n_pages] [--fit]
   --fit: the whole page fits inside the frame (landscape frame with an
          upright portrait page) instead of filling the frame width.
+  --light: light grey desk (low paper/desk contrast) instead of wood.
 Writes OUT_DIR/clip.y4m (10 fps), OUT_DIR/frames/NNNN.png, OUT_DIR/gt.json
 """
 import json, os, sys, math
@@ -12,12 +13,13 @@ out, W, H = sys.argv[1], int(sys.argv[2]), int(sys.argv[3])
 pos = [a for a in sys.argv[1:] if not a.startswith('--')]
 n_pages = int(pos[3]) if len(pos) > 3 else 4
 fit = '--fit' in sys.argv
+light = '--light' in sys.argv
 rng = np.random.default_rng(7)
 os.makedirs(out + '/frames', exist_ok=True)
 
 def desk():
     base = np.zeros((H, W, 3), np.float32)
-    base[:] = (60, 105, 150)  # BGR wood
+    base[:] = (200, 205, 210) if light else (60, 105, 150)  # BGR grey / wood
     stripes = np.sin(np.linspace(0, 60, W))[None, :, None] * 12
     noise = rng.normal(0, 6, (H, W, 1))
     return np.clip(base + stripes + noise, 0, 255).astype(np.uint8)

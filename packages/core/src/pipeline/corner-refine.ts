@@ -7,7 +7,8 @@
  * So the paper edge is searched ONLY inside the box widened by a small
  * margin: Otsu threshold → morphology → largest contour → convex hull →
  * 4-vertex polygon (straight-edge fit), minAreaRect when the hull does not
- * reduce to 4 vertices. Keeping the search inside the box avoids the
+ * reduce to 4 vertices. If that finds nothing plausible, a second Otsu over
+ * the bright pixels only is tried (paper on a light desk). Keeping the search inside the box avoids the
  * full-frame OpenCV failure (page + desk in one quad).
  *
  * When the paper runs into a side of the window (the box was short there)
@@ -118,6 +119,44 @@ function matPoints(m: CvMat): Point[] {
   return out
 }
 
+/**
+ * Otsu threshold over the pixels of `gray` brighter than `above`; null
+ * when too few such pixels or no spread.
+ */
+export function otsuAbove(gray: ArrayLike<number>, above: number): number | null {
+  const hist = new Array<number>(256).fill(0)
+  let n = 0
+  for (let i = 0; i < gray.length; i += 1) {
+    const v = gray[i]!
+    if (v > above) {
+      hist[v] = hist[v]! + 1
+      n += 1
+    }
+  }
+  if (n < 64) return null
+  let sum = 0
+  for (let v = 0; v < 256; v += 1) sum += v * hist[v]!
+  let wB = 0
+  let sumB = 0
+  let best = -1
+  let bestT: number | null = null
+  for (let t = 0; t < 255; t += 1) {
+    wB += hist[t]!
+    if (wB === 0) continue
+    const wF = n - wB
+    if (wF === 0) break
+    sumB += t * hist[t]!
+    const mB = sumB / wB
+    const mF = (sum - sumB) / wF
+    const between = wB * wF * (mB - mF) * (mB - mF)
+    if (between > best) {
+      best = between
+      bestT = t
+    }
+  }
+  return bestT
+}
+
 export interface CornerRefineOps {
   /**
    * Snap `quad` (the model's corners) onto the paper edge found inside
@@ -140,6 +179,7 @@ export function createCornerRefiner({
   function findPaper(
     win: CanvasLike,
     maxArea: number,
+    level: number,
   ): { corners: Point[]; bounds: PixelBox } | null {
     const src = matFromCanvas(cv, win)
     const gray = new cv.Mat()
@@ -155,7 +195,21 @@ export function createCornerRefiner({
     )
     try {
       cv.cvtColor(src, gray, cv.COLOR_RGBA2GRAY)
-      cv.threshold(gray, binary, 0, 255, cv.THRESH_BINARY | cv.THRESH_OTSU)
+      const t1 = cv.threshold(
+        gray,
+        binary,
+        0,
+        255,
+        cv.THRESH_BINARY | cv.THRESH_OTSU,
+      )
+      if (level > 0) {
+        // Second level: Otsu over the bright side only. On a light desk
+        // the first split is ink vs (paper + desk); this one separates
+        // paper from desk.
+        const t2 = otsuAbove(gray.data, t1)
+        if (t2 === null) return null
+        cv.threshold(gray, binary, t2, 255, cv.THRESH_BINARY)
+      }
       cv.morphologyEx(binary, binary, cv.MORPH_CLOSE, kernel)
       cv.morphologyEx(binary, binary, cv.MORPH_OPEN, kernel)
       cv.findContours(
@@ -224,76 +278,79 @@ export function createCornerRefiner({
       const bh = box.y1 - box.y0
       if (!(bw > 1 && bh > 1)) return keep
       const m = o.boxMargin * Math.max(bw, bh)
-      let win: PixelBox = {
-        x0: Math.max(0, Math.floor(box.x0 - m)),
-        y0: Math.max(0, Math.floor(box.y0 - m)),
-        x1: Math.min(frame.width, Math.ceil(box.x1 + m)),
-        y1: Math.min(frame.height, Math.ceil(box.y1 + m)),
-      }
-      let snapped: Quad | null = null
-      for (let pass = 0; pass <= o.maxGrow && !snapped; pass += 1) {
-        const ww = win.x1 - win.x0
-        const wh = win.y1 - win.y0
-        if (ww < 8 || wh < 8) return keep
-        const s = Math.min(1, o.workLongSide / Math.max(ww, wh))
-        const cw = Math.max(1, Math.round(ww * s))
-        const ch = Math.max(1, Math.round(wh * s))
-        const canvas = createCanvas(cw, ch)
-        const ctx = canvas.getContext('2d', { willReadFrequently: true })
-        if (!ctx) return keep
-        ctx.drawImage(frame, win.x0, win.y0, ww, wh, 0, 0, cw, ch)
-        const found = findPaper(canvas, o.maxAreaOfWindow * cw * ch)
-        if (!found || found.corners.length !== 4) return keep
-        // The paper runs into a window edge that is not the frame edge:
-        // the box was off on that side. Widen the window there and retry.
-        const touch = 2
-        const grow = o.growStep * Math.max(bw, bh)
-        const next: PixelBox = {
-          x0:
-            found.bounds.x0 <= touch && win.x0 > 0
-              ? Math.max(0, Math.floor(win.x0 - grow))
-              : win.x0,
-          y0:
-            found.bounds.y0 <= touch && win.y0 > 0
-              ? Math.max(0, Math.floor(win.y0 - grow))
-              : win.y0,
-          x1:
-            found.bounds.x1 >= cw - 1 - touch && win.x1 < frame.width
-              ? Math.min(frame.width, Math.ceil(win.x1 + grow))
-              : win.x1,
-          y1:
-            found.bounds.y1 >= ch - 1 - touch && win.y1 < frame.height
-              ? Math.min(frame.height, Math.ceil(win.y1 + grow))
-              : win.y1,
+      const attempt = (level: number): CornerRefineResult | null => {
+        let win: PixelBox = {
+          x0: Math.max(0, Math.floor(box.x0 - m)),
+          y0: Math.max(0, Math.floor(box.y0 - m)),
+          x1: Math.min(frame.width, Math.ceil(box.x1 + m)),
+          y1: Math.min(frame.height, Math.ceil(box.y1 + m)),
         }
-        const grew =
-          next.x0 !== win.x0 ||
-          next.y0 !== win.y0 ||
-          next.x1 !== win.x1 ||
-          next.y1 !== win.y1
-        if (grew && pass < o.maxGrow) {
-          win = next
-          continue
+        let snapped: Quad | null = null
+        for (let pass = 0; pass <= o.maxGrow && !snapped; pass += 1) {
+          const ww = win.x1 - win.x0
+          const wh = win.y1 - win.y0
+          if (ww < 8 || wh < 8) return null
+          const s = Math.min(1, o.workLongSide / Math.max(ww, wh))
+          const cw = Math.max(1, Math.round(ww * s))
+          const ch = Math.max(1, Math.round(wh * s))
+          const canvas = createCanvas(cw, ch)
+          const ctx = canvas.getContext('2d', { willReadFrequently: true })
+          if (!ctx) return null
+          ctx.drawImage(frame, win.x0, win.y0, ww, wh, 0, 0, cw, ch)
+          const found = findPaper(canvas, o.maxAreaOfWindow * cw * ch, level)
+          if (!found || found.corners.length !== 4) return null
+          // The paper runs into a window edge that is not the frame edge:
+          // the box was off on that side. Widen the window there and retry.
+          const touch = 2
+          const grow = o.growStep * Math.max(bw, bh)
+          const next: PixelBox = {
+            x0:
+              found.bounds.x0 <= touch && win.x0 > 0
+                ? Math.max(0, Math.floor(win.x0 - grow))
+                : win.x0,
+            y0:
+              found.bounds.y0 <= touch && win.y0 > 0
+                ? Math.max(0, Math.floor(win.y0 - grow))
+                : win.y0,
+            x1:
+              found.bounds.x1 >= cw - 1 - touch && win.x1 < frame.width
+                ? Math.min(frame.width, Math.ceil(win.x1 + grow))
+                : win.x1,
+            y1:
+              found.bounds.y1 >= ch - 1 - touch && win.y1 < frame.height
+                ? Math.min(frame.height, Math.ceil(win.y1 + grow))
+                : win.y1,
+          }
+          const grew =
+            next.x0 !== win.x0 ||
+            next.y0 !== win.y0 ||
+            next.x1 !== win.x1 ||
+            next.y1 !== win.y1
+          if (grew && pass < o.maxGrow) {
+            win = next
+            continue
+          }
+          if (grew) return null // still clipped after the last widening
+          const sx = ww / cw
+          const sy = wh / ch
+          const x0 = win.x0
+          const y0 = win.y0
+          snapped = orderQuadCorners(
+            found.corners.map((p) => ({ x: x0 + p.x * sx, y: y0 + p.y * sy })),
+          )
         }
-        if (grew) return keep // still clipped after the last widening
-        const sx = ww / cw
-        const sy = wh / ch
-        const x0 = win.x0
-        const y0 = win.y0
-        snapped = orderQuadCorners(
-          found.corners.map((p) => ({ x: x0 + p.x * sx, y: y0 + p.y * sy })),
+        if (!snapped) return null
+        const agreement = boxAgreement(snapped, box)
+        if (
+          !isConvexQuad(snapped) ||
+          agreement < o.minAreaOfBox ||
+          agreement > o.maxAreaOfBox ||
+          !quadContains(snapped, centre(quad))
         )
+          return null
+        return { quad: snapped, refined: true, boxAgreement: agreement }
       }
-      if (!snapped) return keep
-      const agreement = boxAgreement(snapped, box)
-      if (
-        !isConvexQuad(snapped) ||
-        agreement < o.minAreaOfBox ||
-        agreement > o.maxAreaOfBox ||
-        !quadContains(snapped, centre(quad))
-      )
-        return keep
-      return { quad: snapped, refined: true, boxAgreement: agreement }
+      return attempt(0) ?? attempt(1) ?? keep
     },
   }
 }
