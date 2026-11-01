@@ -12,11 +12,14 @@
     "typecheck": "tsc --noEmit",
     "lint": "echo 'TODO: eslint' && exit 0",
     "test": "echo 'TODO: vitest' && exit 0",
-    "clean": "rm -rf .nuxt .output dist"
+    "clean": "rm -rf .nuxt .output dist",
+    "predev": "bun ../../scripts/copy-ort-assets.mjs",
+    "prebuild": "bun ../../scripts/copy-ort-assets.mjs"
   },
   "dependencies": {
     "@astarworks/scan-core": "workspace:*",
     "@astarworks/scan-vue": "workspace:*",
+    "@huggingface/transformers": "^4.2.0",
     "@tailwindcss/vite": "^4",
     "@vite-pwa/nuxt": "^1.1.1",
     "class-variance-authority": "^0.7.1",
@@ -25,6 +28,7 @@
     "jspdf": "^4.2.1",
     "lucide-vue-next": "^1.0.0",
     "nuxt": "^4.4.2",
+    "onnxruntime-web": "^1.24.3",
     "reka-ui": "^2.9.6",
     "shadcn-nuxt": "^2.6.2",
     "tailwind-merge": "^3.5.0",

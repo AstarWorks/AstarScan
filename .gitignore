@@ -56,6 +56,21 @@ apps/web/public/models/ocr/*.onnx
 # Run `scripts/download-siglip-model.sh` to fetch it.
 apps/web/public/models/siglip-*.onnx
 
+# Document corner detector (apps/web/public/models/doc-corners.onnx) is
+# committed so every deploy and preview ships it; retrain per
+# docs/training-doc-corners.md to replace it.
+
+# Corner labeler outputs (scripts/label). annotations.json is the
+# source-of-truth labeling effort and SHOULD be committed; everything
+# below is regenerated from it by build-dataset.mjs.
+scripts/dataset/labels/
+scripts/dataset/yolo/
+scripts/dataset/doc-corners-dataset.*
+
+# DocAligner ONNX models (legacy failed experiment, kept locally for
+# reference but never tracked).
+apps/web/public/models/docaligner-*.onnx
+
 # OpenCV.js (7.6MB — downloaded via scripts)
 apps/web/public/opencv.js
 
@@ -65,6 +80,8 @@ apps/web/public/fonts/*.ttf
 # Test videos (too large for git)
 *.mp4
 *.mov
+# …except the small synthetic eval clips (≤ 8 MB each, see scripts/eval/book-clips/README.md)
+!scripts/eval/book-clips/clips/*.mp4
 
 # Tauri
 src-tauri/target/
@@ -75,3 +92,16 @@ src-tauri/gen/apple/
 tmp/
 temp/
 *.tmp
+
+# Eval harness outputs and Python venv for OCR backends
+eval-out/
+.venv-yomitoku/
+
+# Smart-extractor scratch / archived raw frames
+scripts/dataset/raw_orig*/
+scripts/dataset/frames/
+scripts/dataset/scene-reps.json
+
+# External datasets (SmartDoc etc.) — downloaded, not committed
+scripts/dataset/external/
+apps/web/public/ort/

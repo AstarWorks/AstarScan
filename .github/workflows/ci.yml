@@ -1,10 +1,10 @@
 name: CI
 
 on:
+  # Every branch: main deploys to production, other branches upload a
+  # preview version (see the `preview` job) without touching production.
   push:
-    branches: [main]
   pull_request:
-    branches: [main]
   workflow_dispatch:
 
 concurrency:
@@ -48,6 +48,10 @@ jobs:
 
       - run: bun install
 
+      # opencv.js / ort WASM are git-ignored; see the script for the list.
+      - name: Fetch public assets
+        run: bash scripts/fetch-public-assets.sh
+
       - name: Build
         run: bun run build
 
@@ -58,6 +62,130 @@ jobs:
           accountId: ${{ vars.CLOUDFLARE_ACCOUNT_ID }}
           packageManager: bun
           command: deploy
+
+  preview:
+    name: Preview upload (non-main branches)
+    needs: ci
+    # Uploads a new Worker version with a branch preview alias. Uses
+    # `wrangler versions upload`, which never changes the version serving
+    # production traffic (only `wrangler deploy` on main does that).
+    if: github.event_name == 'push' && github.ref != 'refs/heads/main'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: latest
+
+      - run: bun install
+
+      # opencv.js / ort WASM are git-ignored; see the script for the list.
+      - name: Fetch public assets
+        run: bash scripts/fetch-public-assets.sh
+
+      - name: Build
+        run: bun run build
+
+      - name: Compute preview alias
+        id: alias
+        env:
+          BRANCH: ${{ github.ref_name }}
+        run: |
+          # lowercase, [a-z0-9-] only, no leading/trailing/double dashes.
+          alias=$(printf '%s' "$BRANCH" | tr '[:upper:]' '[:lower:]' | sed -E 's/[^a-z0-9-]+/-/g; s/-+/-/g; s/^-+//; s/-+$//')
+          # Alias must start with a letter.
+          case "$alias" in [a-z]*) ;; *) alias="b-$alias" ;; esac
+          # <alias>-astar-scan must fit in a 63-char DNS label.
+          alias=$(printf '%s' "$alias" | cut -c1-50 | sed -E 's/-+$//')
+          echo "alias=$alias" >> "$GITHUB_OUTPUT"
+
+      - name: Upload preview version
+        id: upload
+        uses: cloudflare/wrangler-action@v3
+        with:
+          apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          accountId: ${{ vars.CLOUDFLARE_ACCOUNT_ID }}
+          packageManager: bun
+          wranglerVersion: '4.40.0'
+          command: versions upload --preview-alias ${{ steps.alias.outputs.alias }}
+
+      - name: Write preview URL to job summary
+        id: summary
+        env:
+          OUTPUT: ${{ steps.upload.outputs.command-output }}
+          ALIAS: ${{ steps.alias.outputs.alias }}
+          BRANCH: ${{ github.ref_name }}
+        run: |
+          alias_url=$(printf '%s\n' "$OUTPUT" | grep -oE 'https://[^ ]+' | grep -E "^https://$ALIAS-" | head -n1 || true)
+          version_url=$(printf '%s\n' "$OUTPUT" | grep -oE 'https://[^ ]+\.workers\.dev' | grep -vE "^https://$ALIAS-" | head -n1 || true)
+          version_id=$(printf '%s\n' "$OUTPUT" | grep -oE 'Worker Version ID: [0-9a-f-]+' | head -n1 | sed 's/.*: //' || true)
+          {
+            echo "## Preview (production is NOT changed)"
+            echo ""
+            echo "| | |"
+            echo "|---|---|"
+            echo "| Branch | \`$BRANCH\` |"
+            echo "| Alias URL | ${alias_url:-not found in wrangler output} |"
+            echo "| Version URL | ${version_url:-not found in wrangler output} |"
+            echo "| Version ID | \`${version_id:-unknown}\` |"
+            echo ""
+            echo "Uploaded with \`wrangler versions upload\`; production keeps serving the version last deployed from main."
+          } >> "$GITHUB_STEP_SUMMARY"
+          echo "alias_url=$alias_url" >> "$GITHUB_OUTPUT"
+          if [ -z "$alias_url" ]; then
+            echo "::warning::Preview alias URL not found in wrangler output"
+            printf '%s\n' "$OUTPUT"
+          fi
+
+      - name: Check preview opens and differs from production
+        if: steps.summary.outputs.alias_url != ''
+        env:
+          ALIAS_URL: ${{ steps.summary.outputs.alias_url }}
+          PROD_URL: https://scan.astarworks.com
+        run: |
+          local_build=$(jq -r '.id' apps/web/.output/public/_nuxt/builds/latest.json)
+          status=000
+          for i in 1 2 3 4 5 6; do
+            status=$(curl -sS -o page.html -w '%{http_code}' "$ALIAS_URL/" || echo 000)
+            [ "$status" = 200 ] && break
+            sleep 5
+          done
+          preview_build=$(curl -sS "$ALIAS_URL/_nuxt/builds/latest.json" | jq -r '.id' || echo unknown)
+          prod_build=$(curl -sS "$PROD_URL/_nuxt/builds/latest.json" | jq -r '.id' || echo unknown)
+          has_app=no
+          grep -q 'id="__nuxt"' page.html && has_app=yes
+          opencv_status=$(curl -sS -o /dev/null -w '%{http_code}' "$ALIAS_URL/opencv.js" || echo 000)
+          ort_status=$(curl -sS -o /dev/null -w '%{http_code}' "$ALIAS_URL/ort/ort-wasm-simd-threaded.jsep.wasm" || echo 000)
+          {
+            echo ""
+            echo "### Check"
+            echo ""
+            echo "| | |"
+            echo "|---|---|"
+            echo "| Preview HTTP status | $status |"
+            echo "| Preview serves the Nuxt app shell | $has_app |"
+            echo "| \`/opencv.js\` HTTP status | $opencv_status |"
+            echo "| \`/ort/ort-wasm-simd-threaded.jsep.wasm\` HTTP status | $ort_status |"
+            echo "| Build ID of this commit | \`$local_build\` |"
+            echo "| Build ID served by preview | \`$preview_build\` |"
+            echo "| Build ID served by production ($PROD_URL) | \`$prod_build\` |"
+          } >> "$GITHUB_STEP_SUMMARY"
+          echo "status=$status app=$has_app local=$local_build preview=$preview_build prod=$prod_build opencv=$opencv_status ort=$ort_status"
+          if [ "$status" != 200 ] || [ "$has_app" != yes ] || [ "$preview_build" != "$local_build" ]; then
+            echo "::error::Preview does not serve this commit's build"
+            exit 1
+          fi
+          if [ "$opencv_status" != 200 ] || [ "$ort_status" != 200 ]; then
+            echo "::error::Preview is missing runtime assets (opencv.js=$opencv_status, ort jsep wasm=$ort_status)"
+            exit 1
+          fi
+          if [ "$prod_build" = "$local_build" ]; then
+            echo "::error::Production serves this preview build — production was changed"
+            exit 1
+          fi
 
   android:
     name: Build Android APK (experimental)

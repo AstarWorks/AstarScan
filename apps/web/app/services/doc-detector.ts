@@ -1,164 +1,203 @@
-// @ts-nocheck — OpenCV.js global has no types in our globals.d.ts
 /**
- * Paper-brightness document detector.
+ * Document detector — YOLOv8n-pose primary, OpenCV load-failure fallback.
  *
- * The video this is calibrated against is handheld phone footage of white
- * A4 pages on a wooden desk — high contrast between paper (bright) and
- * background (dark). Edge-based detectors (Canny + approxPolyDP) choke on
- * hand occlusion of a paper corner, on the next page peeking in from the
- * edge of the frame, and on slightly curved paper edges: approxPolyDP
- * then reports 5, 6, or 7 vertices and we reject the frame.
+ * The fine-tuned YOLOv8n-pose model at
+ * `apps/web/public/models/doc-corners.onnx` (training pipeline:
+ * `docs/training-doc-corners.md`) is the primary detector. The ML path
+ * lazy-loads on first use; OpenCV takes over ONLY if the model fails to
+ * load (`unavailable` state). Set `VITE_DISABLE_ML_DETECTOR=1` at build
+ * time to force OpenCV-only (rollback switch).
  *
- * Brightness-based detection instead:
- *   1. Grayscale → Otsu threshold (paper becomes the "bright" class)
- *   2. Morphological close to fill hand / shadow gaps in the paper mask
- *   3. Pick the largest external contour
- *   4. `minAreaRect` → guaranteed rotated rectangle → 4 corners
+ * IMPORTANT — low-confidence frames are SKIPPED, not handed to OpenCV.
+ * Mixing detectors mid-scan is worse than dropping a frame:
+ *   - OpenCV's Otsu path has a measured whole-frame failure mode
+ *     (median areaFrac 0.86 = page + desk in one quad; identity-GT
+ *     recall 0.36 on mp4-1 vs YOLO's 0.64).
+ *   - A single OpenCV quad in a YOLO track destroys the hash continuity
+ *     the dedup layers depend on.
  *
- * `minAreaRect` always returns a 4-vertex rotated rectangle regardless of
- * how irregular the contour is, which is what we want: even when the user's
- * finger occludes a corner, the rotated rectangle still approximates the
- * paper bounds closely enough for perspective warping.
+ * Why YOLO over OpenCV:
+ *   - OpenCV Otsu+minAreaRect "detects" almost every frame but routinely
+ *     grabs the whole bright region, and produces no confidence signal.
+ *   - YOLOv8n-pose gives accurate keypoint regression *and* a per-corner
+ *     visibility flag, with confidence for gating.
+ *   - DocAligner LCNet/FastViT (the prior ML attempt) hit 11-13 %
+ *     because it was trained on landscape document photos, not handheld
+ *     portrait phone footage. Its code is gone now; YoloPoseBackend
+ *     replaces it.
+ *
+ * OpenCV implementation note: handheld phone footage of A4 pages on a
+ * wooden desk is high contrast between paper (bright) and background
+ * (dark). Edge-based detectors (Canny + approxPolyDP) choke on hand
+ * occlusion, partial-page overlap, and slightly curved paper edges.
+ * Brightness (Otsu threshold) + morphology + minAreaRect is what
+ * survives handheld reality; it returns a rotated rectangle regardless
+ * of contour irregularity, and `minAreaRect` always gives 4 vertices.
  */
 
 import type { Quad } from '@astarworks/scan-core'
+import {
+  OrientationPicker,
+  detectPageCorners,
+  type CornerRefineResult,
+  type PixelBox,
+} from '@astarworks/scan-core/pipeline'
 
-const MIN_FRAME_FRACTION = 0.15
-const MAX_FRAME_FRACTION = 0.97
-const MORPH_KERNEL = 15
+import { loadOpenCV } from './opencv-loader'
+import { getPipelineOps } from './pipeline-ops'
+import { YoloPoseBackend } from './yolo-pose-backend'
+
+/** Gate for the ML primary path. On by default (trained ONNX ships at
+ *  `apps/web/public/models/doc-corners.onnx`); build with
+ *  `VITE_DISABLE_ML_DETECTOR=1` to roll back to OpenCV-only. */
+const ENABLE_ML_DETECTOR =
+  (import.meta as unknown as { env?: Record<string, string> }).env
+    ?.VITE_DISABLE_ML_DETECTOR !== '1'
+
+/** Skip frames whose ML detection confidence is below this (frame is
+ *  dropped — NOT handed to OpenCV; see module docs). 0.25 matches YOLO's
+ *  standard inference threshold. */
+const ML_MIN_CONFIDENCE = 0.25
+
+export interface DocDetection {
+  quad: Quad
+  /** [0, 1]. YOLOv8 (when active): class confidence. OpenCV: 1.0. */
+  confidence: number
+  source: 'yolo-pose' | 'opencv'
+  /** YOLO only: quad area / model box area (`LiveCaptureJudge` does not
+   *  ✓ a frame below `minBoxAgreement`). */
+  boxAgreement?: number
+  /** YOLO only: the corners were snapped onto the paper edge. */
+  refined?: boolean
+}
+
+type MlState =
+  | { kind: 'uninitialized' }
+  | { kind: 'initializing'; promise: Promise<void> }
+  | { kind: 'ready'; backend: YoloPoseBackend }
+  | { kind: 'unavailable' } // model load failed permanently
+
+let mlState: MlState = { kind: 'uninitialized' }
+
+/** Which way landscape frames are turned for the model (kept across
+ *  frames: probes every turn now and then, runs the leader otherwise). */
+const picker = new OrientationPicker()
+
+async function ensureMlBackend(): Promise<void> {
+  if (!ENABLE_ML_DETECTOR) return
+  if (mlState.kind === 'ready' || mlState.kind === 'unavailable') return
+  if (mlState.kind === 'initializing') return mlState.promise
+
+  const backend = new YoloPoseBackend()
+  const promise = backend
+    .warmUp()
+    .then(() => {
+      mlState = { kind: 'ready', backend }
+    })
+    .catch((err) => {
+      console.warn(
+        '[doc-detector] YOLOv8-pose model load failed, OpenCV-only',
+        err,
+      )
+      mlState = { kind: 'unavailable' }
+    })
+  mlState = { kind: 'initializing', promise }
+  return promise
+}
 
 /**
- * Detect the 4 corners of the largest paper-like (bright) region in `frame`.
- * Returns null when the paper mask is too small, too large, or missing.
+ * Detect the document in `frame`. Returns null if no plausible page is
+ * found. When ML is enabled and the detection is confident, returns its
+ * keypoints; otherwise falls back to OpenCV.
  */
-export function detectDocumentQuad(frame: HTMLCanvasElement): Quad | null {
-  const cv = (window as unknown as { cv?: unknown }).cv as any
-  if (!cv?.imread) return null
-
-  const src = cv.imread(frame)
-  const gray = new cv.Mat()
-  const binary = new cv.Mat()
-  const contours = new cv.MatVector()
-  const hierarchy = new cv.Mat()
-  const kernel = cv.getStructuringElement(
-    cv.MORPH_RECT,
-    new cv.Size(MORPH_KERNEL, MORPH_KERNEL),
-  )
-
-  try {
-    cv.cvtColor(src, gray, cv.COLOR_RGBA2GRAY)
-    cv.threshold(gray, binary, 0, 255, cv.THRESH_BINARY | cv.THRESH_OTSU)
-    cv.morphologyEx(binary, binary, cv.MORPH_CLOSE, kernel)
-    cv.morphologyEx(binary, binary, cv.MORPH_OPEN, kernel)
-    cv.findContours(
-      binary,
-      contours,
-      hierarchy,
-      cv.RETR_EXTERNAL,
-      cv.CHAIN_APPROX_SIMPLE,
-    )
-
-    const frameArea = frame.width * frame.height
-    const minArea = frameArea * MIN_FRAME_FRACTION
-    const maxArea = frameArea * MAX_FRAME_FRACTION
-
-    let bestIdx = -1
-    let bestArea = 0
-    for (let i = 0; i < contours.size(); i += 1) {
-      const c = contours.get(i)
-      const area = cv.contourArea(c)
-      if (area > bestArea && area >= minArea && area <= maxArea) {
-        bestArea = area
-        bestIdx = i
+export async function detectDocument(
+  frame: HTMLCanvasElement,
+): Promise<DocDetection | null> {
+  if (ENABLE_ML_DETECTOR) {
+    await ensureMlBackend()
+    if (mlState.kind === 'ready') {
+      try {
+        // Model (landscape frames turned per `picker`) → snap the corners,
+        // which shrink inside the page, onto the paper edge found inside
+        // the model's box (scan-core corner-refine / orientation).
+        const backend = mlState.backend
+        const found = await detectPageCorners(
+          frame,
+          (turn) => backend.detect(frame, turn),
+          (quad, box) => refineCorners(frame, quad, box),
+          picker,
+        )
+        const result = found?.detection
+        if (found && result && result.confidence >= ML_MIN_CONFIDENCE) {
+          return {
+            quad: found.refine.quad,
+            confidence: result.confidence,
+            source: 'yolo-pose',
+            boxAgreement: found.refine.boxAgreement,
+            refined: found.refine.refined,
+          }
+        }
+        // Low confidence or no detection: skip the frame. Falling through
+        // to OpenCV here would inject whole-frame quads into a YOLO track
+        // and break hash continuity (see module docs).
+        return null
+      } catch (err) {
+        console.warn('[doc-detector] ML inference threw, skipping frame', err)
+        return null
       }
-      c.delete()
     }
-    if (bestIdx < 0) return null
+    // mlState 'unavailable' (model load failed) falls through to OpenCV.
+  }
+  const quad = detectWithOpenCV(frame)
+  return quad ? { quad, confidence: 1.0, source: 'opencv' } : null
+}
 
-    const bestContour = contours.get(bestIdx)
-    const rect = cv.minAreaRect(bestContour)
-    bestContour.delete()
-    return orderQuadCorners(rotatedRectCorners(rect))
-  } finally {
-    src.delete()
-    gray.delete()
-    binary.delete()
-    contours.delete()
-    hierarchy.delete()
-    kernel.delete()
+export function getDetectorSource(): 'yolo-pose' | 'opencv' | 'pending' {
+  if (mlState.kind === 'ready') return 'yolo-pose'
+  if (ENABLE_ML_DETECTOR && mlState.kind !== 'unavailable') return 'pending'
+  return 'opencv'
+}
+
+/** Corner snap (scan-core corner-refine), or null when OpenCV is not
+ *  loaded or the snap throws — the model's corners are then used as-is. */
+function refineCorners(
+  frame: HTMLCanvasElement,
+  quad: Quad,
+  box: PixelBox,
+): CornerRefineResult | null {
+  const ops = getPipelineOps()
+  if (!ops) return null
+  try {
+    return ops.refineCorners(
+      frame as unknown as Parameters<typeof ops.refineCorners>[0],
+      quad,
+      box,
+    )
+  } catch (err) {
+    console.warn('[doc-detector] corner refine threw, using model corners', err)
+    return null
   }
 }
 
-/**
- * Compute the 4 corners of an OpenCV RotatedRect. We implement this by hand
- * because the OpenCV.js build shipped with AstarScan does not expose
- * `cv.boxPoints` (it is gated behind a build flag that's off by default on
- * the `/opencv.js` we serve).
- *
- * RotatedRect fields: `center {x, y}`, `size {width, height}`, `angle` (deg).
- * The corners are the 4 points of the axis-aligned (w, h) rectangle
- * centered at origin, rotated by `angle` around the origin, then translated
- * to `center`.
- */
-function rotatedRectCorners(
-  rect: {
-    center: { x: number; y: number }
-    size: { width: number; height: number }
-    angle: number
-  },
-): Array<{ x: number; y: number }> {
-  const cx = rect.center.x
-  const cy = rect.center.y
-  const halfW = rect.size.width / 2
-  const halfH = rect.size.height / 2
-  const rad = (rect.angle * Math.PI) / 180
-  const cos = Math.cos(rad)
-  const sin = Math.sin(rad)
-  const local: Array<[number, number]> = [
-    [-halfW, -halfH],
-    [halfW, -halfH],
-    [halfW, halfH],
-    [-halfW, halfH],
-  ]
-  return local.map(([dx, dy]) => ({
-    x: cx + dx * cos - dy * sin,
-    y: cy + dx * sin + dy * cos,
-  }))
+// ---------------------------------------------------------------------------
+// OpenCV fallback (Otsu + morphology + minAreaRect) — implementation is
+// unified in @astarworks/scan-core (pipeline/detect-otsu.ts), bound to the
+// browser runtime via pipeline-ops.
+// ---------------------------------------------------------------------------
+
+function detectWithOpenCV(frame: HTMLCanvasElement): Quad | null {
+  const ops = getPipelineOps()
+  if (!ops) return null
+  return ops.detectWithOpenCV(
+    frame as unknown as Parameters<typeof ops.detectWithOpenCV>[0],
+  )
 }
 
 /**
- * Sort 4 raw rectangle vertices into tl / tr / br / bl.
- * Top-left has the smallest x+y, bottom-right the largest;
- * top-right has the smallest y-x, bottom-left the largest.
+ * Ensure OpenCV is available — called by index.vue before starting the
+ * pipeline. OpenCV is needed for detection, warpPerspective, Laplacian
+ * (sharpness) and Sobel (Tenengrad).
  */
-function orderQuadCorners(pts: Array<{ x: number; y: number }>): Quad {
-  let tl = pts[0]!
-  let tr = pts[0]!
-  let br = pts[0]!
-  let bl = pts[0]!
-  let minSum = Infinity
-  let maxSum = -Infinity
-  let minDiff = Infinity
-  let maxDiff = -Infinity
-  for (const p of pts) {
-    const s = p.x + p.y
-    const d = p.y - p.x
-    if (s < minSum) {
-      minSum = s
-      tl = p
-    }
-    if (s > maxSum) {
-      maxSum = s
-      br = p
-    }
-    if (d < minDiff) {
-      minDiff = d
-      tr = p
-    }
-    if (d > maxDiff) {
-      maxDiff = d
-      bl = p
-    }
-  }
-  return { tl, tr, br, bl }
+export async function ensureDocDetector(): Promise<void> {
+  await loadOpenCV()
 }
