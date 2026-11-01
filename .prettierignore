@@ -24,3 +24,6 @@ test-results
 
 # OS / editor
 .DS_Store
+
+# Generated eval ground truth (minified on purpose)
+scripts/eval/book-clips/clips/*.gt.json
