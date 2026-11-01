@@ -1,0 +1,16 @@
+[package]
+name = "tauri-plugin-mlkit-scanner"
+version = "0.1.0"
+description = "Google ML Kit Document Scanner for AstarScan on Android"
+authors = ["Astar Works"]
+license = "MIT"
+edition = "2021"
+rust-version = "1.77.2"
+# `links` lets tauri-build find this plugin's Android project and permissions.
+links = "tauri-plugin-mlkit-scanner"
+
+[dependencies]
+tauri = { version = "2" }
+
+[build-dependencies]
+tauri-plugin = { version = "2", features = ["build"] }

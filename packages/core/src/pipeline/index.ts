@@ -24,6 +24,7 @@ export * from './cluster-repair.js'
 export * from './quad-edit.js'
 export * from './yolo-decode.js'
 export * from './live-capture.js'
+export * from './page-numbers.js'
 
 import type { PipelineDeps } from './deps.js'
 import { createHashOps } from './hash.js'
