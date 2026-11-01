@@ -462,7 +462,12 @@ async function takeShot(videoWarped: HTMLCanvasElement): Promise<LiveShot> {
       // crop the full-resolution still with the scaled-up quad.
       const small = downscaleToLongSide(full, 1280)
       const det = await detectSerial(small)
-      if (det && judge && det.confidence >= judge.opts.minConfidence) {
+      if (
+        det &&
+        judge &&
+        det.confidence >= judge.opts.minConfidence &&
+        (det.boxAgreement ?? 1) >= judge.opts.minBoxAgreement
+      ) {
         const quad = scaleQuad(
           det.quad,
           small.width,
@@ -1209,6 +1214,7 @@ async function processFrame(
       ...liveBase,
       confidence: detection.confidence,
       quad: detection.quad,
+      boxAgreement: detection.boxAgreement,
       areaFrac: 0,
       score: 0,
       hash: null,
@@ -1250,6 +1256,7 @@ async function processFrame(
     ...liveBase,
     confidence: detection.confidence,
     quad: detection.quad,
+    boxAgreement: detection.boxAgreement,
     areaFrac,
     score,
     hash,
