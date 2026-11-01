@@ -79,40 +79,21 @@ adb shell monkey -p "$PKG" -c android.intent.category.LAUNCHER 1 >/dev/null
 wait_match '^スキャン$' 90 || true
 shot app-start
 
-SCANNER='gallery_button|capture_button'
 GMS=com.google.android.gms
+DOCSCAN=com.google.android.gms.optional_mlkit_docscan_ui:id
 
-# open_scanner <seconds>: press the app's scan button until ML Kit's camera
-# screen is up. The scanner needs a recent Google Play services; an emulator
-# image ships an old one that Play updates in the background (~10-15 min),
-# restarting Play services, so keep pressing (the plugin also retries 3 min).
-open_scanner() {
-  local end=$((SECONDS + $1))
-  until wait_match "$SCANNER" 5 "$GMS"; do
-    [ $SECONDS -ge $end ] && { log "scanner never opened"; return 1; }
-    tap_match '^(スキャン|もう一度スキャンを開く)$' "$PKG" || adb shell input keyevent KEYCODE_BACK
-    wait_match "$SCANNER" 200 "$GMS" && break
-    shot scanner-not-ready
-  done
-  return 0
-}
+# has <regex> [package-regex] — the last dump has a matching node.
+has() { python3 "$HERE/ui.py" find "$OUT/ui.xml" "$1" "${2:-}" >/dev/null; }
+# xy <regex> [package-regex] — centre of the matching node in the last dump.
+xy() { python3 "$HERE/ui.py" find "$OUT/ui.xml" "$1" "${2:-}"; }
+# shellcheck disable=SC2046
+tap_now() { local p; p=$(xy "$@") || return 1; log "tap '$1' at $p"; adb shell input tap $p; }
 
-log "open ML Kit scanner"
-open_scanner 2400
-sleep 60
-# Play services may restart right after its update; make sure we are still in.
-open_scanner 900
-sleep 5
-shot scanner-camera
-
-log "import the fixture photos from the gallery"
-tap_match 'gallery_button' "$GMS" || log "gallery button not found"
-sleep 6
-shot photo-picker
-# Photo picker: select every fixture (newest first in the grid), then add.
-for i in 1 2 3 4; do
-  dump
-  xy=$(python3 - "$OUT/ui.xml" "$i" <<'PY'
+# Photo picker: select up to 4 photos (the fixtures), then confirm.
+pick_photos() {
+  for i in 1 2 3 4; do
+    dump
+    p=$(python3 - "$OUT/ui.xml" "$i" <<'PY'
 import re, sys, xml.etree.ElementTree as ET
 try:
     root = ET.parse(sys.argv[1]).getroot()
@@ -133,29 +114,82 @@ if len(hits) >= want:
 else:
     sys.exit(1)
 PY
-  ) || break
-  log "select photo $i at $xy"
-  # shellcheck disable=SC2086
-  adb shell input tap $xy
-  sleep 1
-done
-shot photo-picker-selected
-tap_match '^(add|done|ok|select|追加|完了|選択)( \(\d+\))?' || true
-sleep 8
-wait_match '(done|save|完了|保存)' 120 'com.google.android.gms' || true
-shot scanner-review
+    ) || break
+    log "select photo $i at $p"
+    # shellcheck disable=SC2086
+    adb shell input tap $p
+    sleep 1
+  done
+  shot photo-picker-selected
+  tap_match '^(add|done|ok|select|追加|完了|選択)( \(\d+\))?$' || true
+}
 
-log "open the crop view to show the detected page frame"
-if tap_match '(crop|切り抜|トリミング)' 'com.google.android.gms'; then
-  sleep 4
-  shot scanner-crop-frame
-  adb shell input keyevent KEYCODE_BACK
+# The scanner needs a recent Google Play services. An emulator image ships
+# an old one that Play updates in the background (~10-15 min), restarting
+# Play services, so the loop below keeps reacting to whatever screen is up
+# until the scan returns to the app with the imported pages.
+log "scan: open ML Kit, import the fixture photos, show the page frame, finish"
+imported=0
+cropped=0
+saved=0
+end=$((SECONDS + 3000))
+while [ $SECONDS -lt $end ]; do
   sleep 3
-fi
-
-log "finish the scan and return to the app"
-tap_match '^(done|save|完了|保存)$' 'com.google.android.gms' || tap_match '(done|save|完了|保存)' 'com.google.android.gms' || log "done button not found"
-wait_match '(PDF 保存|追加スキャン)' 120 "$PKG" || true
+  dump || continue
+  if has 'Keep editing' "$GMS"; then
+    tap_now 'Keep editing' "$GMS"
+  elif has "$DOCSCAN/confirm_crop_button" "$GMS"; then
+    # "Adjust corners": the detected page frame with its four handles.
+    if [ $imported = 1 ]; then shot scanner-adjust-corners; cropped=1; else shot scanner-adjust-corners-camera; fi
+    tap_now "$DOCSCAN/confirm_crop_button" "$GMS"
+  elif has "$DOCSCAN/gallery_button" "$GMS"; then
+    if [ $imported = 0 ]; then
+      shot scanner-camera
+      # Switch to manual first so auto-capture does not grab the room, then
+      # open the gallery (both from the same dump: no time for a capture).
+      man=$(xy '^Manual$' "$GMS") && adb shell input tap $man
+      tap_now "$DOCSCAN/gallery_button" "$GMS"
+      sleep 6
+      shot photo-picker
+      pick_photos
+      imported=1
+      sleep 8
+    else
+      log "back on the camera after import; closing"
+      tap_now "$DOCSCAN/close_button" "$GMS" || adb shell input keyevent KEYCODE_BACK
+    fi
+  elif has "$DOCSCAN/save_document_button" "$GMS"; then
+    if [ $imported = 0 ]; then
+      # Auto-capture grabbed the virtual room first: drop it, go to the camera.
+      shot scanner-review-room
+      tap_now "$DOCSCAN/delete_button" "$GMS" || tap_now "$DOCSCAN/add_page" "$GMS"
+    elif [ $cropped = 0 ]; then
+      shot scanner-review
+      tap_now "$DOCSCAN/edit_menu_crop_and_rotate_button" "$GMS" || cropped=1
+      cropped=1
+    else
+      shot scanner-review-final
+      tap_now "$DOCSCAN/save_document_button" "$GMS"
+      saved=1
+    fi
+  elif has '^(Delete|削除)$' "$GMS" && has 'android:id/button1' "$GMS"; then
+    tap_now 'android:id/button1' "$GMS"
+  elif has '(PDF 保存|追加スキャン)' "$PKG"; then
+    [ $saved = 1 ] && break
+    tap_now '追加スキャン' "$PKG"
+  elif has '^(スキャン|もう一度スキャンを開く)$' "$PKG"; then
+    if has 'もう一度スキャンを開く' "$PKG"; then sleep 30; dump; fi
+    tap_now '^(スキャン|もう一度スキャンを開く)$' "$PKG" || true
+    sleep 20
+  elif has '(photo|写真)' 'providers.media|photopicker|documentsui'; then
+    pick_photos
+    imported=1
+  elif [ $saved = 1 ] && has "$DOCSCAN" "$GMS"; then
+    # Unknown post-save screen: try the obvious confirm buttons.
+    tap_now '^(Done|Save|Next|完了|保存|次へ)$' "$GMS" || true
+  fi
+done
+log "scan loop ended (imported=$imported cropped=$cropped saved=$saved)"
 sleep 3
 shot app-list
 
