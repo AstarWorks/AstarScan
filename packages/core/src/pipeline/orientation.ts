@@ -12,9 +12,10 @@
  * (`corner-refine.ts`), the share of the snapped page covered by the
  * model's own keypoint quad (`orientationScore`). The right turn gives the
  * least-shrunk keypoints. Per frame that is noisy (upside-down is
- * sometimes a tie), so `OrientationPicker` probes all three turns every
- * `probeEvery` landscape frames, keeps an EMA per turn, and runs only the
- * leading turn in between — one inference on most frames.
+ * sometimes a tie), so `OrientationPicker` probes all three turns on the
+ * first landscape frame and then every `probeEvery` frames, keeps an EMA
+ * per turn, and runs only the leading turn in between — one inference on
+ * most frames.
  *
  * Pure: no DOM, no OpenCV, no model.
  */
@@ -28,8 +29,12 @@ export type FrameTurn = 'none' | 'cw' | 'ccw'
 export const FRAME_TURNS: readonly FrameTurn[] = ['none', 'cw', 'ccw']
 
 export const ORIENTATION_DEFAULTS = {
-  /** Probe every turn on every this-many-th landscape frame. */
-  probeEvery: 10,
+  /** Probe every turn on every this-many-th landscape frame. A probe
+   *  costs three inferences; the turn rarely changes within a scan, and
+   *  on slow devices frequent probes stall holds (fake-camera check,
+   *  ✓ pages of 12: every 10th frame 8 upright / 10 sideways, every
+   *  30th 10 / 11). */
+  probeEvery: 30,
   /** EMA weight of the newest probe. */
   alpha: 0.5,
   /** The leading turn changes only when beaten by this much. */

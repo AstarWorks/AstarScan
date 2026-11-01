@@ -184,7 +184,7 @@ const result = {
   savedPages: saved,
   screenshots: shots,
   reportText,
-  logs: logs.slice(0, 40),
+  logs: logs.slice(0, 2000),
 }
 fs.writeFileSync(path.join(outDir, 'result.json'), JSON.stringify(result, null, 2))
 console.log(JSON.stringify({ videoSize, perLoop, saved: saved.length }, null, 2))
