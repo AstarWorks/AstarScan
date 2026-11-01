@@ -2011,7 +2011,10 @@ async function startNativeScan(): Promise<void> {
     queuePageNumbers(pages)
   } catch (err) {
     phase.value = 'error'
-    errorText.value = `スキャナーを起動できませんでした: ${nativeErrorMessage(err)}`
+    const msg = nativeErrorMessage(err)
+    errorText.value = /feature not available/i.test(msg)
+      ? 'スキャナーの部品を Google Play 開発者サービスが取得しています（初回のみ・数分〜10 分ほど）。少し待ってからもう一度「スキャン」を押してください。'
+      : `スキャナーを起動できませんでした: ${msg}`
     statusText.value = ''
   }
 }

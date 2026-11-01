@@ -82,7 +82,20 @@ shot app-start
 log "open ML Kit scanner"
 tap_match '^スキャン$' || log "scan button not found"
 # First use downloads the scanner module through Play services.
-wait_match '(gallery|import|photo|capture|shutter|ギャラリー|インポート|撮影)' 300 'com.google.android.gms' || true
+if ! wait_match '(gallery|import|photo|capture|shutter|ギャラリー|インポート|撮影)' 240 'com.google.android.gms'; then
+  shot scanner-module-downloading
+  # Play services fetches the scanner module once (~10 min on CI). Wait for
+  # it to report every requested module downloaded, then press again.
+  log "wait for Play services to finish downloading the scanner module"
+  end=$((SECONDS + 1500))
+  until adb logcat -d -s ChimeraConfigurator 2>/dev/null | grep -q 'All downloaded: true'; do
+    [ $SECONDS -ge $end ] && { log "module download did not finish"; break; }
+    sleep 15
+  done
+  sleep 10
+  tap_match '^スキャン$' || log "scan button not found (2nd)"
+  wait_match '(gallery|import|photo|capture|shutter|ギャラリー|インポート|撮影)' 300 'com.google.android.gms' || true
+fi
 sleep 5
 shot scanner-camera
 
