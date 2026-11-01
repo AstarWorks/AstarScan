@@ -3,7 +3,7 @@
  * Real-app check: plays a synthetic clip (synth.py → y4m) through
  * Chromium's fake camera into the running web app (index.vue, unchanged
  * drawing and cropping), and records
- *   - screenshots of the scan screen while each page is held,
+ *   - screenshots of the scan screen at each ✓ / red chip (last loop),
  *   - every live ✓ / red "まだ撮れていません" chip with its clip time,
  *   - the saved page images after 停止.
  *
@@ -88,23 +88,29 @@ const videoSize = await page.evaluate(() => {
 const holdFrames = gt.frames.filter((f) => f.page === 1 && f.holding).length
 const per = gt.frames.findIndex((f, i) => i > 0 && f.page === 2)
 const pages = Math.max(...gt.frames.map((f) => f.page ?? 0))
+// Poll the chip list; on the last loop, screenshot the moment each chip
+// appears (the outline is green at a ✓, red at a miss).
 const shots = []
-for (let loop = 0; loop < loops; loop += 1) {
-  for (let k = 0; k < pages; k += 1) {
-    // Shoot 1.2 s into each hold (the ✓ comes at ~0.7 s).
-    const at = loop * clipS + (k * per + 12) / fps
-    const now = (await page.evaluate(() => performance.now())) - t0
-    if (at * 1000 > now) await page.waitForTimeout(at * 1000 - now)
-    if (loop === loops - 1) {
-      const p = path.join(outDir, `screen-p${k + 1}.png`)
+const endMs = loops * clipS * 1000 + 300
+let seen = 0
+for (;;) {
+  const now = (await page.evaluate(() => performance.now())) - t0
+  if (now >= endMs) break
+  const n = await page.evaluate(() => window.__chips?.length ?? 0)
+  if (n > seen) {
+    if (now >= (loops - 1) * clipS * 1000) {
+      const kind = await page.evaluate(
+        (i) => window.__chips[i].kind,
+        n - 1,
+      )
+      const p = path.join(outDir, `chip-${n}-${kind}.png`)
       await page.screenshot({ path: p })
       shots.push(p)
     }
+    seen = n
   }
+  await page.waitForTimeout(80)
 }
-const end = loops * clipS * 1000 + 300
-const now = (await page.evaluate(() => performance.now())) - t0
-if (end > now) await page.waitForTimeout(end - now)
 const chips = (await page.evaluate(() => window.__chips)) ?? []
 await page.getByRole('button', { name: '停止' }).click()
 // Wait for the post-scan pass to finish (the 停止 button goes away).
