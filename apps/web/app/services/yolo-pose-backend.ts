@@ -33,6 +33,7 @@ import {
   decodeYoloOutput,
   letterboxToFloat32,
   type CanvasLike,
+  type FrameTurn,
   type PixelBox,
 } from '@astarworks/scan-core/pipeline'
 import type * as ort from 'onnxruntime-web'
@@ -70,7 +71,16 @@ export class YoloPoseBackend {
     this.#ready = true
   }
 
-  async detect(frame: HTMLCanvasElement): Promise<YoloPoseDetection | null> {
+  /**
+   * Run the model on `frame`, turned 90° first when `turn` is 'cw' / 'ccw'
+   * and the frame is landscape (the model was trained on portrait frames
+   * only; see scan-core `orientation.ts`). Points come back in `frame`
+   * pixels either way.
+   */
+  async detect(
+    frame: HTMLCanvasElement,
+    turn: FrameTurn = 'none',
+  ): Promise<YoloPoseDetection | null> {
     const session = this.#session
     if (!session || !this.#ready) {
       throw new Error('YoloPoseBackend.warmUp() must be called before detect()')
@@ -79,13 +89,11 @@ export class YoloPoseBackend {
     // Letterbox math + (1, 17, 8400) decode are shared in scan-core
     // (pipeline/yolo-decode.ts); only the onnxruntime-web Tensor wrapping
     // happens here.
-    // Landscape frames are turned to portrait first: the model was
-    // trained on portrait frames only (docs/corner-accuracy-investigation.md).
     const { data, scale, padX, padY, rotation } = letterboxToFloat32(
       frame as unknown as CanvasLike,
       browserCreateCanvas,
       YOLO_INPUT_SIZE,
-      { rotateLandscape: true },
+      { rotateLandscape: turn === 'none' ? null : turn },
     )
     const tensor = new ortRuntime.Tensor('float32', data, [
       1,

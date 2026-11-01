@@ -10,9 +10,13 @@
  * reduce to 4 vertices. Keeping the search inside the box avoids the
  * full-frame OpenCV failure (page + desk in one quad).
  *
- * The snapped quad is used only when it is plausible — convex, at least
- * `minAreaOfBox` of the box, not the whole search window, and covering the
- * model quad's centre. Otherwise the model's own corners are kept.
+ * When the paper runs into a side of the window (the box was short there)
+ * that side is widened and the search repeated, a bounded number of times.
+ *
+ * The snapped quad is used only when it is plausible — convex, between
+ * `minAreaOfBox` and `maxAreaOfBox` of the box, not the whole search
+ * window, and covering the model quad's centre. Otherwise the model's own
+ * corners are kept.
  */
 
 import type { Point, Quad } from '../types.js'
@@ -33,6 +37,13 @@ export const CORNER_REFINE_DEFAULTS = {
   /** A contour filling more than this fraction of the search window is
    *  the background, not the page. */
   maxAreaOfWindow: 0.95,
+  /** ...and one larger than this is page + desk, not the page. */
+  maxAreaOfBox: 1.8,
+  /** When the paper runs into a side of the search window (the box was
+   *  off there), that side is widened by this fraction of the box's long
+   *  side and the search repeated, at most `maxGrow` times. */
+  growStep: 0.25,
+  maxGrow: 2,
   /** The search window is processed at this long side at most. */
   workLongSide: 480,
 } as const
@@ -124,8 +135,12 @@ export function createCornerRefiner({
   cv,
   createCanvas,
 }: PipelineDeps): CornerRefineOps {
-  /** Paper outline inside the window canvas, in window pixels. */
-  function findPaper(win: CanvasLike, maxArea: number): Point[] | null {
+  /** Paper outline inside the window canvas, in window pixels: its 4
+   *  corners and the bounding box of its hull. */
+  function findPaper(
+    win: CanvasLike,
+    maxArea: number,
+  ): { corners: Point[]; bounds: PixelBox } | null {
     const src = matFromCanvas(cv, win)
     const gray = new cv.Mat()
     const binary = new cv.Mat()
@@ -171,13 +186,20 @@ export function createCornerRefiner({
       // Straight-edge fit: the hull reduced to 4 vertices. Hand notches
       // and rounded corners vanish in the hull; growing epsilon removes
       // the remaining short edges.
+      const hp = matPoints(hull)
+      const bounds: PixelBox = {
+        x0: Math.min(...hp.map((p) => p.x)),
+        y0: Math.min(...hp.map((p) => p.y)),
+        x1: Math.max(...hp.map((p) => p.x)),
+        y1: Math.max(...hp.map((p) => p.y)),
+      }
       const peri = cv.arcLength(hull, true)
       for (const eps of [0.02, 0.03, 0.045, 0.06, 0.08]) {
         cv.approxPolyDP(hull, approx, eps * peri, true)
-        if (approx.rows === 4) return matPoints(approx)
+        if (approx.rows === 4) return { corners: matPoints(approx), bounds }
         if (approx.rows < 4) break
       }
-      return rotatedRectCorners(cv.minAreaRect(hull))
+      return { corners: rotatedRectCorners(cv.minAreaRect(hull)), bounds }
     } finally {
       src.delete()
       gray.delete()
@@ -202,32 +224,72 @@ export function createCornerRefiner({
       const bh = box.y1 - box.y0
       if (!(bw > 1 && bh > 1)) return keep
       const m = o.boxMargin * Math.max(bw, bh)
-      const x0 = Math.max(0, Math.floor(box.x0 - m))
-      const y0 = Math.max(0, Math.floor(box.y0 - m))
-      const x1 = Math.min(frame.width, Math.ceil(box.x1 + m))
-      const y1 = Math.min(frame.height, Math.ceil(box.y1 + m))
-      const ww = x1 - x0
-      const wh = y1 - y0
-      if (ww < 8 || wh < 8) return keep
-      const s = Math.min(1, o.workLongSide / Math.max(ww, wh))
-      const cw = Math.max(1, Math.round(ww * s))
-      const ch = Math.max(1, Math.round(wh * s))
-      const win = createCanvas(cw, ch)
-      const ctx = win.getContext('2d', { willReadFrequently: true })
-      if (!ctx) return keep
-      ctx.drawImage(frame, x0, y0, ww, wh, 0, 0, cw, ch)
-
-      const pts = findPaper(win, o.maxAreaOfWindow * cw * ch)
-      if (!pts || pts.length !== 4) return keep
-      const sx = ww / cw
-      const sy = wh / ch
-      const snapped = orderQuadCorners(
-        pts.map((p) => ({ x: x0 + p.x * sx, y: y0 + p.y * sy })),
-      )
+      let win: PixelBox = {
+        x0: Math.max(0, Math.floor(box.x0 - m)),
+        y0: Math.max(0, Math.floor(box.y0 - m)),
+        x1: Math.min(frame.width, Math.ceil(box.x1 + m)),
+        y1: Math.min(frame.height, Math.ceil(box.y1 + m)),
+      }
+      let snapped: Quad | null = null
+      for (let pass = 0; pass <= o.maxGrow && !snapped; pass += 1) {
+        const ww = win.x1 - win.x0
+        const wh = win.y1 - win.y0
+        if (ww < 8 || wh < 8) return keep
+        const s = Math.min(1, o.workLongSide / Math.max(ww, wh))
+        const cw = Math.max(1, Math.round(ww * s))
+        const ch = Math.max(1, Math.round(wh * s))
+        const canvas = createCanvas(cw, ch)
+        const ctx = canvas.getContext('2d', { willReadFrequently: true })
+        if (!ctx) return keep
+        ctx.drawImage(frame, win.x0, win.y0, ww, wh, 0, 0, cw, ch)
+        const found = findPaper(canvas, o.maxAreaOfWindow * cw * ch)
+        if (!found || found.corners.length !== 4) return keep
+        // The paper runs into a window edge that is not the frame edge:
+        // the box was off on that side. Widen the window there and retry.
+        const touch = 2
+        const grow = o.growStep * Math.max(bw, bh)
+        const next: PixelBox = {
+          x0:
+            found.bounds.x0 <= touch && win.x0 > 0
+              ? Math.max(0, Math.floor(win.x0 - grow))
+              : win.x0,
+          y0:
+            found.bounds.y0 <= touch && win.y0 > 0
+              ? Math.max(0, Math.floor(win.y0 - grow))
+              : win.y0,
+          x1:
+            found.bounds.x1 >= cw - 1 - touch && win.x1 < frame.width
+              ? Math.min(frame.width, Math.ceil(win.x1 + grow))
+              : win.x1,
+          y1:
+            found.bounds.y1 >= ch - 1 - touch && win.y1 < frame.height
+              ? Math.min(frame.height, Math.ceil(win.y1 + grow))
+              : win.y1,
+        }
+        const grew =
+          next.x0 !== win.x0 ||
+          next.y0 !== win.y0 ||
+          next.x1 !== win.x1 ||
+          next.y1 !== win.y1
+        if (grew && pass < o.maxGrow) {
+          win = next
+          continue
+        }
+        if (grew) return keep // still clipped after the last widening
+        const sx = ww / cw
+        const sy = wh / ch
+        const x0 = win.x0
+        const y0 = win.y0
+        snapped = orderQuadCorners(
+          found.corners.map((p) => ({ x: x0 + p.x * sx, y: y0 + p.y * sy })),
+        )
+      }
+      if (!snapped) return keep
       const agreement = boxAgreement(snapped, box)
       if (
         !isConvexQuad(snapped) ||
         agreement < o.minAreaOfBox ||
+        agreement > o.maxAreaOfBox ||
         !quadContains(snapped, centre(quad))
       )
         return keep

@@ -1,13 +1,17 @@
 """Synthetic 'A4 page on desk' clip with exact corner GT.
 
-python3 -I synth.py OUT_DIR W H [n_pages]
+python3 -I synth.py OUT_DIR W H [n_pages] [--fit]
+  --fit: the whole page fits inside the frame (landscape frame with an
+         upright portrait page) instead of filling the frame width.
 Writes OUT_DIR/clip.y4m (10 fps), OUT_DIR/frames/NNNN.png, OUT_DIR/gt.json
 """
 import json, os, sys, math
 import numpy as np, cv2
 
 out, W, H = sys.argv[1], int(sys.argv[2]), int(sys.argv[3])
-n_pages = int(sys.argv[4]) if len(sys.argv) > 4 else 4
+pos = [a for a in sys.argv[1:] if not a.startswith('--')]
+n_pages = int(pos[3]) if len(pos) > 3 else 4
+fit = '--fit' in sys.argv
 rng = np.random.default_rng(7)
 os.makedirs(out + '/frames', exist_ok=True)
 
@@ -47,6 +51,8 @@ for p in range(n_pages):
     # Page fills the frame width (like the GT clip: x 4%..100%).
     margin = 0.05 * W
     pw_s = W - 2 * margin
+    if fit:
+        pw_s = min(pw_s, (H - 2 * 0.05 * H) / 1.414)
     ph_s = pw_s * 1.414
     cx, cy = W / 2 + rng.uniform(-0.02, 0.02) * W, H / 2 + rng.uniform(-0.03, 0.03) * H
     ang = math.radians(rng.uniform(-4, 4))

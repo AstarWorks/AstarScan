@@ -44,11 +44,14 @@ export interface YoloDetection {
 }
 
 /**
- * The source was turned 90° clockwise before the model saw it (landscape
- * frame fed as portrait). `srcH` is the ORIGINAL source height, needed to
+ * The source was turned 90° before the model saw it (landscape frame fed
+ * as portrait). `srcW` / `srcH` are the ORIGINAL source size, needed to
  * map rotated coordinates back.
  */
 export interface YoloRotation {
+  /** Direction the source was turned before the model saw it. */
+  dir: 'cw' | 'ccw'
+  srcW: number
   srcH: number
 }
 
@@ -64,10 +67,12 @@ export interface LetterboxResult {
 }
 
 export interface LetterboxOptions {
-  /** Turn landscape sources 90° clockwise so the model sees a portrait
-   *  page. The model was trained on 720×1280 portrait frames only and
-   *  falls apart on landscape input (573 px vs 184 px corner error). */
-  rotateLandscape?: boolean
+  /** Turn landscape sources 90° (clockwise, or counter-clockwise) so the
+   *  model sees a portrait frame. The model was trained on 720×1280
+   *  portrait frames only and falls apart on a sideways page in a
+   *  landscape frame (573 px vs 184 px corner error). Portrait sources
+   *  are never turned. */
+  rotateLandscape?: 'cw' | 'ccw' | null
 }
 
 /**
@@ -83,7 +88,8 @@ export function letterboxToFloat32(
 ): LetterboxResult {
   const srcW = source.width
   const srcH = source.height
-  const rotate = opts.rotateLandscape === true && srcW > srcH
+  const dir = srcW > srcH ? (opts.rotateLandscape ?? null) : null
+  const rotate = dir !== null
   // Size as the model sees it (rotated when `rotate`).
   const viewW = rotate ? srcH : srcW
   const viewH = rotate ? srcW : srcH
@@ -114,8 +120,10 @@ export function letterboxToFloat32(
   }
 
   // Rotated: scale the source unrotated (sw × sh = newH × newW), then
-  // write it turned 90° clockwise into the padded buffer. Scaled pixel
-  // (xs, ys) lands at rotated (sh - 1 - ys, xs).
+  // write it turned 90° into the padded buffer. Scaled pixel (xs, ys)
+  // lands at rotated (sh - 1 - ys, xs) clockwise, (ys, sw - 1 - xs)
+  // counter-clockwise.
+  const cw = dir === 'cw'
   const sw = newH
   const sh = newW
   const work = createCanvas(sw, sh)
@@ -126,16 +134,17 @@ export function letterboxToFloat32(
   const px = ctx.getImageData(0, 0, sw, sh).data
   data.fill(grey / 255)
   for (let ys = 0; ys < sh; ys += 1) {
-    const xr = padX + sh - 1 - ys
     for (let xs = 0; xs < sw; xs += 1) {
       const s = (ys * sw + xs) * 4
-      const d = (padY + xs) * target + xr
+      const d = cw
+        ? (padY + xs) * target + padX + sh - 1 - ys
+        : (padY + sw - 1 - xs) * target + padX + ys
       data[d] = (px[s] ?? 0) / 255
       data[plane + d] = (px[s + 1] ?? 0) / 255
       data[2 * plane + d] = (px[s + 2] ?? 0) / 255
     }
   }
-  return { data, scale, padX, padY, rotation: { srcH } }
+  return { data, scale, padX, padY, rotation: { dir, srcW, srcH } }
 }
 
 /**
@@ -165,13 +174,16 @@ export function decodeYoloOutput(
     }
   }
   if (bestA < 0) return null
-  // Input space (0..640) → model-view source pixels → source pixels. The
-  // view was turned 90° clockwise when `rotation` is set: view (xv, yv)
-  // is source (yv, srcH - xv).
+  // Input space (0..640) → model-view pixels → source pixels. When the
+  // view was turned clockwise, view (xv, yv) is source (yv, srcH - xv);
+  // counter-clockwise, source (srcW - yv, xv).
   const toSource = (xIn: number, yIn: number) => {
     const xv = (xIn - padX) / scale
     const yv = (yIn - padY) / scale
-    return rotation ? { x: yv, y: rotation.srcH - xv } : { x: xv, y: yv }
+    if (!rotation) return { x: xv, y: yv }
+    return rotation.dir === 'cw'
+      ? { x: yv, y: rotation.srcH - xv }
+      : { x: rotation.srcW - yv, y: xv }
   }
   const corners: Array<{ x: number; y: number }> = []
   const vis: number[] = []
@@ -194,8 +206,14 @@ export function decodeYoloOutput(
     x1: Math.max(b0.x, b1.x),
     y1: Math.max(b0.y, b1.y),
   }
-  // Rotated view: its TL/TR/BR/BL are the source's BL/TL/TR/BR.
-  const [i0, i1, i2, i3] = rotation ? [1, 2, 3, 0] : [0, 1, 2, 3]
+  // Clockwise view: its TL/TR/BR/BL are the source's BL/TL/TR/BR, so the
+  // source TL is the view's TR (index 1). Counter-clockwise: the source
+  // TL is the view's BL (index 3).
+  const [i0, i1, i2, i3] = !rotation
+    ? [0, 1, 2, 3]
+    : rotation.dir === 'cw'
+      ? [1, 2, 3, 0]
+      : [3, 0, 1, 2]
   return {
     quad: {
       tl: corners[i0]!,

@@ -37,7 +37,8 @@
 
 import type { Quad } from '@astarworks/scan-core'
 import {
-  boxAgreement,
+  OrientationPicker,
+  detectPageCorners,
   type CornerRefineResult,
   type PixelBox,
 } from '@astarworks/scan-core/pipeline'
@@ -78,6 +79,10 @@ type MlState =
 
 let mlState: MlState = { kind: 'uninitialized' }
 
+/** Which way landscape frames are turned for the model (kept across
+ *  frames: probes every turn now and then, runs the leader otherwise). */
+const picker = new OrientationPicker()
+
 async function ensureMlBackend(): Promise<void> {
   if (!ENABLE_ML_DETECTOR) return
   if (mlState.kind === 'ready' || mlState.kind === 'unavailable') return
@@ -112,19 +117,24 @@ export async function detectDocument(
     await ensureMlBackend()
     if (mlState.kind === 'ready') {
       try {
-        const result = await mlState.backend.detect(frame)
-        if (result && result.confidence >= ML_MIN_CONFIDENCE) {
-          // The keypoints shrink inside the page; snap them onto the paper
-          // edge found inside the model's box (scan-core corner-refine).
-          const r = refineCorners(frame, result.quad, result.box)
+        // Model (landscape frames turned per `picker`) → snap the corners,
+        // which shrink inside the page, onto the paper edge found inside
+        // the model's box (scan-core corner-refine / orientation).
+        const backend = mlState.backend
+        const found = await detectPageCorners(
+          frame,
+          (turn) => backend.detect(frame, turn),
+          (quad, box) => refineCorners(frame, quad, box),
+          picker,
+        )
+        const result = found?.detection
+        if (found && result && result.confidence >= ML_MIN_CONFIDENCE) {
           return {
-            quad: r ? r.quad : result.quad,
+            quad: found.refine.quad,
             confidence: result.confidence,
             source: 'yolo-pose',
-            boxAgreement: r
-              ? r.boxAgreement
-              : boxAgreement(result.quad, result.box),
-            refined: r?.refined ?? false,
+            boxAgreement: found.refine.boxAgreement,
+            refined: found.refine.refined,
           }
         }
         // Low confidence or no detection: skip the frame. Falling through
