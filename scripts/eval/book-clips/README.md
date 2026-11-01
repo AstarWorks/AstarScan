@@ -20,7 +20,17 @@ page is being turned, and the printed page number.
 All clips: H.264 / yuv420p, 30 fps, in `clips/`. Each page stays still
 for 1.5–3 s; each turn takes 0.5–1 s. Pages are 148 × 210 mm.
 
-<!-- CLIP_TABLE -->
+| Clip                      | Frame                 | Length (frames) | Pages to capture                | Desk  | Conditions                                                                                               | Size   |
+| ------------------------- | --------------------- | --------------- | ------------------------------- | ----- | -------------------------------------------------------------------------------------------------------- | ------ |
+| `spread-land-wood`        | 1920×1080 (landscape) | 19.1 s (574)    | 14 (p2–15, 7 spreads)           | wood  | English text, strong tube glare, light shadow, normal shake, two thumbs                                  | 4.2 MB |
+| `spread-port-white`       | 1080×1920 (portrait)  | 17.9 s (537)    | 12 (p2–13, 6 spreads)           | white | Japanese text, weak glare, strong side shadow, gentle shake, two thumbs, low paper/desk contrast         | 2.7 MB |
+| `single-port-wood`        | 1080×1920 (portrait)  | 33.1 s (994)    | 12 (right pages p3, 5, …, 25)   | wood  | one page at a time (camera on the right page, left page mostly out of frame), stronger shake, thick book | 7.3 MB |
+| `spread-land-white-thick` | 1920×1080 (landscape) | 17.0 s (510)    | 12 (p60–71, 6 spreads)          | white | thick book (22/26 mm blocks, deep gutter), glare that washes out text, strong shake, two thumbs          | 3.4 MB |
+| `single-land-white`       | 1920×1080 (landscape) | 29.6 s (887)    | 10 (right pages p31, 33, …, 49) | white | one page at a time in a landscape frame (left page half visible), Japanese text, medium glare and shadow | 5.3 MB |
+
+`preview/` has one hold frame of each clip with the ground truth drawn on
+it (`preview.py`) and 4× crops around every corner of one hold frame
+(`*-corners.png`, crops of corners outside the frame are black).
 
 Common to every clip:
 
@@ -130,8 +140,10 @@ the same JSON format.
 
 ## Size
 
-The repo has no Git LFS and its largest file is the 12.7 MB ONNX model,
-so the clips are committed directly and kept well under 20 MB each
+The repo ignores `*.mp4` ("test videos, too large for git"), has no Git
+LFS, and its largest file is the 12.7 MB ONNX model. These clips are
+small, so `.gitignore` has a narrow exception for `clips/*.mp4` and they
+are committed directly (23 MB for all five) and kept well under 20 MB each
 (x264 `-crf 27 -maxrate 5M`). If clips need to grow (longer, higher
 bitrate), move `clips/*.mp4` to Git LFS or a GitHub release asset and
 keep the JSON here.

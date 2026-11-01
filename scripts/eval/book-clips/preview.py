@@ -45,8 +45,9 @@ def corner_crops(img, fr, half=60, zoom=4):
         for k in ('tl', 'tr', 'br', 'bl'):
             x, y = (int(round(v)) for v in p['corners'][k])
             pad = cv2.copyMakeBorder(img, half, half, half, half, cv2.BORDER_CONSTANT, value=(0, 0, 0))
-            crop = pad[y:y + 2 * half, x:x + 2 * half]
-            if crop.shape[:2] != (2 * half, 2 * half):
+            inside = 0 <= x < img.shape[1] and 0 <= y < img.shape[0]
+            crop = pad[y:y + 2 * half, x:x + 2 * half] if inside else None
+            if crop is None or crop.shape[:2] != (2 * half, 2 * half):  # corner outside the frame
                 crop = np.zeros((2 * half, 2 * half, 3), np.uint8)
             crop = cv2.resize(crop, None, fx=zoom, fy=zoom, interpolation=cv2.INTER_NEAREST)
             c = half * zoom
