@@ -104,7 +104,10 @@ function pointInPoly(pts, x, y) {
   for (let i = 0, j = pts.length - 1; i < pts.length; j = i++) {
     const a = pts[i]
     const b = pts[j]
-    if (a.y > y !== b.y > y && x < ((b.x - a.x) * (y - a.y)) / (b.y - a.y) + a.x)
+    if (
+      a.y > y !== b.y > y &&
+      x < ((b.x - a.x) * (y - a.y)) / (b.y - a.y) + a.x
+    )
       inside = !inside
   }
   return inside
@@ -145,7 +148,9 @@ let frames = 0
 for (let i = 0; i < gt.frames.length; i += 1) {
   const g = gt.frames[i]
   if (!g.holding) continue
-  const img = await loadImage(`${clip}/frames/${String(i).padStart(4, '0')}.png`)
+  const img = await loadImage(
+    `${clip}/frames/${String(i).padStart(4, '0')}.png`,
+  )
   let frame = new Canvas(img.width, img.height)
   frame.getContext('2d').drawImage(img, 0, 0)
   let ref = g.quad
@@ -158,7 +163,8 @@ for (let i = 0; i < gt.frames.length; i += 1) {
   frames += 1
   const before = await detect(frame, null)
   const rot = await detect(frame, 'cw')
-  const snapOnly = before && refiner.refineCorners(frame, before.quad, before.box)
+  const snapOnly =
+    before && refiner.refineCorners(frame, before.quad, before.box)
   const found = await detectPageCorners(
     frame,
     (t) => detect(frame, t === 'none' ? null : t),

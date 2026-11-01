@@ -126,8 +126,7 @@ describe('letterboxToFloat32 rotation', () => {
         [0.5, 1.5], // source BL
       ]
       const toInput = ([x, y]: [number, number]): [number, number] => {
-        const v =
-          dir === 'cw' ? { x: 2 - y, y: x } : { x: y, y: 4 - x }
+        const v = dir === 'cw' ? { x: 2 - y, y: x } : { x: y, y: 4 - x }
         return [r.padX + v.x * r.scale, r.padY + v.y * r.scale]
       }
       const inPts = srcPts.map(toInput)

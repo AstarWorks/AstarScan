@@ -46,7 +46,11 @@ const logs = []
 page.on('pageerror', (e) => logs.push(`pageerror: ${e.message}`))
 page.on('console', (m) => {
   const t = m.text()
-  if (m.type() === 'warning' || m.type() === 'error' || /\[live\]|finalize/i.test(t))
+  if (
+    m.type() === 'warning' ||
+    m.type() === 'error' ||
+    /\[live\]|finalize/i.test(t)
+  )
     logs.push(`${m.type()}: ${t}`)
 })
 await page.addInitScript(() => {
@@ -99,10 +103,7 @@ for (;;) {
   const n = await page.evaluate(() => window.__chips?.length ?? 0)
   if (n > seen) {
     if (now >= (loops - 1) * clipS * 1000) {
-      const kind = await page.evaluate(
-        (i) => window.__chips[i].kind,
-        n - 1,
-      )
+      const kind = await page.evaluate((i) => window.__chips[i].kind, n - 1)
       const p = path.join(outDir, `chip-${n}-${kind}.png`)
       await page.screenshot({ path: p })
       shots.push(p)
@@ -143,14 +144,19 @@ imgs.forEach((src, i) => {
   saved.push(p)
 })
 const reportText = await page.evaluate(
-  () => document.querySelector('.capture-report, [class*="report"]')?.innerText ?? '',
+  () =>
+    document.querySelector('.capture-report, [class*="report"]')?.innerText ??
+    '',
 )
 
 // Thumbnails of the red chips (what the judge thought was missed).
 chips.forEach((c, i) => {
   const m = /^data:image\/(\w+);base64,(.*)$/.exec(c.thumb ?? '')
   if (c.kind === 'missed' && m)
-    fs.writeFileSync(path.join(outDir, `missed-${i}.jpg`), Buffer.from(m[2], 'base64'))
+    fs.writeFileSync(
+      path.join(outDir, `missed-${i}.jpg`),
+      Buffer.from(m[2], 'base64'),
+    )
 })
 
 // Attribute chips to pages per loop.
@@ -174,8 +180,7 @@ for (let loop = 0; loop < loops; loop += 1) {
     loop: loop + 1,
     pagesWithCheck: rows.filter((r) => r.captured > 0).length,
     redAlerts: rows.reduce((s, r) => s + r.missed, 0),
-    silentlyLost: rows.filter((r) => r.captured === 0 && r.missed === 0)
-      .length,
+    silentlyLost: rows.filter((r) => r.captured === 0 && r.missed === 0).length,
     rows,
   })
 }
@@ -185,13 +190,21 @@ const result = {
   videoSize,
   viewport: { w: vw, h: vh },
   holdFrames,
-  chips: chips.map((c) => ({ kind: c.kind, t: +((c.t - t0) / 1000).toFixed(2) })),
+  chips: chips.map((c) => ({
+    kind: c.kind,
+    t: +((c.t - t0) / 1000).toFixed(2),
+  })),
   perLoop,
   savedPages: saved,
   screenshots: shots,
   reportText,
   logs: logs.slice(0, 2000),
 }
-fs.writeFileSync(path.join(outDir, 'result.json'), JSON.stringify(result, null, 2))
-console.log(JSON.stringify({ videoSize, perLoop, saved: saved.length }, null, 2))
+fs.writeFileSync(
+  path.join(outDir, 'result.json'),
+  JSON.stringify(result, null, 2),
+)
+console.log(
+  JSON.stringify({ videoSize, perLoop, saved: saved.length }, null, 2),
+)
 await browser.close()

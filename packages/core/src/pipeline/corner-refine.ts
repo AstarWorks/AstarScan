@@ -123,7 +123,10 @@ function matPoints(m: CvMat): Point[] {
  * Otsu threshold over the pixels of `gray` brighter than `above`; null
  * when too few such pixels or no spread.
  */
-export function otsuAbove(gray: ArrayLike<number>, above: number): number | null {
+export function otsuAbove(
+  gray: ArrayLike<number>,
+  above: number,
+): number | null {
   const hist = new Array<number>(256).fill(0)
   let n = 0
   for (let i = 0; i < gray.length; i += 1) {

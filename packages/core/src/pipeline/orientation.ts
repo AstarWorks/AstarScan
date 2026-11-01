@@ -70,7 +70,8 @@ function clipPolygon(subject: Point[], clip: readonly Point[]): Point[] {
   for (let i = 0; i < c.length && out.length; i += 1) {
     const a = c[i]!
     const b = c[(i + 1) % c.length]!
-    const side = (p: Point) => (b.x - a.x) * (p.y - a.y) - (b.y - a.y) * (p.x - a.x)
+    const side = (p: Point) =>
+      (b.x - a.x) * (p.y - a.y) - (b.y - a.y) * (p.x - a.x)
     const input = out
     out = []
     for (let j = 0; j < input.length; j += 1) {
