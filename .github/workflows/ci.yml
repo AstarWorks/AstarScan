@@ -307,7 +307,7 @@ jobs:
     needs: android
     if: github.event_name == 'push'
     runs-on: ubuntu-latest
-    timeout-minutes: 75
+    timeout-minutes: 100
     permissions:
       contents: write
 
@@ -332,7 +332,7 @@ jobs:
           arch: x86_64
           profile: pixel_6
           disable-animations: true
-          emulator-options: -no-window -gpu swiftshader_indirect -noaudio -no-boot-anim -camera-back virtualscene -virtualscene-poster wall=${{ github.workspace }}/scripts/android/fixtures/page-1-no12.jpg
+          emulator-options: -no-window -gpu swiftshader_indirect -noaudio -no-boot-anim -camera-back virtualscene -camera-front emulated -virtualscene-poster wall=${{ github.workspace }}/scripts/android/fixtures/page-1-no12.jpg
           script: bash scripts/android/emulator-check.sh AstarScan-android.apk emulator-out
 
       - uses: actions/upload-artifact@v4

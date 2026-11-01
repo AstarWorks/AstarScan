@@ -2537,6 +2537,18 @@ raw: {{ selectedPage.llmDebug.bestFramePick.raw }}</pre
         </button>
       </template>
 
+      <template v-else-if="nativeMode && phase === 'loading'">
+        <!-- The scanner runs in Play services; if that process dies the
+             pending call never returns, so let the user open it again. -->
+        <button
+          class="btn btn--secondary"
+          type="button"
+          @click="startNativeScan"
+        >
+          もう一度スキャンを開く
+        </button>
+      </template>
+
       <template
         v-else-if="nativeMode && (phase === 'idle' || phase === 'error')"
       >

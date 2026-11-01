@@ -79,25 +79,34 @@ adb shell monkey -p "$PKG" -c android.intent.category.LAUNCHER 1 >/dev/null
 wait_match '^スキャン$' 90 || true
 shot app-start
 
+SCANNER='gallery_button|capture_button'
+GMS=com.google.android.gms
+
+# open_scanner <seconds>: press the app's scan button until ML Kit's camera
+# screen is up. The scanner needs a recent Google Play services; an emulator
+# image ships an old one that Play updates in the background (~10-15 min),
+# restarting Play services, so keep pressing (the plugin also retries 3 min).
+open_scanner() {
+  local end=$((SECONDS + $1))
+  until wait_match "$SCANNER" 5 "$GMS"; do
+    [ $SECONDS -ge $end ] && { log "scanner never opened"; return 1; }
+    tap_match '^(スキャン|もう一度スキャンを開く)$' "$PKG" || adb shell input keyevent KEYCODE_BACK
+    wait_match "$SCANNER" 200 "$GMS" && break
+    shot scanner-not-ready
+  done
+  return 0
+}
+
 log "open ML Kit scanner"
-tap_match '^スキャン$' || log "scan button not found"
-# First use downloads the scanner module through Play services.
-# The scanner needs a recent Google Play services. An emulator image ships
-# an old one that Play updates in the background (~10-15 min), so keep
-# pressing until the scanner opens (the plugin itself retries for 3 min).
-end=$((SECONDS + 1800))
-first=1
-until wait_match '(gallery|import|photo|capture|shutter|ギャラリー|インポート|撮影)' 200 'com.google.android.gms'; do
-  if [ $first = 1 ]; then shot scanner-not-ready; first=0; fi
-  [ $SECONDS -ge $end ] && { log "scanner never opened"; break; }
-  log "press スキャン again"
-  tap_match '^スキャン$' || log "scan button not found"
-done
+open_scanner 2400
+sleep 60
+# Play services may restart right after its update; make sure we are still in.
+open_scanner 900
 sleep 5
 shot scanner-camera
 
 log "import the fixture photos from the gallery"
-tap_match '(gallery|import|ギャラリー|インポート)' 'com.google.android.gms' || log "gallery button not found"
+tap_match 'gallery_button' "$GMS" || log "gallery button not found"
 sleep 6
 shot photo-picker
 # Photo picker: select every fixture (newest first in the grid), then add.
