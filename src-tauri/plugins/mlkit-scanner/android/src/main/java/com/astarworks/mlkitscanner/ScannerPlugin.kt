@@ -8,6 +8,8 @@ import android.graphics.BitmapFactory
 import android.net.Uri
 import android.os.Build
 import android.os.Environment
+import android.os.Handler
+import android.os.Looper
 import android.provider.MediaStore
 import android.util.Base64
 import android.util.Log
@@ -53,9 +55,19 @@ class SavePdfArgs {
 @TauriPlugin
 class ScannerPlugin(private val activity: Activity) : Plugin(activity) {
     private val io = Executors.newSingleThreadExecutor()
+    private val handler = Handler(Looper.getMainLooper())
 
     @Command
     fun scan(invoke: Invoke) {
+        startScan(invoke, 0)
+    }
+
+    /**
+     * On first use Play services downloads the scanner module in the
+     * background and `getStartScanIntent` fails with "Feature not
+     * available" until it lands, so retry for up to ~3 minutes.
+     */
+    private fun startScan(invoke: Invoke, attempt: Int) {
         val options = GmsDocumentScannerOptions.Builder()
             .setScannerMode(GmsDocumentScannerOptions.SCANNER_MODE_FULL)
             .setGalleryImportAllowed(true)
@@ -71,8 +83,13 @@ class ScannerPlugin(private val activity: Activity) : Plugin(activity) {
                 )
             }
             .addOnFailureListener { e ->
-                Log.e(TAG, "scanner unavailable", e)
-                invoke.reject(e.message ?: "scanner unavailable", "SCANNER_UNAVAILABLE")
+                if (attempt < MAX_ATTEMPTS) {
+                    Log.w(TAG, "scanner not ready (attempt ${attempt + 1}): ${e.message}")
+                    handler.postDelayed({ startScan(invoke, attempt + 1) }, RETRY_MS)
+                } else {
+                    Log.e(TAG, "scanner unavailable", e)
+                    invoke.reject(e.message ?: "scanner unavailable", "SCANNER_UNAVAILABLE")
+                }
             }
     }
 
@@ -227,5 +244,7 @@ class ScannerPlugin(private val activity: Activity) : Plugin(activity) {
 
     companion object {
         private const val TAG = "AstarScanMlkit"
+        private const val MAX_ATTEMPTS = 36
+        private const val RETRY_MS = 5000L
     }
 }

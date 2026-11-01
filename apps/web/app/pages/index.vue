@@ -1982,7 +1982,7 @@ const reportRows = computed<ReportViewRow[]>(() =>
 async function startNativeScan(): Promise<void> {
   phase.value = 'loading'
   errorText.value = ''
-  statusText.value = 'スキャナー起動中…'
+  statusText.value = 'スキャナー起動中…（初回は部品の取得で数分かかります）'
   try {
     const res = await nativeScan()
     if (res.canceled || res.pages.length === 0) {
@@ -2224,6 +2224,7 @@ function pageIndexById(id: string): number {
       <h1 class="app__title">AstarScan</h1>
       <span v-if="statusText" class="app__status">{{ statusText }}</span>
       <label
+        v-if="!nativeMode"
         class="app__toggle"
         :title="
           llmAvailable
@@ -2259,7 +2260,8 @@ function pageIndexById(id: string): number {
         ref="videoRef"
         class="viewport__video"
         :class="{
-          'viewport__video--hidden': phase === 'idle' || !!selectedPage,
+          'viewport__video--hidden':
+            nativeMode || phase === 'idle' || !!selectedPage,
         }"
         playsinline
         muted
@@ -2268,7 +2270,8 @@ function pageIndexById(id: string): number {
         ref="overlayRef"
         class="viewport__overlay"
         :class="{
-          'viewport__overlay--hidden': phase === 'idle' || !!selectedPage,
+          'viewport__overlay--hidden':
+            nativeMode || phase === 'idle' || !!selectedPage,
         }"
       />
 

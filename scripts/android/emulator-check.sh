@@ -82,7 +82,7 @@ shot app-start
 log "open ML Kit scanner"
 tap_match '^スキャン$' || log "scan button not found"
 # First use downloads the scanner module through Play services.
-wait_match '(gallery|import|photo|capture|shutter|ギャラリー|インポート|撮影)' 240 'com.google.android.gms' || true
+wait_match '(gallery|import|photo|capture|shutter|ギャラリー|インポート|撮影)' 300 'com.google.android.gms' || true
 sleep 5
 shot scanner-camera
 
