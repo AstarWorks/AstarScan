@@ -233,13 +233,19 @@ for (let pass = 0; pass < 2; pass += 1) {
   deltas.sort((a, b) => a - b)
   offset = deltas.length ? deltas[Math.floor(deltas.length / 2)] : 0
 }
-// Stills: their event fires after the still was detected (queued behind
-// the frame loop), so search back up to 4 s from it.
+// Stills: taken after their ✓, reported after the still was detected
+// (queued behind the frame loop) — search between the two.
+let lastCheckWall = null
 for (const e of probe) {
+  if (e.type === 'captured') lastCheckWall = e.wall
   if (e.type !== 'photo' || !e.sig?.length) continue
   const exp = Math.round(((e.wall - wStream) / 1000) * fps + offset)
+  const from =
+    lastCheckWall === null
+      ? exp - 4 * fps
+      : Math.round(((lastCheckWall - wStream) / 1000) * fps + offset) - Math.round(fps * 0.2)
   let best = Infinity
-  for (let p = exp - 4 * fps; p <= exp + Math.round(fps * 0.3); p += 1) {
+  for (let p = from; p <= exp + Math.round(fps * 0.3); p += 1) {
     if (p < 0) continue
     const d = sad(e.sig, clipSig[p % N])
     if (d < best) {

@@ -241,3 +241,35 @@ describe('buildCaptureReport', () => {
     expect(rows[1]!.livePageNo).toBe(1)
   })
 })
+
+describe('LiveCaptureJudge with a samePage test', () => {
+  // Book pages: the pHash barely moves between pages (both PAGE_A), only
+  // the page id in the payload tells them apart.
+  const page = (t: number) => (t < 2 ? 1 : 2)
+  const samePage = (a: LiveFrame<number>, b: LiveFrame<number>) =>
+    page(a.t) === page(b.t)
+  const book = span(0, 4, (t) => frame(t, PAGE_A))
+
+  it('without it, a turn between pHash-alike pages goes unnoticed', () => {
+    const caps = run(book).filter((e) => e.type === 'captured')
+    expect(caps).toHaveLength(1)
+  })
+
+  it('with it, the next page gets its own ✓', () => {
+    const j = new LiveCaptureJudge<number>({}, samePage)
+    const ev = [...book.flatMap((f) => j.push(f)), ...j.finish(4)]
+    const caps = ev.filter((e) => e.type === 'captured')
+    expect(caps).toHaveLength(2)
+    expect(caps[1]!.t).toBeGreaterThan(2)
+  })
+
+  it('falls back to pHash when the test has no answer', () => {
+    const j = new LiveCaptureJudge<number>({}, () => null)
+    const frames = [
+      ...span(0, 2, (t) => frame(t, PAGE_A)),
+      ...span(2, 4, (t) => frame(t, PAGE_B)),
+    ]
+    const ev = [...frames.flatMap((f) => j.push(f)), ...j.finish(4)]
+    expect(ev.filter((e) => e.type === 'captured')).toHaveLength(2)
+  })
+})
