@@ -1,0 +1,5 @@
+"$schema" = "schemas/schema.json"
+
+[default]
+description = "Scan pages with ML Kit, read them back, and save them as a PDF or send them to AstarManagement."
+permissions = ["allow-scan", "allow-read-page", "allow-save-pdf", "allow-upload"]

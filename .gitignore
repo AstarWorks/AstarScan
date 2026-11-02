@@ -105,3 +105,4 @@ scripts/dataset/scene-reps.json
 # External datasets (SmartDoc etc.) — downloaded, not committed
 scripts/dataset/external/
 apps/web/public/ort/
+__pycache__/
