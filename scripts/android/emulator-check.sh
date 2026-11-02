@@ -141,10 +141,23 @@ while [ $SECONDS -lt $end ]; do
   sleep 20
 done
 
+# Newer Play services auto-capture the virtual room the moment the camera
+# opens, before a UI dump can see the camera. So open the scanner and, in
+# one adb shell, keep tapping the "Manual" chip and then the gallery button
+# at their fixed spots (pixel_6 layout) to win the race.
+MANUAL_XY="384 2220"
+GALLERY_XY="243 2005"
+open_scanner() {
+  tap_now '^(スキャン|もう一度スキャンを開く)$' "$PKG" || return 1
+  adb shell "i=0; while [ \$i -lt 14 ]; do input tap $MANUAL_XY; i=\$((i+1)); done; input tap $GALLERY_XY"
+  sleep 4
+}
+
 log "scan: open ML Kit, import the fixture photos, show the page frame, finish"
 imported=0
 cropped=0
 saved=0
+attempts=0
 end=$((SECONDS + 3000))
 while [ $SECONDS -lt $end ]; do
   sleep 3
@@ -173,9 +186,10 @@ while [ $SECONDS -lt $end ]; do
     fi
   elif has "$DOCSCAN/save_document_button" "$GMS"; then
     if [ $imported = 0 ]; then
-      # Auto-capture grabbed the virtual room first: drop it, go to the camera.
+      # Auto-capture grabbed the virtual room first (the frame it found is
+      # in the screenshot): discard the scan and open the scanner again.
       shot scanner-review-room
-      tap_now "$DOCSCAN/delete_button" "$GMS" || tap_now "$DOCSCAN/add_page" "$GMS"
+      tap_now "$DOCSCAN/discard_scan_button" "$GMS" || tap_now "$DOCSCAN/delete_button" "$GMS"
     elif [ $cropped = 0 ]; then
       shot scanner-review
       tap_now "$DOCSCAN/edit_menu_crop_and_rotate_button" "$GMS" || cropped=1
@@ -185,7 +199,8 @@ while [ $SECONDS -lt $end ]; do
       tap_now "$DOCSCAN/save_document_button" "$GMS"
       saved=1
     fi
-  elif has '^(Delete|削除)$' "$GMS" && has 'android:id/button1' "$GMS"; then
+  elif has 'android:id/button1' "$GMS"; then
+    # Confirm dialogs (delete page / discard scan).
     tap_now 'android:id/button1' "$GMS"
   elif has '(PDF 保存|追加スキャン)' "$PKG"; then
     [ $saved = 1 ] && break
@@ -195,8 +210,9 @@ while [ $SECONDS -lt $end ]; do
     imported=0
     cropped=0
     if has 'もう一度スキャンを開く' "$PKG"; then sleep 30; dump; fi
-    tap_now '^(スキャン|もう一度スキャンを開く)$' "$PKG" || true
-    sleep 20
+    attempts=$((attempts + 1))
+    [ $attempts -gt 12 ] && { log "gave up opening the scanner"; break; }
+    open_scanner || true
   elif has '(photo|写真)' 'providers.media|photopicker|documentsui'; then
     pick_photos
     imported=1
