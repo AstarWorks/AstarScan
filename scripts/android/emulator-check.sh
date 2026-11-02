@@ -163,16 +163,26 @@ scan_clip() {
   local clip=$1
   shift
   local plan=("$@")
-  local want=${#plan[@]} m=0 adj=0 cam_shot=-1 cam_since=$SECONDS opens=0 saved=0 presses=0
+  local want=${#plan[@]} m=0 adj=0 cam_shot=-1 cam_since=$SECONDS opens=0 saved=0 presses=0 stop=0
   log "=== $clip: capture holds ${plan[*]}"
   feed "$clip" "${plan[0]}"
   to_start || log "could not get back to the start screen"
-  local end=$((SECONDS + 600))
+  # Time budget: ~75 s per page (run 3: a page that needs the manual
+  # shutter takes ~60 s), at least 10 min. When it runs out, or the clip
+  # is given up, whatever the scanner holds is saved so those pages still
+  # reach the list; 2 more minutes are allowed for that.
+  local soft=$((SECONDS + (want * 75 > 600 ? want * 75 : 600)))
+  local end=$((soft + 120))
   while [ $SECONDS -lt $end ]; do
+    if [ $stop = 0 ] && [ $SECONDS -ge "$soft" ]; then
+      log "$clip: time budget used up with $m / $want pages, saving what the scanner has"
+      stop=1
+    fi
     dump
     case $(kind) in
       app-start)
         [ $saved = 1 ] && break
+        [ $stop = 1 ] && { log "$clip: stopped at the start screen (nothing saved)"; break; }
         opens=$((opens + 1))
         [ $opens -gt 6 ] && { log "gave up opening the scanner"; break; }
         tap_now '^スキャン$' "$PKG"
@@ -220,7 +230,7 @@ scan_clip() {
           dump
           if ! tap_now "$DOCSCAN/edit_menu_crop_and_rotate_button" "$GMS"; then adj=$m; fi
           sleep 2
-        elif [ "$m" -lt "$want" ]; then
+        elif [ "$m" -lt "$want" ] && [ $stop = 0 ]; then
           [ "$m" -le 1 ] && shot "$clip-review"
           feed "$clip" "${plan[$m]}"
           tap_now "$DOCSCAN/add_page" "$GMS" || tap_now '^Add page' "$GMS"
@@ -235,28 +245,39 @@ scan_clip() {
         ;;
       *)
         # ML Kit's live camera (usually not dumpable while the preview runs).
-        if [ "$cam_shot" != "$m" ] && [ $((SECONDS - cam_since)) -ge 2 ]; then
+        if [ $stop = 1 ]; then
+          # Out of time / gave up: back to the review to save the pages
+          # taken so far (none taken: nothing to save).
+          [ "$m" -eq 0 ] && [ "$adj" -eq 0 ] && { log "$clip: stopping with no page taken"; break; }
+          shot "$clip-stop-camera"
+          # The page-count thumbnail opens the review (Back would ask to
+          # discard the scan).
+          tap_now "$DOCSCAN/preview_thumbnail" "$GMS" || adb shell input keyevent KEYCODE_BACK
+          sleep 3
+        elif [ "$cam_shot" != "$m" ] && [ $((SECONDS - cam_since)) -ge 2 ]; then
           shot "$clip-c$m-camera"
           cam_shot=$m
           presses=0
           diag
-        elif [ $((SECONDS - cam_since)) -gt 25 ]; then
-          # No auto-capture within 25 s: press the shutter (manual). Give
+        elif [ $((SECONDS - cam_since)) -gt 15 ]; then
+          # No auto-capture within 15 s: press the shutter (manual). Give
           # the clip up after a few presses that took nothing, so one
-          # stuck clip cannot eat the whole job.
+          # stuck clip cannot eat the whole job (the pages taken so far
+          # are still saved).
           presses=$((presses + 1))
           shot "$clip-c$m-no-autocapture"
           if [ "$presses" -gt 3 ]; then
             log "$clip c$m: nothing captured after 3 shutter presses, giving the clip up"
-            break
+            stop=1
+            continue
           fi
           local p
           if p=$(python3 "$HERE/ui.py" shutter "$OUT/ui.xml" 2>>"$OUT/steps.log"); then
-            log "$clip c$m: no auto-capture in 25 s, pressing the shutter at $p ($(tail -n1 "$OUT/steps.log"))"
+            log "$clip c$m: no auto-capture in 15 s, pressing the shutter at $p ($(tail -n1 "$OUT/steps.log"))"
             # shellcheck disable=SC2086
             adb shell input tap $p
           else
-            log "$clip c$m: no auto-capture in 25 s and no shutter in the dump, tapping 540 2150"
+            log "$clip c$m: no auto-capture in 15 s and no shutter in the dump, tapping 540 2150"
             adb shell input tap 540 2150
           fi
           cam_since=$SECONDS

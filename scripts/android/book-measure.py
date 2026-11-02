@@ -195,7 +195,8 @@ def measure_capture(out, clips, row, gts, size):
     if not ok:
         res["error"] = "frame read failed"
         return res
-    fed = feed.render_frame(fr, W, H)
+    cbox = feed.clip_box(gt)
+    fed = feed.render_frame(fr, W, H, cbox)
     rx1, ry1, rx2, ry2 = image_rect(img, box)
     crop = img[ry1:ry2, rx1:rx2]
     k, M, inl = register(crop, fed)
@@ -214,10 +215,10 @@ def measure_capture(out, clips, row, gts, size):
     found_clip = None
     best = None
     for name, quad in cands.items():
-        fq = [feed.map_point(x, y, gt["W"], gt["H"], W, H) for x, y in quad]
+        fq = [feed.map_point(x, y, gt["W"], gt["H"], W, H, cbox) for x, y in quad]
         rq = rot_pts(fq, k, W, H)
         sq = [(M[0, 0] * x + M[0, 1] * y + M[0, 2] + rx1, M[1, 0] * x + M[1, 1] * y + M[1, 2] + ry1) for x, y in rq]
-        _, lscale, _, _ = feed.layout(gt["W"], gt["H"], W, H)
+        _, lscale, _, _ = feed.layout(gt["W"], gt["H"], W, H, cbox)
         to_clip = 1.0 / (scale_total * lscale)
         d = [e * to_clip for e in quad_err(hs, sq)]
         diag = float(np.hypot(quad[0][0] - quad[2][0], quad[0][1] - quad[2][1]))
@@ -235,7 +236,7 @@ def measure_capture(out, clips, row, gts, size):
         if not p.get("target"):
             continue
         quad = [p["corners"][c] for c in ("tl", "tr", "br", "bl")]
-        fq = [feed.map_point(x, y, gt["W"], gt["H"], W, H) for x, y in quad]
+        fq = [feed.map_point(x, y, gt["W"], gt["H"], W, H, cbox) for x, y in quad]
         rq = rot_pts(fq, k, W, H)
         sq = [(M[0, 0] * x + M[0, 1] * y + M[0, 2] + rx1, M[1, 0] * x + M[1, 1] * y + M[1, 2] + ry1) for x, y in rq]
         ph = float(np.hypot(sq[0][0] - sq[3][0], sq[0][1] - sq[3][1]))

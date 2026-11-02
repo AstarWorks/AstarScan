@@ -22,13 +22,14 @@ scanner to take it. A new clip starts at its first hold.
 check can tell which ground-truth frame the camera showed when ML Kit
 captured.
 
-Frame layout: every clip frame is fitted, upright, into the part of the
-webcam frame the scanner shows (window(): a 3:4 portrait window at the
-left of the 4:3 frame) and the rest is filled by repeating the edge
-pixels (no black bars that could look like a page edge). `layout()` is
-the single place that defines the
-mapping, and book-measure.py imports it to map ground-truth corners into
-the camera frame.
+Frame layout: the part of every clip frame around the target pages
+(clip_box(): like a phone held so the book fills the screen) is fitted,
+upright, into the part of the webcam frame the scanner shows (window(): a
+3:4 portrait window at the left of the 4:3 frame) and the rest is filled
+by repeating the edge pixels (no black bars that could look like a page
+edge). `layout()` is the single place that defines the mapping, and
+book-measure.py imports it to map ground-truth corners into the camera
+frame.
 """
 
 import argparse
@@ -54,40 +55,73 @@ def window(out_w, out_h):
     return 0, 0, w, out_h
 
 
-def layout(clip_w, clip_h, out_w, out_h):
+BOX_MARGIN = 0.06  # share of the target box added on every side
+
+
+def clip_box(gt):
+    """The part of the clip the phone is held over: (x0, y0, x1, y1).
+
+    The box around the target pages' corners over every hold of the clip
+    (so hand shake stays inside), plus BOX_MARGIN on every side. A user
+    fills the screen with the book (one page in a "single" clip, the open
+    spread in a "spread" clip) instead of filming the whole desk; run 3
+    showed the page numbers were unreadable when the whole 16:9 clip was
+    squeezed into the 720 px wide window.
+    """
+    xs, ys = [], []
+    for s in gt["segments"]:
+        if s["phase"] != "hold":
+            continue
+        for fr in gt["frames"][s["start_frame"] : s["end_frame"]]:
+            for p in fr["pages"]:
+                if p.get("target"):
+                    for x, y in p["corners"].values():
+                        xs.append(x)
+                        ys.append(y)
+    if not xs:
+        return 0.0, 0.0, float(gt["W"]), float(gt["H"])
+    x0, x1, y0, y1 = min(xs), max(xs), min(ys), max(ys)
+    mx, my = (x1 - x0) * BOX_MARGIN, (y1 - y0) * BOX_MARGIN
+    return x0 - mx, y0 - my, x1 + mx, y1 + my
+
+
+def layout(clip_w, clip_h, out_w, out_h, box=None):
     """Return (rotate, scale, off_x, off_y): clip px -> output px.
 
-    rotate is always 0 (kept for book-measure.py): the clip is scaled by
-    `scale` to fit the visible window() and centred in it, upright.
+    rotate is always 0 (kept for book-measure.py). The clip is scaled by
+    `scale` so that `box` (default: the whole clip) fits the visible
+    window(), centred in it, upright.
     """
     wx, wy, ww, wh = window(out_w, out_h)
-    scale = min(ww / clip_w, wh / clip_h)
-    off_x = wx + (ww - clip_w * scale) / 2
-    off_y = wy + (wh - clip_h * scale) / 2
+    bx0, by0, bx1, by1 = box if box else (0, 0, clip_w, clip_h)
+    scale = min(ww / (bx1 - bx0), wh / (by1 - by0))
+    off_x = wx + ww / 2 - (bx0 + bx1) / 2 * scale
+    off_y = wy + wh / 2 - (by0 + by1) / 2 * scale
     return 0, scale, off_x, off_y
 
 
-def map_point(x, y, clip_w, clip_h, out_w, out_h):
+def map_point(x, y, clip_w, clip_h, out_w, out_h, box=None):
     """Clip pixel -> output (camera frame) pixel, same as render_frame."""
-    rotate, scale, ox, oy = layout(clip_w, clip_h, out_w, out_h)
+    rotate, scale, ox, oy = layout(clip_w, clip_h, out_w, out_h, box)
     if rotate:
         # cv2.ROTATE_90_COUNTERCLOCKWISE: (x, y) -> (y, W - 1 - x)
         x, y = y, clip_w - 1 - x
-    return x * scale + ox, y * scale + oy
+    return x * scale + round(ox), y * scale + round(oy)
 
 
-def render_frame(frame, out_w, out_h):
+def render_frame(frame, out_w, out_h, box=None):
     h, w = frame.shape[:2]
-    rotate, scale, ox, oy = layout(w, h, out_w, out_h)
+    rotate, scale, ox, oy = layout(w, h, out_w, out_h, box)
     if rotate:
         frame = cv2.rotate(frame, cv2.ROTATE_90_COUNTERCLOCKWISE)
     rh, rw = frame.shape[:2]
     nw, nh = round(rw * scale), round(rh * scale)
     small = cv2.resize(frame, (nw, nh), interpolation=cv2.INTER_AREA)
-    left = round(ox)
-    top = round(oy)
-    return cv2.copyMakeBorder(
-        small, top, out_h - nh - top, left, out_w - nw - left, cv2.BORDER_REPLICATE
+    # Whole-pixel shift; what falls outside the clip repeats its edge
+    # pixels (no black bars that could look like a page edge).
+    m = np.float32([[1, 0, round(ox)], [0, 1, round(oy)]])
+    return cv2.warpAffine(
+        small, m, (out_w, out_h), flags=cv2.INTER_NEAREST, borderMode=cv2.BORDER_REPLICATE
     )
 
 
@@ -98,6 +132,7 @@ class Clip:
         self.name = name
         self.src_fps = gt["fps"]
         self.holds = [s for s in gt["segments"] if s["phase"] == "hold"]
+        self.box = clip_box(gt)
         # Keep every k-th source frame (as JPEG, to keep memory small).
         self.step = max(1, round(self.src_fps / fps))
         cap = cv2.VideoCapture(os.path.join(clips_dir, f"{name}.mp4"))
@@ -108,7 +143,7 @@ class Clip:
             if not ok:
                 break
             if i % self.step == 0:
-                out = render_frame(fr, out_w, out_h)
+                out = render_frame(fr, out_w, out_h, self.box)
                 self.frames[i] = cv2.imencode(".jpg", out, [cv2.IMWRITE_JPEG_QUALITY, 92])[1]
             i += 1
         self.n = i
