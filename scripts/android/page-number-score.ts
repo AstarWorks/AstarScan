@@ -34,6 +34,27 @@ const recs = readFileSync(file, 'utf8')
   .filter((l) => l.trim())
   .map((l) => JSON.parse(l) as Rec)
 
+// The app's rule (page-number-reader.ts pickNativePageNumbers): the band
+// pass, and the folio pass only when the band pass gives no number.
+const byImage = new Map<string, Map<string, Rec>>()
+for (const r of recs) {
+  const k = `${r.clip}\t${r.hold}\t${r.res}`
+  const m = byImage.get(k) ?? new Map<string, Rec>()
+  m.set(r.decode, r)
+  byImage.set(k, m)
+}
+for (const m of byImage.values()) {
+  const band = m.get('mlkit-band')
+  const folio = m.get('mlkit-folio')
+  if (!band || !folio) continue
+  const bandNums = pickPageNumbers(band.lines.filter((l) => l.conf >= minConf))
+  recs.push({
+    ...band,
+    decode: 'mlkit-band→folio',
+    lines: bandNums.length > 0 ? band.lines : folio.lines,
+  })
+}
+
 type Tally = { right: number; wrong: number; none: number; n: number }
 const tally = new Map<string, Tally>()
 const detail: string[] = []

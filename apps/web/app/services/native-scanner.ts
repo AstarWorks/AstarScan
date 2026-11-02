@@ -71,6 +71,11 @@ export interface NativeMarginLine {
   /** Line centre, 0..1 of the page width / height. */
   readonly cx: number
   readonly cy: number
+  /**
+   * `band`: the whole margin band read at once; `folio`: a short, isolated
+   * piece of print in it (where a page number sits) read enlarged.
+   */
+  readonly pass?: string
 }
 
 /**

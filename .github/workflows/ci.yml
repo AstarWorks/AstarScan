@@ -315,9 +315,11 @@ jobs:
     permissions:
       contents: write
     env:
-      # Webcam frame size; the scanner sees its left 3:4 (run 9: 1280x960 ->
-      # a 720x960 window, page-number digits 4-10 px).
-      FEED_SIZE: 1920x1440
+      # Webcam frame size; the scanner sees its left 3:4 (1280x960 -> a
+      # 720x960 window, page-number digits 4-10 px). Run 10 tried 1920x1440:
+      # the emulator then offers the back camera only at 1920x1440 and the
+      # scanner's preview stays black (nothing captured), so 1280x960 stays.
+      FEED_SIZE: 1280x960
 
     steps:
       - uses: actions/checkout@v4

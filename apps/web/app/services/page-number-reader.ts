@@ -57,5 +57,25 @@ export async function readPageNumbers(dataUrl: string): Promise<number[]> {
  */
 export async function readPageNumbersNative(uri: string): Promise<number[]> {
   const lines = await nativeReadMargins(uri, MARGIN_FRAC)
-  return pickPageNumbers(lines, MARGIN_FRAC)
+  return pickNativePageNumbers(lines)
+}
+
+/**
+ * The band pass first; the folio pass (each isolated piece of margin print
+ * read enlarged) only when the band pass gives no number, so a folio
+ * misread never replaces a number the band pass read (run 8: an extra
+ * pass added one wrong number, and a wrong number makes a false 抜け row).
+ */
+export function pickNativePageNumbers(
+  lines: readonly (PageNumberLine & { readonly pass?: string })[],
+): number[] {
+  const band = pickPageNumbers(
+    lines.filter((l) => (l.pass ?? 'band') === 'band'),
+    MARGIN_FRAC,
+  )
+  if (band.length > 0) return band
+  return pickPageNumbers(
+    lines.filter((l) => l.pass === 'folio'),
+    MARGIN_FRAC,
+  )
 }

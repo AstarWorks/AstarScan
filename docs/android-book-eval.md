@@ -35,6 +35,7 @@ what ML Kit saw. GitHub's `ubuntu-latest` runner loads `v4l2loopback`
 | 7   | 0c02b71 | page numbers read with ML Kit Text Recognition v2 (Japanese, on the device, full-size scan, bands enlarged to 1600 px wide) instead of NDLOCR | 47 taken, 39 reached the list (single-port-wood: ML Kit closed with 8 pages of the first session, lost and re-taken; holds 8–9 (p19, p21) not taken in time — shown inside the red 抜け 18〜22)                                         | spreads: mean 15.4 / 10.8 / 14.2, max 25; single-port-wood: 20.7 (max 62); single-land-white: 10.4 (max 30)                                                                                                                                   | 1 (p37); numbers 6 right / 0 wrong of 39 rows (single-port-wood 3, 13, 15, 17, 23, 25); false 抜け 0                                                                                             |
 | 8   | 9ce5fd3 | a second ML Kit pass on the outer 10 % of the page in three tiles enlarged up to 6×, lines of both passes used                                | 41 taken, 41 reached the list, no crash                                                                                                                                                                                                 | spreads: mean 14.2 / 11.2 / 14.2, max 39; single-port-wood: 20.7 (max 42); single-land-white: 16.0 (max 105)                                                                                                                                  | 1 (p37); numbers 9 right / 1 wrong of 41 rows (band pass alone 8 / 0, tile pass 9 / 1); false 抜け 0                                                                                             |
 | 9   | 68c6d09 | band pass only again (run 7 reading); scorer reads the full logcat                                                                            | 41 taken, 41 reached the list, no crash; PDF saved                                                                                                                                                                                      | spreads: mean 14.8 / 10.4 / 12.2, max 38; single-port-wood: 19.9 (max 67); single-land-white: 47.3 (max 649 — c3 was taken while the feed still showed p35, registration failed; by eye the frame is on the page; without c3 the mean is ~13) | 1 (p37); numbers 7 right / 0 wrong of 41 rows; false 抜け 0; 抜け spanning a captured page 0                                                                                                     |
+| 10  | 825bc35 | ML Kit probe on page images (emulator size / clip size); webcam feed 1920×1440                                                                | 0 — with a 1920×1440 webcam the emulator offers the back camera only at 1920×1440 and the scanner preview stayed black (centre mean 2), every clip given up after 3 shutter presses                                                     | not scored (no capture)                                                                                                                                                                                                                       | not scored; probe: ML Kit 22 right / 0 wrong at clip size vs 9 / 0 at emulator size                                                                                                              |
 
 Run 2 finding: the portrait scanner shows only a 3:4 window at the left
 of the 1280×960 webcam frame (columns 0–719), upright. The feed had
@@ -234,6 +235,44 @@ Run 10 changes:
   `dumpsys media.camera` is kept (`media-camera.txt`): run 9 logcat shows
   the scanner configuring 1280×960 streams, so whether a bigger feed
   reaches ML Kit is measured, not assumed.
+
+Run 10 findings (run 41476003616):
+
+- Probe — the same ML Kit band pass the app runs, on the same 41 page
+  images at three sizes (right / wrong / none):
+
+  | clip                    | emulator size (1280×960 feed) | 1920×1440-feed size | clip size   |
+  | ----------------------- | ----------------------------- | ------------------- | ----------- |
+  | single-port-wood        | 9 / 0 / 3                     | 10 / 0 / 2          | 10 / 0 / 2  |
+  | single-land-white       | 0 / 0 / 10                    | 6 / 0 / 4           | 3 / 0 / 7   |
+  | spread-land-wood        | 0 / 0 / 7                     | 0 / 0 / 7           | 4 / 0 / 3   |
+  | spread-land-white-thick | 0 / 0 / 6                     | 0 / 0 / 6           | 5 / 0 / 1   |
+  | spread-port-white       | 0 / 0 / 6                     | 0 / 0 / 6           | 0 / 0 / 6   |
+  | all                     | 9 / 0 / 32                    | 16 / 0 / 25         | 22 / 0 / 19 |
+
+  ML Kit never gave a wrong number. The camera size is the main cause on
+  the spreads (0 → 9 of 19 at clip size), but not all of it: the Japanese
+  "— NN —" stays mostly unread even at clip size (single-land-white 3 of
+  10, spread-port-white 0 of 6), read at confidence 0.25–0.39 when read.
+  The number is a lone ~12 px item in a wide empty band; reading the whole
+  band (1600 px wide) skips it. That part is the reader.
+
+- 1920×1440 feed: the emulator's back camera then lists only 1920×1440
+  streams (`media-camera.txt`) and the scanner's preview stayed black —
+  nothing captured on any clip. A bigger camera image cannot reach ML Kit
+  on this emulator; the feed is back to 1280×960.
+
+Run 11 changes (reader side): a "folio" pass in `readMargins` finds short,
+isolated pieces of print in each margin band (connected ink blobs darker
+than 0.75× the paper, character-sized, joined into row pieces at most 12×
+as wide as tall, ranked by the gap to the nearest other piece) and reads
+the 4 most isolated per band cut out tightly and enlarged to ~48 px text
+height. The app takes the band pass's number and uses the folio pass only
+when the band pass gives none (`pickNativePageNumbers`), so a folio misread
+cannot replace a band read. Offline on the probe images the number box is
+the first bottom-band piece on every single-land-white page and among the
+first four on the English spreads. The probe and the list are scored per
+pass and for that rule (`mlkit-band→folio`).
 
 Runs 7–9 summary (ML Kit Text Recognition, band pass): 6 / 8 / 7 numbers
 right and 0 / 0 / 0 wrong (with the tile pass in run 8: 1 wrong); false

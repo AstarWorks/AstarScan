@@ -378,24 +378,24 @@ def probe_lines(out_dir):
     try:
         with open(os.path.join(out_dir, "probe.log"), encoding="utf-8", errors="replace") as f:
             for line in f:
-                m = re.search(r"AstarScanMlkit\s*:\s*probe (\S+\.jpg) (\d+)x(\d+) (\[.*\])\s*$", line)
+                m = re.search(r"AstarScanMlkit\s*:\s*probe (\S+\.jpg) (\d+)x(\d+) (?:pass=(\S+) )?(\[.*\])\s*$", line)
                 if not m:
                     continue
                 try:
-                    got[m.group(1)] = json.loads(m.group(4))
+                    ls = json.loads(m.group(5))
                 except json.JSONDecodeError:
-                    got[m.group(1)] = []
+                    ls = []
+                got.setdefault(m.group(1), {})[m.group(4) or "band"] = ls
     except FileNotFoundError:
         return 0
     n = 0
     with open(os.path.join(out_dir, "probe-lines.jsonl"), "w", encoding="utf-8") as out:
         for fn, t in sorted(truth.items()):
-            if fn not in got:
-                continue
-            out.write(json.dumps({"clip": t["clip"], "hold": t["hold"], "res": t["res"], "decode": "mlkit-band",
-                                  "truth": t["truth"], "readW": t["w"], "readH": t["h"], "lines": got[fn]},
-                                 ensure_ascii=False) + "\n")
-            n += 1
+            for pas, ls in got.get(fn, {}).items():
+                out.write(json.dumps({"clip": t["clip"], "hold": t["hold"], "res": t["res"], "decode": f"mlkit-{pas}",
+                                      "truth": t["truth"], "readW": t["w"], "readH": t["h"], "lines": ls},
+                                     ensure_ascii=False) + "\n")
+                n += 1
     return n
 
 
