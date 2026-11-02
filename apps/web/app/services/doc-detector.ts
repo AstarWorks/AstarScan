@@ -37,6 +37,7 @@
 
 import type { Quad } from '@astarworks/scan-core'
 import {
+  ModelCadence,
   OrientationPicker,
   detectPageCorners,
   type CornerRefineResult,
@@ -83,6 +84,10 @@ let mlState: MlState = { kind: 'uninitialized' }
  *  frames: probes every turn now and then, runs the leader otherwise). */
 const picker = new OrientationPicker()
 
+/** Model on every few frames; paper-edge snap in the last box in between
+ *  (scan-core `model-cadence.ts`). */
+const cadence = new ModelCadence()
+
 async function ensureMlBackend(): Promise<void> {
   if (!ENABLE_ML_DETECTOR) return
   if (mlState.kind === 'ready' || mlState.kind === 'unavailable') return
@@ -117,6 +122,23 @@ export async function detectDocument(
     await ensureMlBackend()
     if (mlState.kind === 'ready') {
       try {
+        // Between model runs: snap onto the paper edge inside the last
+        // model box. A failed snap hands the frame to the model.
+        const anchor = cadence.anchorFor(frame.width, frame.height)
+        if (anchor) {
+          const snap = refineCorners(frame, anchor.quad, anchor.box)
+          if (snap?.refined) {
+            cadence.snapped(snap.quad)
+            return {
+              quad: snap.quad,
+              confidence: anchor.confidence,
+              source: 'yolo-pose',
+              boxAgreement: snap.boxAgreement,
+              refined: true,
+            }
+          }
+          cadence.lost()
+        }
         // Model (landscape frames turned per `picker`) → snap the corners,
         // which shrink inside the page, onto the paper edge found inside
         // the model's box (scan-core corner-refine / orientation).
@@ -129,6 +151,13 @@ export async function detectDocument(
         )
         const result = found?.detection
         if (found && result && result.confidence >= ML_MIN_CONFIDENCE) {
+          cadence.modelRan({
+            box: result.box,
+            quad: found.refine.quad,
+            confidence: result.confidence,
+            frameW: frame.width,
+            frameH: frame.height,
+          })
           return {
             quad: found.refine.quad,
             confidence: result.confidence,
@@ -137,6 +166,7 @@ export async function detectDocument(
             refined: found.refine.refined,
           }
         }
+        cadence.modelRan(null)
         // Low confidence or no detection: skip the frame. Falling through
         // to OpenCV here would inject whole-frame quads into a YOLO track
         // and break hash continuity (see module docs).
