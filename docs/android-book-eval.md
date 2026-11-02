@@ -31,6 +31,7 @@ what ML Kit saw. GitHub's `ubuntu-latest` runner loads `v4l2loopback`
 | 3   | d9d0485 | the clip is fitted into the 3:4 window the scanner sees; the "Crop and rotate" screen is recognised; leftovers are discarded              | 40 taken in the scanner, 29 reached the list (single-port-wood: 11 taken, never saved — the clip ran out of its 10 min, 12 holds × ~60 s with the manual shutter)                                                                       | spreads: mean 14.6 / 13.8 / 18.5, max 49; single-port-wood: 28.6 (max 109, a corner under the thumb); single-land-white: 64.0 (max 135 — ML Kit framed the whole spread, not the target page)               | 13 (single-port-wood 12, p37 of single-land-white 1)                                                                                                                                             |
 | 4   | f3baa1a | the feed zooms onto the target pages (`clip_box()`); manual shutter after 15 s; ~75 s per page and save-on-timeout                        | 40 taken; 38 reached the list (single-port-wood: ML Kit crashed at its 12th page and the 11 pages of that scan were lost; the check re-opened the scanner and saved 9)                                                                  | spreads: mean 13.4 / 11.0 / 14.3, max 27; single-port-wood: 21.7 (max 57); single-land-white: 17.0 (max 116, two captures where the left frame edge sat on the facing page) — frames now on the target page | 7 by the scorer (single-port-wood 5, its row-to-hold mapping is off after the crash; single-land-white p31, p37)                                                                                 |
 | 5   | 500bf80 | NDLOCR reads page-number (block_folio) boxes; sessions of ≤ 10 pages                                                                      | 48 taken, 41 reached the list (7 of spread-land-wood lost to an ML Kit crash after the 7th page's Apply, then re-taken: all 60 target pages are on a list row)                                                                          | spreads: mean 14.3 / 11.8 / 12.5, max 27; single-port-wood: 20.1 (max 49); single-land-white: 13.4 (max 115)                                                                                                | 1 (p37, the page skipped on purpose: its neighbours were misread, so no red 欠番 covered it); scorer of run 5 counted 10 because it took misread rows as silent — rescored with the fixed parser |
+| 6   | 99b8323 | 一 next to digits is a dash; page-number boxes widened to 6× height; lost scans at the start screen marked                                | 41 taken, 41 reached the list — every hold of every clip, no crash; PDF saved (`astarscan-20261102-094707.pdf`)                                                                                                                         | spreads: mean 14.7 / 10.7 / 13.7, max 37; single-port-wood: 20.3 (max 50); single-land-white: 13.3 (max 103)                                                                                                | 1 (p37, skipped on purpose; its neighbours are 番号を読めず, so no red 欠番 covers it)                                                                                                           |
 
 Run 2 finding: the portrait scanner shows only a 3:4 window at the left
 of the 1280×960 webcam frame (columns 0–719), upright. The feed had
@@ -117,3 +118,29 @@ a dash and rejects a lone 一 (unit test added); a page-number box is
 widened to 6× its height before recognition (the recognizer stretches
 every crop to 16:1); the check marks a scan lost to a crash at the start
 screen as `kept=0`.
+
+Run 6 findings (run 41415695993, final; recording:
+[book-eval-recording.mp4](https://github.com/AstarWorks/AstarScan/releases/download/android-android-mlkit-scanner/book-eval-recording.mp4),
+screenshots: [emulator-check.zip](https://github.com/AstarWorks/AstarScan/releases/download/android-android-mlkit-scanner/emulator-check.zip)):
+
+- All 41 captures (60 target pages) reached the list; every page has a
+  row: 撮れた with a number, or red 番号を読めず / 重複 / 順番が前後, and
+  red 抜け rows for the gaps the numbers imply. Silent (無表示): only
+  p37 — the page the last clip skips on purpose. The app can only flag a
+  skipped page from the numbers on either side, and p35 / p39 were
+  番号を読めず.
+  ![run 6 single-land-white](images/android-book-eval/run6-list-single-land-white.png)
+- The "1" reads from the dashes are gone, but the Japanese "— NN —"
+  numbers are still mostly not read (1 of 10 read, as 10), and the
+  spreads (4–8 px digits) read 1 of 19. single-port-wood: 13, 15, 17
+  right; 10, 5, 20, 1, 3 wrong, giving false 抜け rows (11〜12, 14, 16,
+  18〜19). Widening the page-number box did not clearly help.
+  ![run 6 single-port-wood](images/android-book-eval/run6-list-single-port-wood.png)
+- Corner frames: ML Kit's handles are 11–20 clip px (mean) off the
+  ground-truth corners on every clip; the worst single corners (≈ 100 px)
+  are on single-land-white where the left edge sat on the facing page.
+
+Not verified: page-number OCR at real phone resolution (the emulator
+webcam gives ML Kit at most 720×960, so a page is ~650 px wide); whether
+ML Kit's carousel crash happens without the check opening Crop & rotate
+on every page (a user normally does not); a real device.
