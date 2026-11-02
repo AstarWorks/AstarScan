@@ -13,6 +13,7 @@ import android.os.Looper
 import android.provider.MediaStore
 import android.util.Base64
 import android.util.Log
+import android.webkit.WebView
 import androidx.activity.result.ActivityResult
 import androidx.activity.result.IntentSenderRequest
 import app.tauri.annotation.ActivityCallback
@@ -186,22 +187,15 @@ class ScannerPlugin(private val activity: Activity) : Plugin(activity) {
                 page = decodePage(args.uri, MAX_OCR_SIDE)
                 val w = page.width
                 val h = page.height
-                val band = (h * args.marginFrac.coerceIn(0.02, 0.5)).toInt().coerceAtLeast(1)
                 val lines = JSArray()
-                // Pass "band": each whole margin band, enlarged to minWidth.
-                val bandLines = JSArray()
-                val up = (args.minWidth.toFloat() / w).coerceIn(1f, 4f)
-                for (top in listOf(true, false)) {
-                    val y0 = if (top) 0 else h - band
-                    recognizeRegion(page, 0, y0, w, band, up, "band", bandLines)
-                }
                 // Run 8 also read the outer 10 % in three enlarged tiles: +1
                 // right, +1 wrong (p9 as "6" at 0.91) of 41 pages, so only the
                 // band pass is kept — a wrong number makes a false 抜け row.
-                for (i in 0 until bandLines.length()) lines.put(bandLines.get(i))
+                val band = bandLines(page, args.marginFrac, args.minWidth)
+                for (i in 0 until band.length()) lines.put(band.get(i))
                 // One line per page for the emulator check (book-measure.py).
                 val name = nameOf(args.uri)
-                Log.i(TAG, "margins $name ${w}x$h pass=band $bandLines")
+                Log.i(TAG, "margins $name ${w}x$h pass=band $band")
                 invoke.resolve(JSObject().put("lines", lines).put("width", w).put("height", h))
             } catch (e: Exception) {
                 Log.e(TAG, "read margins failed", e)
@@ -209,6 +203,52 @@ class ScannerPlugin(private val activity: Activity) : Plugin(activity) {
             } finally {
                 page?.recycle()
             }
+        }
+    }
+
+    /** Pass "band": the top and bottom margin bands, each enlarged to `minWidth`. */
+    private fun bandLines(page: Bitmap, marginFrac: Double, minWidth: Int): JSArray {
+        val w = page.width
+        val h = page.height
+        val band = (h * marginFrac.coerceIn(0.02, 0.5)).toInt().coerceAtLeast(1)
+        val out = JSArray()
+        val up = (minWidth.toFloat() / w).coerceIn(1f, 4f)
+        for (top in listOf(true, false)) {
+            val y0 = if (top) 0 else h - band
+            recognizeRegion(page, 0, y0, w, band, up, "band", out)
+        }
+        return out
+    }
+
+    /**
+     * Emulator check only: page images pushed by adb into the app's external
+     * files dir `ocr-probe/` are read with the same band pass as `readMargins`
+     * when the app starts, one "probe" log line each, and deleted. Lets the
+     * check compare ML Kit on the clip's own resolution with the emulator
+     * camera's (scripts/android/probe-pages.py). Nothing happens without
+     * that folder.
+     */
+    override fun load(webView: WebView) {
+        super.load(webView)
+        val dir = activity.getExternalFilesDir("ocr-probe") ?: return
+        val files = dir.listFiles { f -> f.name.endsWith(".jpg") }?.sortedBy { it.name } ?: return
+        if (files.isEmpty()) return
+        io.execute {
+            Log.i(TAG, "probe start ${files.size}")
+            for (f in files) {
+                var page: Bitmap? = null
+                try {
+                    page = BitmapFactory.decodeFile(f.path) ?: throw IllegalStateException("decode failed")
+                    val lines = bandLines(page, 0.15, 1600)
+                    Log.i(TAG, "probe ${f.name} ${page.width}x${page.height} $lines")
+                } catch (e: Exception) {
+                    Log.e(TAG, "probe ${f.name} failed", e)
+                } finally {
+                    page?.recycle()
+                    f.delete()
+                }
+            }
+            Log.i(TAG, "probe done ${files.size}")
         }
     }
 

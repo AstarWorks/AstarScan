@@ -106,6 +106,9 @@ DOCSCAN=com.google.android.gms.optional_mlkit_docscan_ui:id
 log "webcams seen by the emulator:"
 "${ANDROID_SDK_ROOT:-/usr/local/lib/android/sdk}/emulator/emulator" -webcam-list 2>&1 | tee -a "$OUT/steps.log"
 adb shell dumpsys media.camera 2>/dev/null | grep -iE 'Camera [0-9]|facing|webcam|qemu|SCALER_AVAILABLE_STREAM|availableStreamConfigurations' | head -20 | tee -a "$OUT/steps.log"
+# The whole camera service dump (stream sizes the back webcam offers the
+# scanner: does a bigger feed reach ML Kit?).
+adb shell dumpsys media.camera >"$OUT/media-camera.txt" 2>&1 || true
 
 log "install"
 adb install -r "$APK" 2>&1 | tee -a "$OUT/steps.log"
@@ -123,6 +126,28 @@ while [ $SECONDS -lt $end ]; do
   if [ -n "$v" ] && [ "$v" != "$v0" ]; then log "Play services updated to $v"; sleep 60; break; fi
   sleep 20
 done
+
+# ML Kit page-number probe: the same band pass the app runs on a scan,
+# on page images cut from the clips at the emulator camera's size and at
+# the clip's own size (probe-pages.py, ScannerPlugin.load). Tells whether
+# an unread number is the camera resolution or the reader.
+PROBE_DIR=/sdcard/Android/data/$PKG/files
+if python3 "$HERE/probe-pages.py" "$CLIPS" "$OUT/probe" 2>&1 | tee -a "$OUT/steps.log"; then
+  adb shell mkdir -p "$PROBE_DIR" 2>&1 | tee -a "$OUT/steps.log"
+  adb push "$OUT/probe/ocr-probe" "$PROBE_DIR/" 2>&1 | tail -1 | tee -a "$OUT/steps.log"
+  adb logcat -c
+  adb shell monkey -p "$PKG" -c android.intent.category.LAUNCHER 1 >/dev/null
+  end=$((SECONDS + 900))
+  while [ $SECONDS -lt $end ]; do
+    adb logcat -d -s AstarScanMlkit:I 2>/dev/null | grep -q 'probe done' && break
+    sleep 10
+  done
+  adb logcat -d -v threadtime -s AstarScanMlkit:I >"$OUT/probe.log" 2>&1
+  log "probe: $(grep -c ' probe [^ ]*\.jpg ' "$OUT/probe.log") page images read; $(grep -o 'probe done.*' "$OUT/probe.log" | head -1)"
+  adb shell am force-stop "$PKG"
+  adb shell rm -rf "$PROBE_DIR/ocr-probe"
+  rm -rf "$OUT/probe/ocr-probe"
+fi
 
 adb logcat -c
 # ML Kit's page-number reads (one "margins" line per page, ScannerPlugin.kt)

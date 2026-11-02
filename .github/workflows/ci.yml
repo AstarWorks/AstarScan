@@ -314,9 +314,17 @@ jobs:
     timeout-minutes: 200
     permissions:
       contents: write
+    env:
+      # Webcam frame size; the scanner sees its left 3:4 (run 9: 1280x960 ->
+      # a 720x960 window, page-number digits 4-10 px).
+      FEED_SIZE: 1920x1440
 
     steps:
       - uses: actions/checkout@v4
+
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: latest
 
       - uses: actions/download-artifact@v4
         with:
@@ -351,7 +359,7 @@ jobs:
           ls -l /dev/video*
           lsmod | grep v4l2loopback
           nohup python3 -I scripts/android/camera-feed.py scripts/eval/book-clips/clips \
-            /tmp/feed.control /tmp/feed.status >/tmp/camera-feed.log 2>&1 &
+            /tmp/feed.control /tmp/feed.status --size "$FEED_SIZE" >/tmp/camera-feed.log 2>&1 &
           for _ in $(seq 60); do [ -s /tmp/feed.status ] && break; sleep 2; done
           cat /tmp/camera-feed.log
           v4l2-ctl -d /dev/video0 --all | head -30
@@ -376,7 +384,16 @@ jobs:
         run: |
           [ -d emulator-out ] || exit 0
           cp /tmp/camera-feed.log emulator-out/ 2>/dev/null || true
-          python3 -I scripts/android/book-measure.py emulator-out scripts/eval/book-clips/clips | tee -a "$GITHUB_STEP_SUMMARY"
+          python3 -I scripts/android/book-measure.py emulator-out scripts/eval/book-clips/clips --size "$FEED_SIZE" | tee -a "$GITHUB_STEP_SUMMARY"
+          if [ -s emulator-out/probe-lines.jsonl ]; then
+            {
+              echo
+              echo "### ML Kit page-number probe (same band pass on page images: emulator camera size vs clip size)"
+              echo
+              bun scripts/android/page-number-score.ts emulator-out/probe-lines.jsonl
+            } | tee -a "$GITHUB_STEP_SUMMARY"
+            bun scripts/android/page-number-score.ts emulator-out/probe-lines.jsonl --detail >emulator-out/probe-detail.txt || true
+          fi
 
       - uses: actions/upload-artifact@v4
         if: always()

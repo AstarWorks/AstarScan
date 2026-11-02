@@ -198,6 +198,43 @@ Run 9 findings (run 41457259556):
 - The CI scoring step crashed writing measure.json (a float32 from the
   registration fallback); fixed, run 9 scored locally with the fix.
 
+Top-left corner of single-port-wood (19–45 clip px in every run), checked
+on run 9 c2 (p7) — ground truth mapped onto the Adjust-corners screenshot
+(red), ML Kit's handles (green on blue):
+![run 9 overlay](images/android-book-eval/run9-overlay-single-port-wood-c2.png)
+![run 9 tl zoom](images/android-book-eval/run9-tl-zoom-single-port-wood-c2.png)
+
+- ML Kit's frame lies on the paper: its top edge is on the flat top edge
+  of the page, its left edge on the page's left edge; the other three
+  corners are 1–25 clip px off.
+- The ground-truth tl is the paper's real corner at the spine, where the
+  page curls down and to the left (it is 0–27 px left of the clip's edge
+  on 5 of the 12 holds; the feed fills that strip by repeating the edge
+  pixels, so nothing can see it). ML Kit's straight quad cannot follow
+  the curl and leaves a thin strip at the spine out of the crop (no text
+  in it).
+- So it is neither a ground-truth error nor a scorer mismatch nor an app
+  bug: it is ML Kit's four-point frame on a curled page. Nothing changed
+  in the app. The scorer now scores a corner that lies outside the clip
+  against the point where the page edge leaves the clip
+  (`visible_quad()`, `out_of_clip` in measure.json): run 9
+  single-port-wood rescored 19.9 → 18.2 mean (max 44.6, still the curl).
+
+Run 10 changes:
+
+- ML Kit page-number probe (step 1, clip quality vs reader): the check
+  pushes 123 page images (41 holds × emulator-size with a 1280×960 feed,
+  emulator-size with a 1920×1440 feed, the clip's own pixels;
+  `probe-pages.py`) into the app's external files dir; on start the app
+  reads each with the same band pass as a scan (`ScannerPlugin.load`,
+  "probe" log lines) and the CI scores them with `page-number-score.ts`
+  (Step Summary, `probe-detail.txt`).
+- The webcam feed is 1920×1440 instead of 1280×960 (`FEED_SIZE` in the
+  CI job; book-measure maps with the same size), and the whole
+  `dumpsys media.camera` is kept (`media-camera.txt`): run 9 logcat shows
+  the scanner configuring 1280×960 streams, so whether a bigger feed
+  reaches ML Kit is measured, not assumed.
+
 Runs 7–9 summary (ML Kit Text Recognition, band pass): 6 / 8 / 7 numbers
 right and 0 / 0 / 0 wrong (with the tile pass in run 8: 1 wrong); false
 抜け rows 0 in all three; silent misses 1 (p37) in all three. Remaining

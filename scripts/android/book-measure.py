@@ -169,6 +169,32 @@ def gt_candidates(frame):
     return c
 
 
+def visible_quad(quad, w, h):
+    """GT corners (tl, tr, br, bl) moved into the clip frame: a corner outside
+    the frame is replaced by the point where its top / bottom page edge
+    crosses the frame border — the corner the camera can actually see.
+    single-port-wood has the target page's tl 0-27 px left of the clip's
+    edge on 5 of 12 holds (run 10 finding); the feed fills that strip with
+    repeated edge pixels, so no detector can find the hidden corner.
+    Returns (quad, names of the corners moved)."""
+    names = ("tl", "tr", "br", "bl")
+    pair = {0: 1, 1: 0, 2: 3, 3: 2}  # along the top / bottom edge
+    out, moved = [], []
+    for i, (x, y) in enumerate(quad):
+        if -1 <= x <= w and -1 <= y <= h:
+            out.append((x, y))
+            continue
+        nx, ny = quad[pair[i]]
+        bx = 0.0 if x < 0 else float(w - 1) if x > w else x
+        if bx != x and nx != x:
+            t = (bx - x) / (nx - x)
+            x, y = bx, y + t * (ny - y)
+        y = min(max(y, 0.0), float(h - 1))
+        out.append((x, y))
+        moved.append(names[i])
+    return out, moved
+
+
 def inside(pt, quad, tol):
     q = np.float32(quad).reshape(-1, 1, 2)
     return cv2.pointPolygonTest(q, (float(pt[0]), float(pt[1])), True) >= -tol
@@ -222,6 +248,7 @@ def measure_capture(out, clips, row, gts, size):
     found_clip = None
     best = None
     for name, quad in cands.items():
+        quad, moved = visible_quad(quad, gt["W"], gt["H"])
         fq = [feed.map_point(x, y, gt["W"], gt["H"], W, H, cbox) for x, y in quad]
         rq = rot_pts(fq, k, W, H)
         sq = [(M[0, 0] * x + M[0, 1] * y + M[0, 2] + rx1, M[1, 0] * x + M[1, 1] * y + M[1, 2] + ry1) for x, y in rq]
@@ -230,7 +257,8 @@ def measure_capture(out, clips, row, gts, size):
         d = [e * to_clip for e in quad_err(hs, sq)]
         diag = float(np.hypot(quad[0][0] - quad[2][0], quad[0][1] - quad[2][1]))
         entry = {"target": name, "err_px": [round(e, 1) for e in d], "mean_px": round(sum(d) / 4, 1),
-                 "max_px": round(max(d), 1), "max_rel": round(max(d) / diag, 4), "screen_quad": sq}
+                 "max_px": round(max(d), 1), "max_rel": round(max(d) / diag, 4), "screen_quad": sq,
+                 "out_of_clip": moved}
         if best is None or entry["mean_px"] < best["mean_px"]:
             best = entry
         if name == "spread" or found_clip is None:
@@ -338,6 +366,39 @@ def mlkit_reads(path):
     return out
 
 
+def probe_lines(out_dir):
+    """probe.log ("probe <file> WxH [lines]", ScannerPlugin.load) + probe/probe-truth.json
+    -> probe-lines.jsonl for page-number-score.ts (one record per page image)."""
+    try:
+        with open(os.path.join(out_dir, "probe", "probe-truth.json")) as f:
+            truth = json.load(f)
+    except FileNotFoundError:
+        return 0
+    got = {}
+    try:
+        with open(os.path.join(out_dir, "probe.log"), encoding="utf-8", errors="replace") as f:
+            for line in f:
+                m = re.search(r"AstarScanMlkit\s*:\s*probe (\S+\.jpg) (\d+)x(\d+) (\[.*\])\s*$", line)
+                if not m:
+                    continue
+                try:
+                    got[m.group(1)] = json.loads(m.group(4))
+                except json.JSONDecodeError:
+                    got[m.group(1)] = []
+    except FileNotFoundError:
+        return 0
+    n = 0
+    with open(os.path.join(out_dir, "probe-lines.jsonl"), "w", encoding="utf-8") as out:
+        for fn, t in sorted(truth.items()):
+            if fn not in got:
+                continue
+            out.write(json.dumps({"clip": t["clip"], "hold": t["hold"], "res": t["res"], "decode": "mlkit-band",
+                                  "truth": t["truth"], "readW": t["w"], "readH": t["h"], "lines": got[fn]},
+                                 ensure_ascii=False) + "\n")
+            n += 1
+    return n
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("out")
@@ -353,6 +414,7 @@ def main():
             g = json.load(f)
         gts[g["clip"]] = g
 
+    probe_lines(a.out)
     results = [measure_capture(a.out, a.clips, r, gts, size) for r in caps if r["clip"] in gts]
     # pageno.log is a filtered logcat stream kept during the run; it died
     # half way in run 8, so the full logcat dump is used when it has more.
