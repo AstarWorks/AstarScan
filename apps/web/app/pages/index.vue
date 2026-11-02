@@ -89,6 +89,7 @@ import {
   nativeReadPage,
   nativeSavePdf,
   nativeScan,
+  nativeSendToAstar,
 } from '~/services/native-scanner'
 import { readPageNumbers } from '~/services/page-number-reader'
 import {
@@ -2042,6 +2043,74 @@ async function exportNativePdf(): Promise<void> {
   }
 }
 
+// AstarManagement book capture (Android app only). The server URL, a
+// service account token and the folder ID are kept on this device.
+const ASTAR_TARGET_KEY = 'astarscan.astarTarget'
+/** BookCaptureService.MAX_FRAMES */
+const ASTAR_MAX_PAGES = 150
+
+function loadAstarTarget(): { server: string; token: string; folderId: string } {
+  const empty = { server: '', token: '', folderId: '' }
+  try {
+    const raw = localStorage.getItem(ASTAR_TARGET_KEY)
+    if (!raw) return empty
+    const v = JSON.parse(raw) as Partial<typeof empty>
+    return {
+      server: typeof v.server === 'string' ? v.server : '',
+      token: typeof v.token === 'string' ? v.token : '',
+      folderId: typeof v.folderId === 'string' ? v.folderId : '',
+    }
+  } catch {
+    return empty
+  }
+}
+
+const astarTarget = ref(nativeMode ? loadAstarTarget() : { server: '', token: '', folderId: '' })
+const astarName = ref('')
+const astarSending = ref(false)
+const astarResult = ref('')
+const astarError = ref('')
+
+const canSendToAstar = computed(
+  () =>
+    !astarSending.value &&
+    captured.value.length > 0 &&
+    captured.value.length <= ASTAR_MAX_PAGES &&
+    astarTarget.value.server.trim() !== '' &&
+    astarTarget.value.token.trim() !== '' &&
+    /^[0-9a-f-]{36}$/i.test(astarTarget.value.folderId.trim()),
+)
+
+async function sendToAstar(): Promise<void> {
+  if (!canSendToAstar.value) return
+  astarSending.value = true
+  astarResult.value = ''
+  astarError.value = ''
+  try {
+    localStorage.setItem(ASTAR_TARGET_KEY, JSON.stringify(astarTarget.value))
+  } catch {
+    // Storage unavailable: send anyway, the fields just will not persist.
+  }
+  const stamp = new Date()
+    .toISOString()
+    .replace(/[-:]/g, '')
+    .replace('T', '-')
+    .slice(0, 15)
+  const name = astarName.value.trim() || `スキャン ${stamp}`
+  try {
+    const res = await nativeSendToAstar(
+      astarTarget.value,
+      captured.value.map((p) => p.nativeUri ?? p.dataUrl),
+      name,
+    )
+    astarResult.value = `送信しました（${captured.value.length} ページ「${name}」${res.jobId ? `・受付 ${res.jobId.slice(0, 8)}` : ''}）。PDF と Markdown ができると Astar の通知に出ます。`
+  } catch (err) {
+    astarError.value = `送れませんでした: ${nativeErrorMessage(err)}`
+  } finally {
+    astarSending.value = false
+  }
+}
+
 // ---------------------------------------------------------------------------
 // PDF export
 // ---------------------------------------------------------------------------
@@ -2434,6 +2503,58 @@ raw: {{ selectedPage.llmDebug.bestFramePick.raw }}</pre
     />
 
     <details
+      v-if="nativeMode && phase === 'done' && captured.length > 0"
+      class="astar-send"
+    >
+      <summary>Astar に送る</summary>
+      <label>
+        サーバー
+        <input
+          v-model="astarTarget.server"
+          type="url"
+          inputmode="url"
+          autocomplete="off"
+          placeholder="https://"
+        />
+      </label>
+      <label>
+        サービスアカウントの鍵
+        <input
+          v-model="astarTarget.token"
+          type="password"
+          autocomplete="off"
+          placeholder="asm_sk_…"
+        />
+      </label>
+      <label>
+        フォルダ ID
+        <input
+          v-model="astarTarget.folderId"
+          type="text"
+          autocomplete="off"
+          spellcheck="false"
+        />
+      </label>
+      <label>
+        名前
+        <input v-model="astarName" type="text" maxlength="120" />
+      </label>
+      <button
+        class="btn btn--primary"
+        type="button"
+        :disabled="!canSendToAstar"
+        @click="sendToAstar"
+      >
+        {{ astarSending ? '送信中…' : `送る (${captured.length})` }}
+      </button>
+      <p v-if="captured.length > ASTAR_MAX_PAGES" class="native-error">
+        一度に送れるのは {{ ASTAR_MAX_PAGES }} ページまで
+      </p>
+      <p v-if="astarResult" class="native-saved">{{ astarResult }}</p>
+      <p v-if="astarError" class="native-error">{{ astarError }}</p>
+    </details>
+
+    <details
       v-if="captured.length > 0"
       class="strip-drawer"
       :open="stripOpen"
@@ -2634,6 +2755,39 @@ raw: {{ selectedPage.llmDebug.bestFramePick.raw }}</pre
   border-radius: 8px;
   font-size: 13px;
   word-break: break-all;
+}
+.astar-send {
+  margin: 8px 16px 0;
+  padding: 8px 12px;
+  border: 1px solid rgba(148, 163, 184, 0.4);
+  border-radius: 8px;
+  font-size: 14px;
+}
+.astar-send summary {
+  cursor: pointer;
+  font-weight: 600;
+  min-height: 44px;
+  display: flex;
+  align-items: center;
+}
+.astar-send label {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  margin: 8px 0;
+}
+.astar-send input {
+  min-height: 40px;
+  padding: 6px 10px;
+  border: 1px solid rgba(148, 163, 184, 0.6);
+  border-radius: 6px;
+  background: transparent;
+  color: inherit;
+  font-size: 15px;
+}
+.astar-send .native-saved,
+.astar-send .native-error {
+  margin: 8px 0 0;
 }
 .native-saved {
   background: #dcfce7;

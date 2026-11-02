@@ -28,6 +28,9 @@ import com.google.mlkit.vision.documentscanner.GmsDocumentScanning
 import com.google.mlkit.vision.documentscanner.GmsDocumentScanningResult
 import java.io.ByteArrayOutputStream
 import java.io.File
+import java.net.HttpURLConnection
+import java.net.URL
+import java.util.UUID
 import java.util.concurrent.Executors
 
 @InvokeArg
@@ -43,6 +46,17 @@ class SavePdfArgs {
     lateinit var pages: Array<String>
     var name: String? = null
     var open: Boolean = false
+}
+
+@InvokeArg
+class UploadArgs {
+    /** AstarManagement origin, e.g. `https://app.example.com`. */
+    lateinit var server: String
+    /** Service account token (`asm_sk_…`); sent only as a Bearer header. */
+    lateinit var token: String
+    lateinit var folderId: String
+    lateinit var name: String
+    lateinit var pages: Array<String>
 }
 
 /**
@@ -198,6 +212,86 @@ class ScannerPlugin(private val activity: Activity) : Plugin(activity) {
                 invoke.reject(e.message ?: "save failed", "SAVE_FAILED")
             }
         }
+    }
+
+    /**
+     * Send the pages to AstarManagement's book capture
+     * (`POST /api/v1/book-captures`, multipart: folderId, name, pages[]).
+     * Done natively so the webview's origin and CORS do not matter. The
+     * server flattens the pages and saves `<name>.pdf` / `<name>.md` into the
+     * folder in the background; the 202 response carries the job.
+     */
+    @Command
+    fun upload(invoke: Invoke) {
+        val args = invoke.parseArgs(UploadArgs::class.java)
+        val base = try {
+            uploadBase(args.server)
+        } catch (e: IllegalArgumentException) {
+            invoke.reject(e.message ?: "bad server", "BAD_SERVER")
+            return
+        }
+        if (args.pages.isEmpty()) {
+            invoke.reject("no pages", "NO_PAGES")
+            return
+        }
+        io.execute {
+            var conn: HttpURLConnection? = null
+            try {
+                val boundary = "AstarScan" + UUID.randomUUID().toString().replace("-", "")
+                conn = (URL("$base/api/v1/book-captures").openConnection() as HttpURLConnection).apply {
+                    requestMethod = "POST"
+                    doOutput = true
+                    connectTimeout = 20_000
+                    readTimeout = 120_000
+                    setChunkedStreamingMode(64 * 1024)
+                    setRequestProperty("Authorization", "Bearer ${args.token.trim()}")
+                    setRequestProperty("Accept", "application/json")
+                    setRequestProperty("Content-Type", "multipart/form-data; boundary=$boundary")
+                }
+                conn.outputStream.buffered().use { out ->
+                    fun line(s: String) = out.write("$s\r\n".toByteArray(Charsets.UTF_8))
+                    fun field(key: String, value: String) {
+                        line("--$boundary")
+                        line("Content-Disposition: form-data; name=\"$key\"")
+                        line("Content-Type: text/plain; charset=UTF-8")
+                        line("")
+                        line(value)
+                    }
+                    field("folderId", args.folderId.trim())
+                    field("name", args.name.trim())
+                    args.pages.forEachIndexed { i, page ->
+                        line("--$boundary")
+                        line("Content-Disposition: form-data; name=\"pages\"; filename=\"page-${i + 1}.jpg\"")
+                        line("Content-Type: image/jpeg")
+                        line("")
+                        out.write(jpegBytes(page))
+                        line("")
+                    }
+                    line("--$boundary--")
+                }
+                val status = conn.responseCode
+                val body = (if (status in 200..299) conn.inputStream else conn.errorStream)
+                    ?.bufferedReader()?.use { it.readText() }.orEmpty()
+                if (status in 200..299) {
+                    invoke.resolve(JSObject().put("status", status).put("body", body))
+                } else {
+                    invoke.reject("HTTP $status ${body.take(300)}", "HTTP_$status")
+                }
+            } catch (e: Exception) {
+                Log.e(TAG, "upload failed", e)
+                invoke.reject(e.message ?: "upload failed", "UPLOAD_FAILED")
+            } finally {
+                conn?.disconnect()
+            }
+        }
+    }
+
+    /** https only, except loopback / the emulator's host alias for local stacks. */
+    private fun uploadBase(server: String): String {
+        val url = URL(server.trim().trimEnd('/'))
+        val local = url.host in setOf("localhost", "127.0.0.1", "10.0.2.2")
+        require(url.protocol == "https" || (url.protocol == "http" && local)) { "server must be https://" }
+        return url.toString().trimEnd('/')
     }
 
     private fun fileOf(uri: String): File {

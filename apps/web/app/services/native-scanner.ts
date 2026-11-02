@@ -75,6 +75,44 @@ export function nativeSavePdf(
   return call<SavedPdf>('save_pdf', { pages, name, open })
 }
 
+export interface AstarSendTarget {
+  /** AstarManagement origin, e.g. https://app.example.com */
+  readonly server: string
+  /** Service account token (asm_sk_…). */
+  readonly token: string
+  /** Folder (node) UUID the PDF and Markdown are saved into. */
+  readonly folderId: string
+}
+
+export interface AstarSendResult {
+  readonly jobId: string | null
+}
+
+/**
+ * Send the pages to AstarManagement's book capture
+ * (`POST /api/v1/book-captures`). The server flattens the pages and saves a
+ * searchable PDF + Markdown into the folder in the background.
+ */
+export async function nativeSendToAstar(
+  target: AstarSendTarget,
+  pages: readonly string[],
+  name: string,
+): Promise<AstarSendResult> {
+  const r = await call<{ status: number; body: string }>('upload', {
+    server: target.server,
+    token: target.token,
+    folderId: target.folderId,
+    name,
+    pages,
+  })
+  try {
+    const job = JSON.parse(r.body) as { jobId?: unknown }
+    return { jobId: typeof job.jobId === 'string' ? job.jobId : null }
+  } catch {
+    return { jobId: null }
+  }
+}
+
 /** Plugin errors arrive as strings or `{ message }` objects. */
 export function nativeErrorMessage(err: unknown): string {
   if (typeof err === 'string') return err
