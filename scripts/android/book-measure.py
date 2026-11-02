@@ -313,7 +313,9 @@ def main():
             fr = g["frames"][(s["start_frame"] + s["end_frame"]) // 2]
             hold_pages.append([p["page"] for p in fr["pages"] if p.get("target")])
         plan = [r for r in caps if r["clip"] == name]
-        plan_holds = [int(r["hold"]) for r in plan if r["hold"].isdigit()]
+        # Only captures whose scan reached the app become list rows (a scan the
+        # scanner lost is on record with kept=0).
+        plan_holds = [int(r["hold"]) for r in plan if r["hold"].isdigit() and (r.get("kept") or "1") == "1"]
         xmls = sorted(glob.glob(os.path.join(a.out, f"*-{name}-list*.xml")))
         rows, gaps = parse_list(xmls)
         shown = set()

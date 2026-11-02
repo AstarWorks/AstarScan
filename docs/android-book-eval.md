@@ -24,12 +24,12 @@ what ML Kit saw. GitHub's `ubuntu-latest` runner loads `v4l2loopback`
 
 ## Runs
 
-| Run | Commit  | What changed                                                                                                                              | Pages captured / 60                                                                                                                                                                                                                     | Corner error (clip px)                                                                                                                                                                           | Silent misses (無表示)         |
-| --- | ------- | ----------------------------------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ | ------------------------------ |
-| 1   | a1b5917 | first run with the loopback webcam                                                                                                        | 0 (ML Kit never auto-captured; the blind shutter tap at 540,2005 did not capture; 2 pages appeared later in the review of clip 2, origin unknown)                                                                                       | 未確認 (no adjust-corners screen)                                                                                                                                                                | 60 (no page reached the list)  |
-| 2   | 66df62f | shutter found from the UI dump; a clip is given up after 3 presses; camera diagnostics in the job log; screenshot zip reaches the release | 1 (ML Kit auto-captured p2 of spread-land-wood within ~10 s; the check then mistook the new "Crop and rotate" screen for the camera and pressed its Apply as the shutter, and kept that one page through every clip via "Keep editing") | not scored (the screen was not recognised); by eye: the frame is on the left page, its two right handles sit on the right edge of the visible image, not the gutter — the right page was cut off | 59 (nothing saved to the list) |
-
-| 3 | d9d0485 | the clip is fitted into the 3:4 window the scanner sees; the "Crop and rotate" screen is recognised; leftovers are discarded | 40 taken in the scanner, 29 reached the list (single-port-wood: 11 taken, never saved — the clip ran out of its 10 min, 12 holds × ~60 s with the manual shutter) | spreads: mean 14.6 / 13.8 / 18.5, max 49; single-port-wood: 28.6 (max 109, a corner under the thumb); single-land-white: 64.0 (max 135 — ML Kit framed the whole spread, not the target page) | 13 (single-port-wood 12, p37 of single-land-white 1) |
+| Run | Commit  | What changed                                                                                                                              | Pages captured / 60                                                                                                                                                                                                                     | Corner error (clip px)                                                                                                                                                                                      | Silent misses (無表示)                                                                                           |
+| --- | ------- | ----------------------------------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------- |
+| 1   | a1b5917 | first run with the loopback webcam                                                                                                        | 0 (ML Kit never auto-captured; the blind shutter tap at 540,2005 did not capture; 2 pages appeared later in the review of clip 2, origin unknown)                                                                                       | 未確認 (no adjust-corners screen)                                                                                                                                                                           | 60 (no page reached the list)                                                                                    |
+| 2   | 66df62f | shutter found from the UI dump; a clip is given up after 3 presses; camera diagnostics in the job log; screenshot zip reaches the release | 1 (ML Kit auto-captured p2 of spread-land-wood within ~10 s; the check then mistook the new "Crop and rotate" screen for the camera and pressed its Apply as the shutter, and kept that one page through every clip via "Keep editing") | not scored (the screen was not recognised); by eye: the frame is on the left page, its two right handles sit on the right edge of the visible image, not the gutter — the right page was cut off            | 59 (nothing saved to the list)                                                                                   |
+| 3   | d9d0485 | the clip is fitted into the 3:4 window the scanner sees; the "Crop and rotate" screen is recognised; leftovers are discarded              | 40 taken in the scanner, 29 reached the list (single-port-wood: 11 taken, never saved — the clip ran out of its 10 min, 12 holds × ~60 s with the manual shutter)                                                                       | spreads: mean 14.6 / 13.8 / 18.5, max 49; single-port-wood: 28.6 (max 109, a corner under the thumb); single-land-white: 64.0 (max 135 — ML Kit framed the whole spread, not the target page)               | 13 (single-port-wood 12, p37 of single-land-white 1)                                                             |
+| 4   | f3baa1a | the feed zooms onto the target pages (`clip_box()`); manual shutter after 15 s; ~75 s per page and save-on-timeout                        | 40 taken; 38 reached the list (single-port-wood: ML Kit crashed at its 12th page and the 11 pages of that scan were lost; the check re-opened the scanner and saved 9)                                                                  | spreads: mean 13.4 / 11.0 / 14.3, max 27; single-port-wood: 21.7 (max 57); single-land-white: 17.0 (max 116, two captures where the left frame edge sat on the facing page) — frames now on the target page | 7 by the scorer (single-port-wood 5, its row-to-hold mapping is off after the crash; single-land-white p31, p37) |
 
 Run 2 finding: the portrait scanner shows only a 3:4 window at the left
 of the 1280×960 webcam frame (columns 0–719), upright. The feed had
@@ -67,3 +67,27 @@ After run 4 (in the APK from run 5 on): 番号を読めず and 読み取りで�
 are drawn in red like 欠番 / 重複 (`CaptureReport.vue`) — a page whose
 number cannot be read cannot be checked for gaps or repeats, so the user
 has to look at it.
+
+Run 4 findings (run 41399391353):
+
+- With the zoom the single-page clips are framed on the target page
+  (single-land-white mean error 64 → 17 clip px).
+  ![run 4 single](images/android-book-eval/run4-crop-single-land-white-p33.png)
+- Page numbers are still not read (35 of 38 rows 番号を読めず, the other
+  3 misread: 198, 10, 4) although "— 49 —" is plainly printed on the
+  scanned page. Cause: the app's NDLOCR layout step passes only the
+  `line_*` classes to recognition; NDLOCR labels a page number
+  `block_folio` (class 9, ndl.yaml), so it was dropped before it was ever
+  read. ![run 4 list](images/android-book-eval/run4-list-single-land-white.png)
+- ML Kit crashed when the 12th page of one scan was taken
+  (`NullPointerException` in `CarouselLayoutManager`, Play services
+  26.42.31, logcat 07:12:36) and the app received nothing — the 11 pages
+  of that scan vanished without a row. A user with a long book would
+  lose pages the same way.
+
+Run 5 changes: the app's OCR now recognises `block_folio` (page number)
+and `block_pillar` (running head) boxes too, a short page-number box is
+widened so it is not read as vertical text (layout-detector.ts); the
+check scans a clip in sessions of at most 10 pages (next session via
+追加スキャン) and records the pages of a scan the scanner lost as
+`kept=0` in captures.tsv.

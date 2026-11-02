@@ -17,7 +17,15 @@ import { ort, createSession } from './onnx-config'
 import type { TextRegion, PageBlock, LayoutDetectionResult } from '../types/ocr'
 
 // ndl.yaml の line クラスID (0-indexed, class_index = label - 1)
-const LINE_CLASS_IDS = new Set([1, 2, 3, 4, 5, 16]) // line_main, line_caption, line_ad, line_note, line_note_tochu, line_title
+// AstarScan: + block_pillar (8, running head) and block_folio (9, the
+// printed page number). Upstream reads only line_*, so a page number the
+// model labels as folio never reached recognition and the page list said
+// 番号を読めず although the number was plainly printed (Android run 4).
+const LINE_CLASS_IDS = new Set([1, 2, 3, 4, 5, 8, 9, 16]) // line_main, line_caption, line_ad, line_note, line_note_tochu, block_pillar, block_folio, line_title
+const FOLIO_CLASS_ID = 9
+/** Minimum box side; a page number ("5") can be a few pixels wide. */
+const MIN_LINE_SIDE = 10
+const MIN_FOLIO_SIDE = 4
 const BLOCK_CLASS_ID = 0 // text_block (段・カラム境界)
 
 interface PreprocessResult {
@@ -240,16 +248,28 @@ export class LayoutDetector {
           // ライン: バウンディングボックスを上下2%拡張
           const boxHeight = y2 - y1
           const deltaH = boxHeight * 0.02
-          const finalX1 = Math.max(0, Math.round(x1))
+          // A page number ("5", "12") is printed horizontally but its box
+          // can be taller than wide, which the recognizer would read as
+          // vertical text: widen it around its centre to 1.5× its height.
+          let lx1 = x1
+          let lx2 = x2
+          if (classId === FOLIO_CLASS_ID && x2 - x1 < boxHeight * 1.5) {
+            const cx = (x1 + x2) / 2
+            lx1 = cx - boxHeight * 0.75
+            lx2 = cx + boxHeight * 0.75
+          }
+          const finalX1 = Math.max(0, Math.round(lx1))
           const finalY1 = Math.max(0, Math.round(y1 - deltaH))
-          const finalX2 = Math.min(metadata.originalWidth, Math.round(x2))
+          const finalX2 = Math.min(metadata.originalWidth, Math.round(lx2))
           const finalY2 = Math.min(
             metadata.originalHeight,
             Math.round(y2 + deltaH),
           )
           const width = finalX2 - finalX1
           const height = finalY2 - finalY1
-          if (width >= 10 && height >= 10) {
+          const minSide =
+            classId === FOLIO_CLASS_ID ? MIN_FOLIO_SIDE : MIN_LINE_SIDE
+          if (width >= minSide && height >= minSide) {
             const charCountCategory = charCountsData ? charCountsData[i] : 100
             lineDetections.push({
               x: finalX1,

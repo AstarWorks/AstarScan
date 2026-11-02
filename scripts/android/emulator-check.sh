@@ -36,7 +36,7 @@ FEED_CONTROL=${FEED_CONTROL:-/tmp/feed.control}
 FEED_STATUS=${FEED_STATUS:-/tmp/feed.status}
 mkdir -p "$OUT"
 n=0
-printf 'clip\tcapture\thold\tframe\tshot\n' >"$OUT/captures.tsv"
+printf 'clip\tcapture\thold\tframe\tshot\tkept\n' >"$OUT/captures.tsv"
 
 log() { echo "[emulator-check] $(date +%H:%M:%S) $*" | tee -a "$OUT/steps.log"; }
 
@@ -158,15 +158,36 @@ print(max(map(int, m)) if m else 0)
 PY
 }
 
+# ML Kit's scanner crashed (NullPointerException in its review carousel,
+# Play services 26.42) when the 12th page of one scan was taken (run 4),
+# and the app got nothing back: every page of that scan was lost. A clip
+# is therefore scanned in sessions of at most SESSION_MAX pages; the next
+# session is opened from the page list with 追加スキャン.
+SESSION_MAX=10
+
 # scan_clip <clip> <hold indices to capture, in order>
 scan_clip() {
   local clip=$1
   shift
-  local plan=("$@")
-  local want=${#plan[@]} m=0 adj=0 cam_shot=-1 cam_since=$SECONDS opens=0 saved=0 presses=0 stop=0
+  local plan=("$@") off=0
   log "=== $clip: capture holds ${plan[*]}"
-  feed "$clip" "${plan[0]}"
   to_start || log "could not get back to the start screen"
+  while [ $off -lt ${#plan[@]} ]; do
+    scan_session "$clip" "$off" "${plan[@]:off:SESSION_MAX}" || break
+    off=$((off + SESSION_MAX))
+  done
+  clip_list "$clip"
+}
+
+# scan_session <clip> <index of its first capture in the clip> <holds>
+# One ML Kit scan, saved into the app. Returns 1 when nothing was saved.
+scan_session() {
+  local clip=$1 off=$2
+  shift 2
+  local plan=("$@")
+  local want=${#plan[@]} m=0 adj=0 cam_shot=-1 cam_since=$SECONDS opens=0 saved=0 presses=0 stop=0 pending=
+  log "--- $clip: session from capture $off, holds ${plan[*]}"
+  feed "$clip" "${plan[0]}"
   # Time budget: ~75 s per page (run 3: a page that needs the manual
   # shutter takes ~60 s), at least 10 min. When it runs out, or the clip
   # is given up, whatever the scanner holds is saved so those pages still
@@ -192,6 +213,18 @@ scan_clip() {
         sleep 5
         ;;
       app-waiting-scanner)
+        if [ $saved = 0 ] && [ "$adj" -gt 0 ]; then
+          # The scanner closed without handing the scan back (crash):
+          # its pages never reach the list. Start the session again.
+          log "$clip: the scanner closed with $adj page(s) taken; they are lost, starting the session again"
+          shot "$clip-scanner-lost"
+          printf '%s' "$pending" | sed 's/$/\t0/' >>"$OUT/captures.tsv"
+          pending=
+          adj=0
+          m=0
+          cam_shot=-1
+          feed "$clip" "${plan[0]}"
+        fi
         if [ $((SECONDS - cam_since)) -gt 90 ]; then
           tap_now 'もう一度スキャンを開く' "$PKG"
           cam_since=$SECONDS
@@ -199,8 +232,18 @@ scan_clip() {
         sleep 3
         ;;
       app-list | app-list-empty)
-        log "$clip: back in the app"
-        break
+        if [ $saved = 1 ] || [ $stop = 1 ]; then
+          log "$clip: back in the app"
+          break
+        fi
+        # Next session of the clip: add pages to the list.
+        opens=$((opens + 1))
+        [ $opens -gt 6 ] && { log "gave up opening the scanner"; break; }
+        tap_now '^追加スキャン$' "$PKG"
+        m=0
+        adj=0
+        cam_since=$SECONDS
+        sleep 5
         ;;
       dialog-full-screen) tap_now '^Got it$' ;;
       other-permissioncontroller)
@@ -215,7 +258,8 @@ scan_clip() {
         local fr
         fr=$(feed_frame)
         shot "$clip-c$adj-adjust"
-        printf '%s\t%s\t%s\t%s\t%s\n' "$clip" "$adj" "${plan[$adj]:-}" "$fr" "$SHOT" >>"$OUT/captures.tsv"
+        pending+=$(printf '%s\t%s\t%s\t%s\t%s' "$clip" "$((off + adj))" "${plan[$adj]:-}" "$fr" "$SHOT")$'\n'
+
         adj=$((adj + 1))
         tap_now "$DOCSCAN/confirm_crop(_and_rotate)?_button" "$GMS"
         sleep 2
@@ -240,6 +284,8 @@ scan_clip() {
           shot "$clip-review-final"
           tap_now "$DOCSCAN/save_document_button" "$GMS"
           saved=1
+          printf '%s' "$pending" | sed 's/$/\t1/' >>"$OUT/captures.tsv"
+          pending=
           sleep 4
         fi
         ;;
@@ -287,9 +333,16 @@ scan_clip() {
     esac
   done
   log "$clip: scanner loop ended (pages in scanner: $m / $want, saved=$saved)"
+  # Pages of a scan that never reached the app: on record, marked not kept.
+  [ -n "$pending" ] && printf '%s' "$pending" | sed 's/$/\t0/' >>"$OUT/captures.tsv"
+  [ $saved = 1 ]
+}
 
-  # Page list: wait for the page-number OCR, then keep the list at a few
-  # scroll positions (book-measure.py merges them).
+# clip_list <clip> — the app's page list after the clip.
+clip_list() {
+  local clip=$1
+  # Wait for the page-number OCR, then keep the list at a few scroll
+  # positions (book-measure.py merges them).
   local t_end=$((SECONDS + 420))
   while [ $SECONDS -lt $t_end ]; do
     dump
