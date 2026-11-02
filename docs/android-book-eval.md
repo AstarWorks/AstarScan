@@ -144,3 +144,49 @@ Not verified: page-number OCR at real phone resolution (the emulator
 webcam gives ML Kit at most 720×960, so a page is ~650 px wide); whether
 ML Kit's carousel crash happens without the check opening Crop & rotate
 on every page (a user normally does not); a real device.
+
+## Page-number OCR offline (clip resolution vs emulator resolution)
+
+`scripts/android/page-number-ocr.py` cuts the target page (single clips)
+or the open spread (spread clips) out of the middle frame of every hold
+with the ground-truth corners, at two sizes — `emu`: the frame as the
+emulator camera shows it (`clip_box()` fitted into the 720×960 window,
+so a spread is ~580×410 px, a single page ~540×770 px) and `clip`: the
+clip frame itself (spread ~880–1250 px wide, single page ~650×920 /
+940×1330 px) — and runs the app's NDLOCR page-number path on it (15 %
+bands, DEIM layout, PARSeq rec100, `pickPageNumbers`).
+`bun scripts/android/page-number-score.ts <jsonl>` scores it. 41 page
+images (one per hold); "right" = the number(s) picked equal the truth (one
+number of a spread counts):
+
+| NDLOCR path                                         | emu right / wrong / none | clip right / wrong / none |
+| --------------------------------------------------- | ------------------------ | ------------------------- |
+| run 6 app (repeats collapsed, folio box widened 6×) | 4 / 9 / 28               | 12 / 17 / 12              |
+| repeats kept, folio widened                         | 4 / 9 / 28               | 14 / 16 / 11              |
+| repeats kept, folio box as detected (run 7 NDLOCR)  | 9 / 4 / 28               | 23 / 12 / 6               |
+
+Per clip at clip resolution (run 7 NDLOCR): single-port-wood 12 / 0 / 0,
+spread-land-wood 6 / 1 / 0, spread-land-white-thick 2 / 4 / 0,
+single-land-white 3 / 4 / 3, spread-port-white 0 / 3 / 3.
+
+What this separates:
+
+- Resolution: at the emulator size almost nothing is found on the spreads
+  (0 of 25 right — the digits are 4–8 px and the layout model sees the
+  stacked bands scaled down to 800 px wide); at the clip's own size the
+  English clips are read (single-port-wood 12 / 12, spread-land-wood 6 /
+  7). So for the spreads the emulator resolution is the main cause.
+- The OCR's own errors, independent of resolution:
+  - NDLOCR's decoder dropped repeated characters as if it were CTC
+    (PARSeq is autoregressive): "11" → "1", "33" → "3". Fixed.
+  - The run 6 widening of short page-number boxes pulled the page edge
+    / thumb into the crop, read as an extra leading "1" ("3" → "13").
+    Removed.
+  - Japanese "— NN —" stays poor even at clip size (single-land-white 3
+    of 10, spread-port-white 0 of 6): two-digit numbers come back as one
+    digit ("— 35 —" → "-3-", "— 47 —" → "-4-"), and on a spread one side
+    misread wins over the other side read right ("54" + "65").
+- Real phone: ML Kit returns the page at the camera's resolution (a 12 MP
+  phone: a page ~2000–3000 px tall), above the clip size measured here,
+  so the English numbers should be read there; the Japanese "— NN —" with
+  NDLOCR would still be about 1 in 3. 未確認 on a real device.
