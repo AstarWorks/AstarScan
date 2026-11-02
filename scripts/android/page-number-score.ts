@@ -67,7 +67,9 @@ console.log('| --- | --- | --- | --- | --- | --- | --- |')
 const sum = new Map<string, Tally>()
 for (const [k, t] of [...tally].sort()) {
   const [clip, res, dec] = k.split('\t')
-  console.log(`| ${clip} | ${res} | ${dec} | ${t.right} | ${t.wrong} | ${t.none} | ${t.n} |`)
+  console.log(
+    `| ${clip} | ${res} | ${dec} | ${t.right} | ${t.wrong} | ${t.none} | ${t.n} |`,
+  )
   const sk = `${res}\t${dec}`
   const s = sum.get(sk) ?? { right: 0, wrong: 0, none: 0, n: 0 }
   s.right += t.right
@@ -78,5 +80,7 @@ for (const [k, t] of [...tally].sort()) {
 }
 for (const [k, s] of [...sum].sort()) {
   const [res, dec] = k.split('\t')
-  console.log(`| **all** | ${res} | ${dec} | ${s.right} | ${s.wrong} | ${s.none} | ${s.n} |`)
+  console.log(
+    `| **all** | ${res} | ${dec} | ${s.right} | ${s.wrong} | ${s.none} | ${s.n} |`,
+  )
 }
