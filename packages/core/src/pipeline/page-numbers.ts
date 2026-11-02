@@ -75,7 +75,15 @@ function valid(n: number): boolean {
 export function parsePageNumberToken(text: string): PageNumberToken | null {
   const raw = text.normalize('NFKC').trim()
   if (raw.length === 0) return null
-  const core = raw.replace(DECORATION, '').replace(/\s+/g, '')
+  let core = raw.replace(DECORATION, '').replace(/\s+/g, '')
+  // The dashes of "— 33 —" are often recognised as the kanji 一 (Android
+  // run 5: every such page read as "1"). Next to Arabic digits it is a
+  // decoration, and a lone 一 is far more likely a dash than page 1.
+  if (/\d/.test(core)) {
+    core = core.replace(/^一+|一+$/g, '').replace(DECORATION, '')
+  } else if (/^一+$/.test(core)) {
+    return null
+  }
 
   let m = /^(?:p\.?|P\.?)?(\d{1,4})$/.exec(core)
   if (!m) m = /^第?(\d{1,4})(?:頁|ページ)$/.exec(core)

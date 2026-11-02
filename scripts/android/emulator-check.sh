@@ -204,6 +204,16 @@ scan_session() {
       app-start)
         [ $saved = 1 ] && break
         [ $stop = 1 ] && { log "$clip: stopped at the start screen (nothing saved)"; break; }
+        if [ "$adj" -gt 0 ]; then
+          # Run 5: the scanner crashed after a page's Apply and the app
+          # fell back to its start screen with nothing.
+          log "$clip: the scanner closed with $adj page(s) taken; they are lost, starting the session again"
+          shot "$clip-scanner-lost"
+          printf '%s' "$pending" | sed 's/$/\t0/' >>"$OUT/captures.tsv"
+          pending=
+          cam_shot=-1
+          feed "$clip" "${plan[0]}"
+        fi
         opens=$((opens + 1))
         [ $opens -gt 6 ] && { log "gave up opening the scanner"; break; }
         tap_now '^スキャン$' "$PKG"

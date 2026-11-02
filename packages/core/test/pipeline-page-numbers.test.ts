@@ -31,6 +31,19 @@ describe('parsePageNumberToken', () => {
     expect(parsePageNumberToken('一二')).toEqual({ value: 12, kind: 'kanji' })
   })
 
+  it('reads dashes recognised as 一 as decoration, not as page 1', () => {
+    expect(parsePageNumberToken('一 33 一')).toEqual({
+      value: 33,
+      kind: 'arabic',
+    })
+    expect(parsePageNumberToken('一33')).toEqual({ value: 33, kind: 'arabic' })
+    expect(parsePageNumberToken('一')).toBeNull()
+    expect(parsePageNumberToken('一 一')).toBeNull()
+    // Kanji numerals that only start with 一 still read.
+    expect(parsePageNumberToken('一二')).toEqual({ value: 12, kind: 'kanji' })
+    expect(parsePageNumberToken('十一')).toEqual({ value: 11, kind: 'kanji' })
+  })
+
   it('reads a number at the end of a running head', () => {
     expect(parsePageNumberToken('契約の成立 45')).toEqual({
       value: 45,

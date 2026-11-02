@@ -248,15 +248,16 @@ export class LayoutDetector {
           // ライン: バウンディングボックスを上下2%拡張
           const boxHeight = y2 - y1
           const deltaH = boxHeight * 0.02
-          // A page number ("5", "12") is printed horizontally but its box
-          // can be taller than wide, which the recognizer would read as
-          // vertical text: widen it around its centre to 1.5× its height.
+          // A page number ("5", "— 33 —") is printed horizontally but its
+          // box is short: taller than wide it would be read as vertical
+          // text, and the recognizer stretches every crop to 16:1. Widen it
+          // around its centre (into the blank margin) to 6× its height.
           let lx1 = x1
           let lx2 = x2
-          if (classId === FOLIO_CLASS_ID && x2 - x1 < boxHeight * 1.5) {
+          if (classId === FOLIO_CLASS_ID && x2 - x1 < boxHeight * 6) {
             const cx = (x1 + x2) / 2
-            lx1 = cx - boxHeight * 0.75
-            lx2 = cx + boxHeight * 0.75
+            lx1 = cx - boxHeight * 3
+            lx2 = cx + boxHeight * 3
           }
           const finalX1 = Math.max(0, Math.round(lx1))
           const finalY1 = Math.max(0, Math.round(y1 - deltaH))

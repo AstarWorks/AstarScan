@@ -259,21 +259,32 @@ def parse_list(xml_paths):
         texts = [(n.get("text") or n.get("content-desc") or "").strip() for n in root.iter("node")
                  if (n.get("package") or "") == "com.astarworks.astarscan"]
         texts = [t for t in texts if t]
-        starts = [i for i in range(1, len(texts)) if texts[i] in KIND_LABELS and re.fullmatch(r"\d+|—", texts[i - 1])]
+        def kind_of(t):
+            return next((k for k in KIND_LABELS if t.startswith(k)), None)
+
+        starts = [i for i in range(1, len(texts)) if kind_of(texts[i]) and re.fullmatch(r"\d+|—", texts[i - 1])]
         for j, i in enumerate(starts):
             stop = starts[j + 1] - 1 if j + 1 < len(starts) else len(texts)
-            no, kind = texts[i - 1], texts[i]
+            no, kind = texts[i - 1], kind_of(texts[i])
             nums, rng, state, dup = None, None, None, None
+            # The app joins some texts: "重複候補 = 1", "5順番が前後",
+            # "2〜5欠番", "1重複".
+            m = re.search(r"=\s*(\d+)", texts[i])
+            if m:
+                dup = int(m.group(1))
             for t in texts[i + 1:stop]:
                 if re.fullmatch(r"=\s*\d+", t):
                     dup = int(t.lstrip("= "))
-                elif re.fullmatch(r"\d+(・\d+)*", t):
-                    nums = [int(x) for x in t.split("・")]
-                elif re.fullmatch(r"\d+〜\d+", t):
-                    a, b = map(int, t.split("〜"))
+                    continue
+                m = re.fullmatch(r"(\d+〜\d+|\d+(?:・\d+)*)?\s*(.*)", t)
+                num, label = m.group(1), m.group(2).strip()
+                if num and "〜" in num:
+                    a, b = map(int, num.split("〜"))
                     rng = [a, b]
-                elif t in STATE_LABELS:
-                    state = STATE_LABELS[t]
+                elif num:
+                    nums = [int(x) for x in num.split("・")]
+                if label in STATE_LABELS:
+                    state = STATE_LABELS[label]
             if kind == "抜け" or state in ("missing", "suspect"):
                 if nums and not rng:
                     rng = [nums[0], nums[0]]
@@ -324,12 +335,12 @@ def main():
             h = plan_holds[r["no"] - 1] if r["no"] and r["no"] - 1 < len(plan_holds) else None
             truth = hold_pages[h] if h is not None and h < len(hold_pages) else []
             r["truth"] = truth
-            if r["nums"]:
-                shown.update(r["nums"])
-                if truth and sorted(r["nums"]) != sorted(truth):
-                    misread.append({"no": r["no"], "read": r["nums"], "truth": truth})
-            if r["state"] in ("unread", "failed", "duplicate", "outOfOrder", "reading") or not r["nums"]:
-                shown.update(truth)
+            # Every row is a page the user sees in the list (撮れた / 重複 /
+            # 番号を読めず …), so the pages of that capture are not silent;
+            # a wrong number is counted separately as a misread.
+            shown.update(truth)
+            if r["nums"] and truth and sorted(r["nums"]) != sorted(truth):
+                misread.append({"no": r["no"], "read": r["nums"], "truth": truth})
         red_missing = set()
         for gp in gaps:
             if gp["range"]:
