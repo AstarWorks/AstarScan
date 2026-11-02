@@ -39,6 +39,7 @@ what ML Kit saw. GitHub's `ubuntu-latest` runner loads `v4l2loopback`
 | 11  | 752b042 | folio pass (isolated margin print read enlarged), used when the band pass reads no number; feed back to 1280×960                              | 41 taken, 41 reached the list, no crash                                                                                                                                                                                                 | spreads: mean 14.7 / 10.3 / 12.2, max 26; single-port-wood: 20.7 (max 45, the spine curl); single-land-white: 14.1 (max 119)                                                                                                                  | **0** (p37 is inside the red 34〜38 欠番); numbers 11 right / 1 wrong of 41 rows (p41 read "4" by the band pass, shown as 順番が前後); false 抜け 0; 4 抜け rows also span a captured but unread page |
 | 12  | fcb9918 | a gap with unread captures inside is shown as 欠番？; probe gets 30 min                                                                       | 41 taken, 41 reached the list, no crash                                                                                                                                                                                                 | spreads: mean 16.4 / 12.0 / 11.6, max 29; single-port-wood: 18.5 (max 41); single-land-white: 11.8 (max 95)                                                                                                                                   | 1 (p37 — single-land-white read only p43 this time, so no 欠番 covers p37); numbers **11 right / 0 wrong**; false 抜け 0; plain 抜け spanning a captured page 0 (6〜8 and 10〜12 shown as 欠番？)     |
 | 13  | 194b33e | folio crops enlarged to 64 px with stretched levels                                                                                           | 41 taken, 41 reached the list, no crash; PDF saved                                                                                                                                                                                      | spreads: mean 13.3 / 11.4 / 14.2, max 26; single-port-wood: 19.4 (max 53); single-land-white: 17.2 (max 117)                                                                                                                                  | 1 (p37); numbers 8 right / 0 wrong; false 抜け 0; plain 抜け spanning a captured page 0 (8〜12 shown as 欠番？)                                                                                       |
+| 13b | bdd0f91 | run 13 reverted to the run 12 folio pass (the push's own CI run, no new change)                                                               | 41 taken, 41 reached the list, no crash                                                                                                                                                                                                 | spreads: mean 14.9 / 11.0 / 15.2, max 35; single-port-wood: 17.7 (max 46); single-land-white: 8.5 (max 21)                                                                                                                                    | 1 (p37); numbers 11 right / 0 wrong; false 抜け 0; plain 抜け spanning a captured page 0                                                                                                              |
 
 Run 2 finding: the portrait scanner shows only a 3:4 window at the left
 of the 1280×960 webcam frame (columns 0–719), upright. The feed had
@@ -352,13 +353,14 @@ Run 13 findings (run 41515622322):
 
 Runs 10–13 summary (the 4 runs of this round):
 
-| Run        | Silent misses                  | Numbers right / wrong (of 41) | False 抜け | 抜け over a captured page |
-| ---------- | ------------------------------ | ----------------------------- | ---------- | ------------------------- |
-| 9 (before) | 1 (p37)                        | 7 / 0                         | 0          | 0                         |
-| 10         | — (1920×1440 feed: no capture) | —                             | —          | —                         |
-| 11         | **0**                          | 11 / 1 (band pass: p41 → 4)   | 0          | 4                         |
-| 12         | 1 (p37)                        | 11 / 0                        | 0          | 0 (2 shown as 欠番？)     |
-| 13         | 1 (p37)                        | 8 / 0                         | 0          | 0 (1 shown as 欠番？)     |
+| Run                     | Silent misses                  | Numbers right / wrong (of 41) | False 抜け | 抜け over a captured page |
+| ----------------------- | ------------------------------ | ----------------------------- | ---------- | ------------------------- |
+| 9 (before)              | 1 (p37)                        | 7 / 0                         | 0          | 0                         |
+| 10                      | — (1920×1440 feed: no capture) | —                             | —          | —                         |
+| 11                      | **0**                          | 11 / 1 (band pass: p41 → 4)   | 0          | 4                         |
+| 12                      | 1 (p37)                        | 11 / 0                        | 0          | 0 (2 shown as 欠番？)     |
+| 13                      | 1 (p37)                        | 8 / 0                         | 0          | 0 (1 shown as 欠番？)     |
+| 13b (run 12 code again) | 1 (p37)                        | 11 / 0                        | 0          | 0                         |
 
 - Cause of the unread numbers, measured with the same ML Kit on the same
   page images: the camera size (emulator 9–14 right of 41 vs clip 22–28)
