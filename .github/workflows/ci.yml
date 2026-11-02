@@ -148,12 +148,16 @@ jobs:
         run: |
           local_build=$(jq -r '.id' apps/web/.output/public/_nuxt/builds/latest.json)
           status=000
-          for i in 1 2 3 4 5 6; do
+          preview_build=unknown
+          # A new version takes a while to reach the alias (it can still
+          # serve the previous upload, e.g. the push and pull_request runs
+          # of the same commit), so wait until it serves this build.
+          for i in $(seq 1 24); do
             status=$(curl -sS -o page.html -w '%{http_code}' "$ALIAS_URL/" || echo 000)
-            [ "$status" = 200 ] && break
+            preview_build=$(curl -sS "$ALIAS_URL/_nuxt/builds/latest.json" | jq -r '.id' || echo unknown)
+            [ "$status" = 200 ] && [ "$preview_build" = "$local_build" ] && break
             sleep 5
           done
-          preview_build=$(curl -sS "$ALIAS_URL/_nuxt/builds/latest.json" | jq -r '.id' || echo unknown)
           prod_build=$(curl -sS "$PROD_URL/_nuxt/builds/latest.json" | jq -r '.id' || echo unknown)
           has_app=no
           grep -q 'id="__nuxt"' page.html && has_app=yes
