@@ -195,27 +195,13 @@ class ScannerPlugin(private val activity: Activity) : Plugin(activity) {
                     val y0 = if (top) 0 else h - band
                     recognizeRegion(page, 0, y0, w, band, up, "band", bandLines)
                 }
-                // Pass "tile": the outer 10 % of the page at the top and the
-                // bottom, in three overlapping tiles, each enlarged up to 6×.
-                // A page number is a few characters in a wide, mostly empty
-                // strip; at emulator size ("— 33 —" ~10 px tall) the band
-                // pass found none (run 7).
-                val tileLines = JSArray()
-                val edge = (h * 0.10).toInt().coerceAtLeast(1)
-                val tw = (w * 0.40).toInt().coerceAtLeast(1)
-                val tUp = (TILE_MIN_WIDTH.toFloat() / tw).coerceIn(1f, 6f)
-                for (top in listOf(true, false)) {
-                    val y0 = if (top) 0 else h - edge
-                    for (x0 in listOf(0, (w - tw) / 2, w - tw)) {
-                        recognizeRegion(page, x0, y0, tw, edge, tUp, "tile", tileLines)
-                    }
-                }
+                // Run 8 also read the outer 10 % in three enlarged tiles: +1
+                // right, +1 wrong (p9 as "6" at 0.91) of 41 pages, so only the
+                // band pass is kept — a wrong number makes a false 抜け row.
                 for (i in 0 until bandLines.length()) lines.put(bandLines.get(i))
-                for (i in 0 until tileLines.length()) lines.put(tileLines.get(i))
-                // One line per pass and page for the emulator check (book-measure.py).
+                // One line per page for the emulator check (book-measure.py).
                 val name = nameOf(args.uri)
                 Log.i(TAG, "margins $name ${w}x$h pass=band $bandLines")
-                Log.i(TAG, "margins $name ${w}x$h pass=tile $tileLines")
                 invoke.resolve(JSObject().put("lines", lines).put("width", w).put("height", h))
             } catch (e: Exception) {
                 Log.e(TAG, "read margins failed", e)
@@ -465,7 +451,6 @@ class ScannerPlugin(private val activity: Activity) : Plugin(activity) {
     companion object {
         private const val TAG = "AstarScanMlkit"
         private const val MAX_OCR_SIDE = 4096
-        private const val TILE_MIN_WIDTH = 1200
         private const val MAX_ATTEMPTS = 36
         private const val RETRY_MS = 5000L
     }

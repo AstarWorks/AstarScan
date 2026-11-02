@@ -354,7 +354,10 @@ def main():
         gts[g["clip"]] = g
 
     results = [measure_capture(a.out, a.clips, r, gts, size) for r in caps if r["clip"] in gts]
-    reads = mlkit_reads(os.path.join(a.out, "pageno.log"))
+    # pageno.log is a filtered logcat stream kept during the run; it died
+    # half way in run 8, so the full logcat dump is used when it has more.
+    reads = max((mlkit_reads(os.path.join(a.out, f)) for f in ("pageno.log", "logcat.txt")),
+                key=lambda r: sum(len(v) for v in r.values()))
     ml_out = open(os.path.join(a.out, "mlkit-lines.jsonl"), "w", encoding="utf-8")
     clips_out = []
     for name in [c for c in dict.fromkeys(r["clip"] for r in caps)] + [g for g in gts if g not in {r["clip"] for r in caps}]:

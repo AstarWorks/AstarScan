@@ -33,6 +33,7 @@ what ML Kit saw. GitHub's `ubuntu-latest` runner loads `v4l2loopback`
 | 5   | 500bf80 | NDLOCR reads page-number (block_folio) boxes; sessions of ≤ 10 pages                                                                          | 48 taken, 41 reached the list (7 of spread-land-wood lost to an ML Kit crash after the 7th page's Apply, then re-taken: all 60 target pages are on a list row)                                                                          | spreads: mean 14.3 / 11.8 / 12.5, max 27; single-port-wood: 20.1 (max 49); single-land-white: 13.4 (max 115)                                                                                                | 1 (p37, the page skipped on purpose: its neighbours were misread, so no red 欠番 covered it); scorer of run 5 counted 10 because it took misread rows as silent — rescored with the fixed parser |
 | 6   | 99b8323 | 一 next to digits is a dash; page-number boxes widened to 6× height; lost scans at the start screen marked                                    | 41 taken, 41 reached the list — every hold of every clip, no crash; PDF saved (`astarscan-20261102-094707.pdf`)                                                                                                                         | spreads: mean 14.7 / 10.7 / 13.7, max 37; single-port-wood: 20.3 (max 50); single-land-white: 13.3 (max 103)                                                                                                | 1 (p37, skipped on purpose; its neighbours are 番号を読めず, so no red 欠番 covers it)                                                                                                           |
 | 7   | 0c02b71 | page numbers read with ML Kit Text Recognition v2 (Japanese, on the device, full-size scan, bands enlarged to 1600 px wide) instead of NDLOCR | 47 taken, 39 reached the list (single-port-wood: ML Kit closed with 8 pages of the first session, lost and re-taken; holds 8–9 (p19, p21) not taken in time — shown inside the red 抜け 18〜22)                                         | spreads: mean 15.4 / 10.8 / 14.2, max 25; single-port-wood: 20.7 (max 62); single-land-white: 10.4 (max 30)                                                                                                 | 1 (p37); numbers 6 right / 0 wrong of 39 rows (single-port-wood 3, 13, 15, 17, 23, 25); false 抜け 0                                                                                             |
+| 8   | 9ce5fd3 | a second ML Kit pass on the outer 10 % of the page in three tiles enlarged up to 6×, lines of both passes used                                | 41 taken, 41 reached the list, no crash                                                                                                                                                                                                 | spreads: mean 14.2 / 11.2 / 14.2, max 39; single-port-wood: 20.7 (max 42); single-land-white: 16.0 (max 105)                                                                                                | 1 (p37); numbers 9 right / 1 wrong of 41 rows (band pass alone 8 / 0, tile pass 9 / 1); false 抜け 0                                                                                             |
 
 Run 2 finding: the portrait scanner shows only a 3:4 window at the left
 of the 1280×960 webcam frame (columns 0–719), upright. The feed had
@@ -166,6 +167,19 @@ Run 7 findings (run 41434186488):
 - Same-resolution comparison: NDLOCR on the simulated emulator-size pages
   (offline, run 7 NDLOCR) is 9 right / 4 wrong / 28 none; ML Kit 6 / 0 / 33. ML Kit stays: a wrong number makes a false 抜け row (or hides a real
   one), an unread number only a red 番号を読めず row.
+
+Run 8 findings (run 41445033401):
+
+- Per pass (41 pages): band 8 right / 0 wrong / 33 none, tile 9 / 1 / 31. The tile pass adds p5 but reads p9 as "6" at confidence 0.91 —
+  a confidence threshold cannot drop it — and the list shows "6" as an
+  ordinary number, which makes the 抜け row start at 7 instead of 6
+  (7〜12, spanning the captured p9 and p11). The tile pass is removed
+  again (run 9): a wrong number costs more than an unread one.
+  ![run 8 single-port-wood](images/android-book-eval/run8-list-single-port-wood.png)
+- Neither pass reads anything on the spreads or on the Japanese pages
+  at emulator size, so p37 stays silent.
+- The filtered `pageno.log` stream stopped after the third clip; the
+  scorer now falls back to the full logcat dump.
 
 Not verified: page-number OCR at real phone resolution (the emulator
 webcam gives ML Kit at most 720×960, so a page is ~650 px wide); whether
