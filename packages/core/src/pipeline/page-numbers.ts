@@ -180,6 +180,12 @@ export interface MissingPageRange {
   readonly beforeIndex: number
   /** The gap is wider than `maxGap` — more likely a misread than a miss. */
   readonly suspect: boolean
+  /**
+   * Captures between the two read numbers whose number could not be read.
+   * When > 0 some of the range may be those pages, so the range is a
+   * "missing or unread" warning rather than a sure miss.
+   */
+  readonly unreadBetween: number
 }
 
 export interface PageSequenceCheck {
@@ -201,10 +207,12 @@ export function checkPageSequence(
   const out: PageNumberCheck[] = []
   const missing: MissingPageRange[] = []
   let last: number | null = null
+  let unread = 0
 
   pages.forEach((nums, i) => {
     if (nums.length === 0) {
       out.push({ state: 'unread', duplicateOf: null })
+      unread++
       return
     }
     const sorted = [...nums].sort((a, b) => a - b)
@@ -226,9 +234,11 @@ export function checkPageSequence(
         to: lo - 1,
         beforeIndex: i,
         suspect: lo - 1 - last > maxGap,
+        unreadBetween: unread,
       })
     }
     last = hi
+    unread = 0
     out.push({ state: 'ok', duplicateOf: null })
   })
 

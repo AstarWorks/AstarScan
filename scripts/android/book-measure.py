@@ -58,6 +58,7 @@ STATE_LABELS = {
     "読み取りできず": "failed",
     "欠番": "missing",
     "欠番（読み違いかも）": "suspect",
+    "欠番？（間に番号を読めないページ）": "missingOrUnread",
 }
 
 
@@ -320,7 +321,7 @@ def parse_list(xml_paths):
                     nums = [int(x) for x in num.split("・")]
                 if label in STATE_LABELS:
                     state = STATE_LABELS[label]
-            if kind == "抜け" or state in ("missing", "suspect"):
+            if kind == "抜け" or state in ("missing", "suspect", "missingOrUnread"):
                 if nums and not rng:
                     rng = [nums[0], nums[0]]
                 key = ("gap", tuple(rng or []))
@@ -464,7 +465,8 @@ def main():
         silent = [p for p in targets if p not in shown and p not in red_missing]
         # A 抜け row is false when none of its pages is really missing (every
         # page in it was captured, or is not in the book); one that also
-        # spans a captured page is counted apart ("mixed").
+        # spans a captured page is counted apart ("mixed"), unless the app
+        # itself says unread pages lie inside it (欠番？, missingOrUnread).
         book = set(g["pages"])
         def really_missing(p):
             return p in book and p not in shown
@@ -475,7 +477,7 @@ def main():
             span = range(gp["range"][0], gp["range"][1] + 1)
             if not any(really_missing(p) for p in span):
                 false_gaps.append(gp["range"])
-            elif any(p in shown for p in span):
+            elif any(p in shown for p in span) and gp.get("state") != "missingOrUnread":
                 mixed_gaps.append(gp["range"])
         caps_c = [r for r in results if r["clip"] == name]
         errs = [r["best"]["mean_px"] for r in caps_c if r.get("best")]

@@ -137,7 +137,8 @@ if python3 "$HERE/probe-pages.py" "$CLIPS" "$OUT/probe" 2>&1 | tee -a "$OUT/step
   adb push "$OUT/probe/ocr-probe" "$PROBE_DIR/" 2>&1 | tail -1 | tee -a "$OUT/steps.log"
   adb logcat -c
   adb shell monkey -p "$PKG" -c android.intent.category.LAUNCHER 1 >/dev/null
-  end=$((SECONDS + 900))
+  # Two passes per image; run 11 ran out of 15 min at 68 of 123 images.
+  end=$((SECONDS + 1800))
   while [ $SECONDS -lt $end ]; do
     adb logcat -d -s AstarScanMlkit:I 2>/dev/null | grep -q 'probe done' && break
     sleep 10

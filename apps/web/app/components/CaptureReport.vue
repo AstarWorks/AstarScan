@@ -7,8 +7,10 @@
  */
 export type ReportKind = 'captured' | 'duplicate' | 'recovered' | 'missed'
 
-/** Printed page number check (Android app). `missing` / `suspect` rows are
- *  gaps in the number sequence; `failed` means OCR could not run. */
+/** Printed page number check (Android app). `missing` / `suspect` /
+ *  `missingOrUnread` rows are gaps in the number sequence (`missingOrUnread`:
+ *  pages whose number could not be read lie inside the gap, so some of it
+ *  may be those pages); `failed` means OCR could not run. */
 export type PrintedNoState =
   | 'reading'
   | 'ok'
@@ -18,6 +20,7 @@ export type PrintedNoState =
   | 'failed'
   | 'missing'
   | 'suspect'
+  | 'missingOrUnread'
 
 export interface ReportViewRow {
   id: string
@@ -64,6 +67,7 @@ const PRINTED_LABEL: Record<PrintedNoState, string> = {
   failed: '読み取りできず',
   missing: '欠番',
   suspect: '欠番（読み違いかも）',
+  missingOrUnread: '欠番？（間に番号を読めないページ）',
 }
 // Red: anything the user has to look at. A page whose number could not be
 // read cannot be checked for gaps or repeats, so it is flagged as well.
@@ -71,6 +75,7 @@ const ALERT_STATES: readonly PrintedNoState[] = [
   'duplicate',
   'missing',
   'suspect',
+  'missingOrUnread',
   'unread',
   'failed',
 ]
@@ -231,6 +236,7 @@ function isAlert(r: ReportViewRow): boolean {
 .report__printed--duplicate,
 .report__printed--missing,
 .report__printed--suspect,
+.report__printed--missingOrUnread,
 .report__printed--unread,
 .report__printed--failed {
   color: #b91c1c;
@@ -238,6 +244,7 @@ function isAlert(r: ReportViewRow): boolean {
 .report__printed--duplicate .report__printed-state,
 .report__printed--missing .report__printed-state,
 .report__printed--suspect .report__printed-state,
+.report__printed--missingOrUnread .report__printed-state,
 .report__printed--unread .report__printed-state,
 .report__printed--failed .report__printed-state {
   color: #b91c1c;

@@ -1937,7 +1937,11 @@ const nativeReportRows = computed<ReportViewRow[]>(() => {
         canRetake: false,
         pageId: null,
         printedNo: rangeLabel(m.from, m.to),
-        printedState: m.suspect ? 'suspect' : 'missing',
+        printedState: m.suspect
+          ? 'suspect'
+          : m.unreadBetween > 0
+            ? 'missingOrUnread'
+            : 'missing',
       })
     }
     const r = reads[i]

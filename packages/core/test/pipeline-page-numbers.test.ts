@@ -96,7 +96,7 @@ describe('checkPageSequence', () => {
     ])
     expect(r.pages[3]!.duplicateOf).toBe(2)
     expect(r.missing).toEqual([
-      { from: 3, to: 3, beforeIndex: 2, suspect: false },
+      { from: 3, to: 3, beforeIndex: 2, suspect: false, unreadBetween: 0 },
     ])
   })
 
@@ -104,7 +104,15 @@ describe('checkPageSequence', () => {
     const r = checkPageSequence([[10, 11], [12, 13], [140]])
     expect(r.pages.map((p) => p.state)).toEqual(['ok', 'ok', 'ok'])
     expect(r.missing).toEqual([
-      { from: 14, to: 139, beforeIndex: 2, suspect: true },
+      { from: 14, to: 139, beforeIndex: 2, suspect: true, unreadBetween: 0 },
+    ])
+  })
+
+  it('counts unread captures inside a gap (emulator run 11: 33, ?, 39)', () => {
+    const r = checkPageSequence([[31], [33], [], [39], [], [], [47]])
+    expect(r.missing).toEqual([
+      { from: 34, to: 38, beforeIndex: 3, suspect: false, unreadBetween: 1 },
+      { from: 40, to: 46, beforeIndex: 6, suspect: false, unreadBetween: 2 },
     ])
   })
 
