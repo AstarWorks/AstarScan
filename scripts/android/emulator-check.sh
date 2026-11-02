@@ -128,6 +128,19 @@ PY
 # an old one that Play updates in the background (~10-15 min), restarting
 # Play services, so the loop below keeps reacting to whatever screen is up
 # until the scan returns to the app with the imported pages.
+# Play updates the image's old Play services shortly after boot and kills
+# its processes (and any open scanner) while installing. Wait for that
+# install before scanning; carry on after 25 min regardless.
+gms_version() { adb shell dumpsys package com.google.android.gms | grep -m1 versionName | tr -d ' \r'; }
+v0=$(gms_version)
+log "Play services $v0; waiting for its update"
+end=$((SECONDS + 1500))
+while [ $SECONDS -lt $end ]; do
+  v=$(gms_version)
+  if [ -n "$v" ] && [ "$v" != "$v0" ]; then log "Play services updated to $v"; sleep 60; break; fi
+  sleep 20
+done
+
 log "scan: open ML Kit, import the fixture photos, show the page frame, finish"
 imported=0
 cropped=0
@@ -178,6 +191,9 @@ while [ $SECONDS -lt $end ]; do
     [ $saved = 1 ] && break
     tap_now '追加スキャン' "$PKG"
   elif has '^(スキャン|もう一度スキャンを開く)$' "$PKG"; then
+    # The scanner went away before finishing: import again next time.
+    imported=0
+    cropped=0
     if has 'もう一度スキャンを開く' "$PKG"; then sleep 30; dump; fi
     tap_now '^(スキャン|もう一度スキャンを開く)$' "$PKG" || true
     sleep 20

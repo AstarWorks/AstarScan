@@ -2258,7 +2258,10 @@ function pageIndexById(id: string): number {
       >
     </div>
 
-    <section class="viewport">
+    <section
+      v-show="!nativeMode || phase !== 'done' || !!selectedPage"
+      class="viewport"
+    >
       <video
         ref="videoRef"
         class="viewport__video"
