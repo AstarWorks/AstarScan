@@ -226,7 +226,8 @@ class ScannerPlugin(private val activity: Activity) : Plugin(activity) {
     /**
      * Pass "folio": short, isolated pieces of print in the margin bands (a
      * page number such as "— 31 —" stands alone, far from other text), each
-     * cut out tightly and enlarged so its text is ~FOLIO_TEXT_PX tall. The
+     * cut out tightly, enlarged so its text is ~FOLIO_TEXT_PX tall and its
+     * levels stretched (stretchContrast). The
      * band pass reads the whole band, where such a number is only a few
      * pixels in a 1600 px wide image and is often skipped (run 10 probe).
      * The caller uses these lines only when the band pass gives no number.
@@ -249,7 +250,7 @@ class ScannerPlugin(private val activity: Activity) : Plugin(activity) {
                 val ry1 = (seg[3] + padY).coerceAtMost(h)
                 if (x1 - x0 < 4 || ry1 - ry0 < 4 || sw < 2) continue
                 val up = (FOLIO_TEXT_PX.toFloat() / sh).coerceIn(1f, 8f)
-                recognizeRegion(page, x0, ry0, x1 - x0, ry1 - ry0, up, "folio", out)
+                recognizeRegion(page, x0, ry0, x1 - x0, ry1 - ry0, up, "folio", out, stretch = true)
             }
         }
         return out
@@ -399,16 +400,18 @@ class ScannerPlugin(private val activity: Activity) : Plugin(activity) {
     /** Recognise one region of the page (enlarged `up`×) into `out`, centres normalised to the page. */
     private fun recognizeRegion(
         page: Bitmap, x0: Int, y0: Int, rw: Int, rh: Int, up: Float, pass: String, out: JSArray,
+        stretch: Boolean = false,
     ) {
         val w = page.width
         val h = page.height
         val strip = Bitmap.createBitmap(page, x0, y0, rw, rh)
-        val input = if (up > 1f) {
+        val scaled = if (up > 1f) {
             Bitmap.createScaledBitmap(strip, (rw * up).toInt(), (rh * up).toInt(), true)
                 .also { if (it !== strip) strip.recycle() }
         } else {
             strip
         }
+        val input = if (stretch) stretchContrast(scaled).also { scaled.recycle() } else scaled
         try {
             val text = Tasks.await(recognizer.process(InputImage.fromBitmap(input, 0)))
             for (block in text.textBlocks) {
@@ -428,6 +431,45 @@ class ScannerPlugin(private val activity: Activity) : Plugin(activity) {
         } finally {
             input.recycle()
         }
+    }
+
+    /**
+     * Grey copy with the levels stretched: the paper (90th percentile of
+     * brightness) becomes white and the darkest ink (2nd percentile) black.
+     * A small page number on the emulator camera is faint grey on grey
+     * (run 10: no pixel darker than 0.6× the paper), which ML Kit often
+     * skips. Unchanged (grey) when the crop has almost no contrast.
+     */
+    private fun stretchContrast(src: Bitmap): Bitmap {
+        val w = src.width
+        val h = src.height
+        val px = IntArray(w * h)
+        src.getPixels(px, 0, w, 0, 0, w, h)
+        val hist = IntArray(256)
+        val lum = IntArray(px.size)
+        for (i in px.indices) {
+            val c = px[i]
+            val v = ((c shr 16 and 0xff) * 299 + (c shr 8 and 0xff) * 587 + (c and 0xff) * 114) / 1000
+            lum[i] = v
+            hist[v]++
+        }
+        fun pct(q: Double): Int {
+            val target = (px.size * q).toInt()
+            var acc = 0
+            for (v in 0..255) {
+                acc += hist[v]
+                if (acc > target) return v
+            }
+            return 255
+        }
+        val lo = pct(0.02)
+        val hi = pct(0.90)
+        val span = hi - lo
+        for (i in px.indices) {
+            val v = if (span < 20) lum[i] else ((lum[i] - lo) * 255 / span).coerceIn(0, 255)
+            px[i] = (0xff shl 24) or (v shl 16) or (v shl 8) or v
+        }
+        return Bitmap.createBitmap(px, w, h, Bitmap.Config.ARGB_8888)
     }
 
     @Command
@@ -635,7 +677,7 @@ class ScannerPlugin(private val activity: Activity) : Plugin(activity) {
     companion object {
         private const val TAG = "AstarScanMlkit"
         private const val MAX_OCR_SIDE = 4096
-        private const val FOLIO_TEXT_PX = 48
+        private const val FOLIO_TEXT_PX = 64
         private const val MAX_FOLIO_SEGMENTS = 4
         private const val MAX_ATTEMPTS = 36
         private const val RETRY_MS = 5000L

@@ -58,7 +58,8 @@ STATE_LABELS = {
     "読み取りできず": "failed",
     "欠番": "missing",
     "欠番（読み違いかも）": "suspect",
-    "欠番？（間に番号を読めないページ）": "missingOrUnread",
+    "欠番？（未読を挟む）": "missingOrUnread",
+    "欠番？（間に番号を読めないページ）": "missingOrUnread",  # run 12 label
 }
 
 

@@ -37,6 +37,7 @@ what ML Kit saw. GitHub's `ubuntu-latest` runner loads `v4l2loopback`
 | 9   | 68c6d09 | band pass only again (run 7 reading); scorer reads the full logcat                                                                            | 41 taken, 41 reached the list, no crash; PDF saved                                                                                                                                                                                      | spreads: mean 14.8 / 10.4 / 12.2, max 38; single-port-wood: 19.9 (max 67); single-land-white: 47.3 (max 649 — c3 was taken while the feed still showed p35, registration failed; by eye the frame is on the page; without c3 the mean is ~13) | 1 (p37); numbers 7 right / 0 wrong of 41 rows; false 抜け 0; 抜け spanning a captured page 0                                                                                                          |
 | 10  | 825bc35 | ML Kit probe on page images (emulator size / clip size); webcam feed 1920×1440                                                                | 0 — with a 1920×1440 webcam the emulator offers the back camera only at 1920×1440 and the scanner preview stayed black (centre mean 2), every clip given up after 3 shutter presses                                                     | not scored (no capture)                                                                                                                                                                                                                       | not scored; probe: ML Kit 22 right / 0 wrong at clip size vs 9 / 0 at emulator size                                                                                                                   |
 | 11  | 752b042 | folio pass (isolated margin print read enlarged), used when the band pass reads no number; feed back to 1280×960                              | 41 taken, 41 reached the list, no crash                                                                                                                                                                                                 | spreads: mean 14.7 / 10.3 / 12.2, max 26; single-port-wood: 20.7 (max 45, the spine curl); single-land-white: 14.1 (max 119)                                                                                                                  | **0** (p37 is inside the red 34〜38 欠番); numbers 11 right / 1 wrong of 41 rows (p41 read "4" by the band pass, shown as 順番が前後); false 抜け 0; 4 抜け rows also span a captured but unread page |
+| 12  | fcb9918 | a gap with unread captures inside is shown as 欠番？; probe gets 30 min                                                                       | 41 taken, 41 reached the list, no crash                                                                                                                                                                                                 | spreads: mean 16.4 / 12.0 / 11.6, max 29; single-port-wood: 18.5 (max 41); single-land-white: 11.8 (max 95)                                                                                                                                   | 1 (p37 — single-land-white read only p43 this time, so no 欠番 covers p37); numbers **11 right / 0 wrong**; false 抜け 0; plain 抜け spanning a captured page 0 (6〜8 and 10〜12 shown as 欠番？)     |
 
 Run 2 finding: the portrait scanner shows only a 3:4 window at the left
 of the 1280×960 webcam frame (columns 0–719), upright. The feed had
@@ -308,6 +309,30 @@ Run 12 changes: `checkPageSequence` counts unread captures inside a gap
 「欠番？（間に番号を読めないページ）」 (missing, or one of the unread pages)
 instead of a plain 欠番 (unit test added); the scorer counts it apart from
 the plain 欠番 rows that span a captured page. The probe gets 30 min.
+
+Run 12 findings (run 41501340713):
+
+- Page numbers 11 right / 0 wrong (band 9, folio 10 of the 41 rows; the
+  app's band→folio 10 right on its own reads). No misread in the list.
+- The two gaps of single-port-wood with an unread capture inside are
+  shown as red 欠番？ (6〜8, 10〜12), the single-page gaps (4, 14, …, 24 —
+  left pages the clip never shows) as plain 欠番: no 抜け row claims a
+  captured page any more. The long label squeezed the 状態 column (撮れた
+  wrapped one character per line); shortened to 「欠番？（未読を挟む）」
+  for run 13.
+  ![run 12 single-port-wood](images/android-book-eval/run12-list-single-port-wood.png)
+- p37 is silent again: single-land-white read only p43 (run 11: p33,
+  p39, a misread p41). The Japanese "— NN —" at emulator size is read
+  1–3 times in 10 and varies run to run.
+- Probe complete this time (246 reads, same images as run 10), right /
+  wrong / none for band → band→folio: clip size 22/0/19 → 28/0/13;
+  emulator size 9/0/32 → 14/0/27; 1920×1440-feed size 16/0/25 → 20/0/21.
+  single-land-white at emulator size: band 0/10, folio 3/10.
+
+Run 13 changes: each folio crop is enlarged to ~64 px text (was 48) and
+its levels are stretched (paper → white, darkest ink → black) before ML
+Kit reads it — at emulator size the "— NN —" digits are faint grey on
+grey. The probe measures it on the same images as runs 10–12.
 
 Runs 7–9 summary (ML Kit Text Recognition, band pass): 6 / 8 / 7 numbers
 right and 0 / 0 / 0 wrong (with the tile pass in run 8: 1 wrong); false

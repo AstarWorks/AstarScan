@@ -67,7 +67,7 @@ const PRINTED_LABEL: Record<PrintedNoState, string> = {
   failed: '読み取りできず',
   missing: '欠番',
   suspect: '欠番（読み違いかも）',
-  missingOrUnread: '欠番？（間に番号を読めないページ）',
+  missingOrUnread: '欠番？（未読を挟む）',
 }
 // Red: anything the user has to look at. A page whose number could not be
 // read cannot be checked for gaps or repeats, so it is flagged as well.
