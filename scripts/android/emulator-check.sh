@@ -230,6 +230,13 @@ adb shell input keyevent KEYCODE_BACK
 sleep 3
 shot app-after-save
 
+log "open the AstarManagement send form (not sent: no server in CI)"
+tap_match '^Astar に送る$' "$PKG" || log "send form not found"
+sleep 2
+adb shell input swipe 540 1800 540 900 400
+sleep 2
+shot astar-send-form
+
 adb logcat -d >"$OUT/logcat.txt" 2>&1
 adb logcat -d -s AstarScanMlkit chromium Tauri RustStdoutStderr >"$OUT/logcat-app.txt" 2>&1
 log "done"
