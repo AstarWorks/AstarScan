@@ -138,7 +138,8 @@ to_start() {
       app-start) return 0 ;;
       dialog-full-screen) tap_now '^Got it$' ;;
       # "Discard this scan?" left over from an abandoned clip.
-      scanner-dialog) tap_now '^(Discard|Delete|破棄|削除)' "$GMS" || adb shell input keyevent KEYCODE_BACK ;;
+      # (button1 is "Discard"; matching the text would hit the title.)
+      scanner-dialog) tap_now 'android:id/button1' "$GMS" || adb shell input keyevent KEYCODE_BACK ;;
       app-list | app-list-empty) tap_now '^すべて削除$' "$PKG" ;;
       scanner-*) adb shell input keyevent KEYCODE_BACK ;;
       *) adb shell monkey -p "$PKG" -c android.intent.category.LAUNCHER 1 >/dev/null ;;
@@ -206,7 +207,7 @@ scan_clip() {
         shot "$clip-c$adj-adjust"
         printf '%s\t%s\t%s\t%s\t%s\n' "$clip" "$adj" "${plan[$adj]:-}" "$fr" "$SHOT" >>"$OUT/captures.tsv"
         adj=$((adj + 1))
-        tap_now "$DOCSCAN/confirm_crop_button" "$GMS"
+        tap_now "$DOCSCAN/confirm_crop(_and_rotate)?_button" "$GMS"
         sleep 2
         ;;
       scanner-review)

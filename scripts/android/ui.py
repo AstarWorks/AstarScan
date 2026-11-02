@@ -54,7 +54,9 @@ def kind(path):
         return "dialog-full-screen"
     if "android:id/button1" in ids and "com.google.android.gms" in pkgs:
         return "scanner-dialog"
-    if DOCSCAN + "confirm_crop_button" in ids:
+    # Older scanner: confirm_crop_button; current one opens "Crop and
+    # rotate" (confirm_crop_and_rotate_button "Apply") from the review.
+    if DOCSCAN + "confirm_crop_button" in ids or DOCSCAN + "confirm_crop_and_rotate_button" in ids:
         return "scanner-adjust-corners"
     if DOCSCAN + "save_document_button" in ids:
         return "scanner-review"

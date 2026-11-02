@@ -22,11 +22,11 @@ scanner to take it. A new clip starts at its first hold.
 check can tell which ground-truth frame the camera showed when ML Kit
 captured.
 
-Frame layout: every clip frame is fitted into the output size (4:3) and
-the border is filled by repeating the edge pixels (no black bars that
-could look like a page edge). Portrait clips are rotated a quarter turn
-so the book fills the sensor's landscape frame the same way a phone
-held upright sees it. `layout()` is the single place that defines the
+Frame layout: every clip frame is fitted, upright, into the part of the
+webcam frame the scanner shows (window(): a 3:4 portrait window at the
+left of the 4:3 frame) and the rest is filled by repeating the edge
+pixels (no black bars that could look like a page edge). `layout()` is
+the single place that defines the
 mapping, and book-measure.py imports it to map ground-truth corners into
 the camera frame.
 """
@@ -42,20 +42,29 @@ import cv2
 import numpy as np
 
 
+def window(out_w, out_h):
+    """The part of the webcam frame the phone actually sees: (x, y, w, h).
+
+    Emulator run 2 showed that the portrait scanner takes a 3:4 portrait
+    window from the left of the landscape webcam frame (a 1280×960 frame
+    -> columns 0–719, all rows), upright, not rotated. Anything outside
+    it never reaches ML Kit.
+    """
+    w = min(out_w, round(out_h * 3 / 4))
+    return 0, 0, w, out_h
+
+
 def layout(clip_w, clip_h, out_w, out_h):
     """Return (rotate, scale, off_x, off_y): clip px -> output px.
 
-    rotate: 0 or 90 (counter-clockwise quarter turn applied first for
-    portrait clips: the back camera sensor is mounted at 90°, so the
-    phone shows the sensor frame turned clockwise). Then the (rotated) clip is scaled by `scale` and placed at
-    (off_x, off_y).
+    rotate is always 0 (kept for book-measure.py): the clip is scaled by
+    `scale` to fit the visible window() and centred in it, upright.
     """
-    rotate = 90 if clip_h > clip_w else 0
-    rw, rh = (clip_h, clip_w) if rotate else (clip_w, clip_h)
-    scale = min(out_w / rw, out_h / rh)
-    off_x = (out_w - rw * scale) / 2
-    off_y = (out_h - rh * scale) / 2
-    return rotate, scale, off_x, off_y
+    wx, wy, ww, wh = window(out_w, out_h)
+    scale = min(ww / clip_w, wh / clip_h)
+    off_x = wx + (ww - clip_w * scale) / 2
+    off_y = wy + (wh - clip_h * scale) / 2
+    return 0, scale, off_x, off_y
 
 
 def map_point(x, y, clip_w, clip_h, out_w, out_h):
