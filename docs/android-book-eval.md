@@ -38,6 +38,7 @@ what ML Kit saw. GitHub's `ubuntu-latest` runner loads `v4l2loopback`
 | 10  | 825bc35 | ML Kit probe on page images (emulator size / clip size); webcam feed 1920×1440                                                                | 0 — with a 1920×1440 webcam the emulator offers the back camera only at 1920×1440 and the scanner preview stayed black (centre mean 2), every clip given up after 3 shutter presses                                                     | not scored (no capture)                                                                                                                                                                                                                       | not scored; probe: ML Kit 22 right / 0 wrong at clip size vs 9 / 0 at emulator size                                                                                                                   |
 | 11  | 752b042 | folio pass (isolated margin print read enlarged), used when the band pass reads no number; feed back to 1280×960                              | 41 taken, 41 reached the list, no crash                                                                                                                                                                                                 | spreads: mean 14.7 / 10.3 / 12.2, max 26; single-port-wood: 20.7 (max 45, the spine curl); single-land-white: 14.1 (max 119)                                                                                                                  | **0** (p37 is inside the red 34〜38 欠番); numbers 11 right / 1 wrong of 41 rows (p41 read "4" by the band pass, shown as 順番が前後); false 抜け 0; 4 抜け rows also span a captured but unread page |
 | 12  | fcb9918 | a gap with unread captures inside is shown as 欠番？; probe gets 30 min                                                                       | 41 taken, 41 reached the list, no crash                                                                                                                                                                                                 | spreads: mean 16.4 / 12.0 / 11.6, max 29; single-port-wood: 18.5 (max 41); single-land-white: 11.8 (max 95)                                                                                                                                   | 1 (p37 — single-land-white read only p43 this time, so no 欠番 covers p37); numbers **11 right / 0 wrong**; false 抜け 0; plain 抜け spanning a captured page 0 (6〜8 and 10〜12 shown as 欠番？)     |
+| 13  | 194b33e | folio crops enlarged to 64 px with stretched levels                                                                                           | 41 taken, 41 reached the list, no crash; PDF saved                                                                                                                                                                                      | spreads: mean 13.3 / 11.4 / 14.2, max 26; single-port-wood: 19.4 (max 53); single-land-white: 17.2 (max 117)                                                                                                                                  | 1 (p37); numbers 8 right / 0 wrong; false 抜け 0; plain 抜け spanning a captured page 0 (8〜12 shown as 欠番？)                                                                                       |
 
 Run 2 finding: the portrait scanner shows only a 3:4 window at the left
 of the 1280×960 webcam frame (columns 0–719), upright. The feed had
@@ -333,6 +334,43 @@ Run 13 changes: each folio crop is enlarged to ~64 px text (was 48) and
 its levels are stretched (paper → white, darkest ink → black) before ML
 Kit reads it — at emulator size the "— NN —" digits are faint grey on
 grey. The probe measures it on the same images as runs 10–12.
+
+Run 13 findings (run 41515622322):
+
+- The 64 px, level-stretched folio crops read **less** than run 12's
+  48 px plain crops on the same probe images: folio clip size 26 → 24,
+  emulator size 13 → 12, single-land-white at emulator size 3 → 1 of 10.
+  Live: 8 right / 0 wrong (folio 8), single-land-white 0 of 10, so p37
+  silent. The change is reverted to the run 12 folio pass (48 px, no
+  stretch) — the best measured; not re-run on the emulator (4-run limit).
+- No misread, no false 抜け, no plain 抜け over a captured page; the
+  single-port-wood gap 8〜12 with unread captures inside shows as 欠番？.
+- Frames: means 11–19 clip px as in every run; single-port-wood max 53 is
+  the tl corner at the curled spine (see the run 9 check),
+  single-land-white max 117 a capture whose left edge sat on the facing
+  page (as in runs 4–8).
+
+Runs 10–13 summary (the 4 runs of this round):
+
+| Run        | Silent misses                  | Numbers right / wrong (of 41) | False 抜け | 抜け over a captured page |
+| ---------- | ------------------------------ | ----------------------------- | ---------- | ------------------------- |
+| 9 (before) | 1 (p37)                        | 7 / 0                         | 0          | 0                         |
+| 10         | — (1920×1440 feed: no capture) | —                             | —          | —                         |
+| 11         | **0**                          | 11 / 1 (band pass: p41 → 4)   | 0          | 4                         |
+| 12         | 1 (p37)                        | 11 / 0                        | 0          | 0 (2 shown as 欠番？)     |
+| 13         | 1 (p37)                        | 8 / 0                         | 0          | 0 (1 shown as 欠番？)     |
+
+- Cause of the unread numbers, measured with the same ML Kit on the same
+  page images: the camera size (emulator 9–14 right of 41 vs clip 22–28)
+  and, for the Japanese "— NN —" and the spreads, the reader — the folio
+  pass raises clip size 22 → 28 and emulator size 9 → 14 with no wrong
+  number. A bigger webcam image cannot reach ML Kit on this emulator.
+- p37 (skipped on purpose) is flagged only when ML Kit reads p35 or
+  earlier and p39 or later at emulator size; for the Japanese clip that is
+  1–3 pages in 10 and varies run to run, so p37 was flagged in 1 of 3 runs.
+- Not verified: real phone camera resolution (a page ~2000–3000 px tall,
+  above the clip size where the folio pass reads 28 of 41), real paper
+  texture, real hand shake and lighting; the folio pass on a real device.
 
 Runs 7–9 summary (ML Kit Text Recognition, band pass): 6 / 8 / 7 numbers
 right and 0 / 0 / 0 wrong (with the tile pass in run 8: 1 wrong); false
