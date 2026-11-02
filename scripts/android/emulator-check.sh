@@ -125,6 +125,10 @@ while [ $SECONDS -lt $end ]; do
 done
 
 adb logcat -c
+# ML Kit's page-number reads (one "margins" line per page, ScannerPlugin.kt)
+# with a marker per clip, kept apart from the big logcat (book-measure.py).
+adb logcat -v threadtime -s AstarScanMlkit:I AstarScanEval:I >"$OUT/pageno.log" 2>&1 &
+PAGENO_PID=$!
 adb shell monkey -p "$PKG" -c android.intent.category.LAUNCHER 1 >/dev/null
 sleep 10
 shot app-launch
@@ -172,6 +176,7 @@ scan_clip() {
   local plan=("$@") off=0
   log "=== $clip: capture holds ${plan[*]}"
   to_start || log "could not get back to the start screen"
+  adb shell log -t AstarScanEval "clip $clip"
   while [ $off -lt ${#plan[@]} ]; do
     scan_session "$clip" "$off" "${plan[@]:off:SESSION_MAX}" || break
     off=$((off + SESSION_MAX))
@@ -410,5 +415,6 @@ shot pdf-saved
 adb shell ls -l /sdcard/Download/AstarScan/ 2>&1 | tee -a "$OUT/steps.log"
 
 adb logcat -d >"$OUT/logcat.txt" 2>&1
+kill "$PAGENO_PID" 2>/dev/null || true
 log "done"
 exit 0

@@ -26,10 +26,15 @@ import app.tauri.plugin.Plugin
 import com.google.mlkit.vision.documentscanner.GmsDocumentScannerOptions
 import com.google.mlkit.vision.documentscanner.GmsDocumentScanning
 import com.google.mlkit.vision.documentscanner.GmsDocumentScanningResult
+import com.google.android.gms.tasks.Tasks
+import com.google.mlkit.vision.common.InputImage
+import com.google.mlkit.vision.text.TextRecognition
+import com.google.mlkit.vision.text.japanese.JapaneseTextRecognizerOptions
 import java.io.ByteArrayOutputStream
 import java.io.File
 import java.net.HttpURLConnection
 import java.net.URL
+import java.util.Locale
 import java.util.UUID
 import java.util.concurrent.Executors
 
@@ -38,6 +43,16 @@ class ReadPageArgs {
     lateinit var uri: String
     var maxSide: Int = 1600
     var quality: Int = 85
+}
+
+@InvokeArg
+class ReadMarginsArgs {
+    /** A `file://` page returned by `scan`, or a `data:image/jpeg;base64,` URL. */
+    lateinit var uri: String
+    /** Share of the page height read at the top and at the bottom. */
+    var marginFrac: Double = 0.15
+    /** A band narrower than this is enlarged (at most 4×) before recognition. */
+    var minWidth: Int = 1600
 }
 
 @InvokeArg
@@ -152,6 +167,66 @@ class ScannerPlugin(private val activity: Activity) : Plugin(activity) {
                 invoke.resolve(JSObject().put("dataUrl", dataUrl))
             } catch (e: Exception) {
                 invoke.reject(e.message ?: "read failed", "READ_FAILED")
+            }
+        }
+    }
+
+    /**
+     * Text in the top and bottom margins of a page (where the printed page
+     * number sits), read with ML Kit Text Recognition v2 (Japanese model,
+     * also reads Latin; bundled in the APK, runs on the device). Reads the
+     * full-size scan, not the webview's 1600 px copy. Each line comes back
+     * with its centre normalised to the page and ML Kit's confidence.
+     */
+    @Command
+    fun readMargins(invoke: Invoke) {
+        val args = invoke.parseArgs(ReadMarginsArgs::class.java)
+        io.execute {
+            var page: Bitmap? = null
+            try {
+                page = decodePage(args.uri, MAX_OCR_SIDE)
+                val w = page.width
+                val h = page.height
+                val band = (h * args.marginFrac.coerceIn(0.02, 0.5)).toInt().coerceAtLeast(1)
+                val up = (args.minWidth.toFloat() / w).coerceIn(1f, 4f)
+                val lines = JSArray()
+                val log = StringBuilder()
+                for (top in listOf(true, false)) {
+                    val y0 = if (top) 0 else h - band
+                    val strip = Bitmap.createBitmap(page, 0, y0, w, band)
+                    val input = if (up > 1f) {
+                        Bitmap.createScaledBitmap(strip, (w * up).toInt(), (band * up).toInt(), true)
+                            .also { if (it !== strip) strip.recycle() }
+                    } else {
+                        strip
+                    }
+                    val text = Tasks.await(recognizer.process(InputImage.fromBitmap(input, 0)))
+                    input.recycle()
+                    for (block in text.textBlocks) {
+                        for (line in block.lines) {
+                            val box = line.boundingBox ?: continue
+                            val cx = box.exactCenterX() / up / w
+                            val cy = (y0 + box.exactCenterY() / up) / h
+                            lines.put(
+                                JSObject()
+                                    .put("text", line.text)
+                                    .put("conf", line.confidence.toDouble())
+                                    .put("cx", cx.toDouble())
+                                    .put("cy", cy.toDouble())
+                                    .put("h", (box.height() / up / h).toDouble()),
+                            )
+                            log.append(String.format(Locale.US, "%s@%.2f(%.2f,%.2f) ", line.text.replace('\n', ' '), line.confidence, cx, cy))
+                        }
+                    }
+                }
+                // One line per page for the emulator check (book-measure.py).
+                Log.i(TAG, "margins ${nameOf(args.uri)} ${w}x$h up=${String.format(Locale.US, "%.2f", up)} | $log")
+                invoke.resolve(JSObject().put("lines", lines).put("width", w).put("height", h))
+            } catch (e: Exception) {
+                Log.e(TAG, "read margins failed", e)
+                invoke.reject(e.message ?: "read failed", "OCR_FAILED")
+            } finally {
+                page?.recycle()
             }
         }
     }
@@ -309,6 +384,24 @@ class ScannerPlugin(private val activity: Activity) : Plugin(activity) {
         return fileOf(page).readBytes()
     }
 
+    private fun nameOf(page: String): String =
+        if (page.startsWith("data:")) "data-url" else File(Uri.parse(page).path ?: page).name
+
+    /** The page as a bitmap, its long side at most `maxSide` (power-of-two sampling). */
+    private fun decodePage(page: String, maxSide: Int): Bitmap {
+        val bytes = jpegBytes(page)
+        val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }
+        BitmapFactory.decodeByteArray(bytes, 0, bytes.size, bounds)
+        var sample = 1
+        while (maxOf(bounds.outWidth, bounds.outHeight) / sample > maxSide) sample *= 2
+        return BitmapFactory.decodeByteArray(
+            bytes,
+            0,
+            bytes.size,
+            BitmapFactory.Options().apply { inSampleSize = sample },
+        ) ?: throw IllegalStateException("decode failed")
+    }
+
     private fun jpegDataUrl(file: File, maxSide: Int, quality: Int): String {
         val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }
         BitmapFactory.decodeFile(file.path, bounds)
@@ -336,8 +429,13 @@ class ScannerPlugin(private val activity: Activity) : Plugin(activity) {
         return "data:image/jpeg;base64," + Base64.encodeToString(out.toByteArray(), Base64.NO_WRAP)
     }
 
+    private val recognizer by lazy {
+        TextRecognition.getClient(JapaneseTextRecognizerOptions.Builder().build())
+    }
+
     companion object {
         private const val TAG = "AstarScanMlkit"
+        private const val MAX_OCR_SIDE = 4096
         private const val MAX_ATTEMPTS = 36
         private const val RETRY_MS = 5000L
     }

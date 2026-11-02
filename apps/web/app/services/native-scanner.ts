@@ -63,6 +63,31 @@ export async function nativeReadPage(
   return r.dataUrl
 }
 
+/** A line of text ML Kit found in a page's top or bottom margin. */
+export interface NativeMarginLine {
+  readonly text: string
+  /** ML Kit's confidence, 0..1. */
+  readonly conf: number
+  /** Line centre, 0..1 of the page width / height. */
+  readonly cx: number
+  readonly cy: number
+}
+
+/**
+ * Text in the top / bottom `marginFrac` of a scanned page (full size), read
+ * on the device with ML Kit Text Recognition v2 (Japanese + Latin).
+ */
+export async function nativeReadMargins(
+  uri: string,
+  marginFrac: number,
+): Promise<readonly NativeMarginLine[]> {
+  const r = await call<{ lines: NativeMarginLine[] }>('read_margins', {
+    uri,
+    marginFrac,
+  })
+  return r.lines
+}
+
 /**
  * Write the pages (scanned `file://` URIs, or JPEG data URLs for pages
  * restored from a previous session) into one PDF under Download/AstarScan.

@@ -248,20 +248,15 @@ export class LayoutDetector {
           // ライン: バウンディングボックスを上下2%拡張
           const boxHeight = y2 - y1
           const deltaH = boxHeight * 0.02
-          // A page number ("5", "— 33 —") is printed horizontally but its
-          // box is short: taller than wide it would be read as vertical
-          // text, and the recognizer stretches every crop to 16:1. Widen it
-          // around its centre (into the blank margin) to 6× its height.
-          let lx1 = x1
-          let lx2 = x2
-          if (classId === FOLIO_CLASS_ID && x2 - x1 < boxHeight * 6) {
-            const cx = (x1 + x2) / 2
-            lx1 = cx - boxHeight * 3
-            lx2 = cx + boxHeight * 3
-          }
-          const finalX1 = Math.max(0, Math.round(lx1))
+          // Run 6 widened short page-number boxes to 6× their height; the
+          // offline measurement (scripts/android/page-number-ocr.py
+          // --no-widen) showed the widened crop pulls in the page edge or
+          // the thumb and is read as an extra "1" (emulator size: 4 → 9
+          // right, 9 → 4 wrong of 41 pages without it), so boxes stay as
+          // detected.
+          const finalX1 = Math.max(0, Math.round(x1))
           const finalY1 = Math.max(0, Math.round(y1 - deltaH))
-          const finalX2 = Math.min(metadata.originalWidth, Math.round(lx2))
+          const finalX2 = Math.min(metadata.originalWidth, Math.round(x2))
           const finalY2 = Math.min(
             metadata.originalHeight,
             Math.round(y2 + deltaH),

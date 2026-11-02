@@ -91,7 +91,7 @@ import {
   nativeScan,
   nativeSendToAstar,
 } from '~/services/native-scanner'
-import { readPageNumbers } from '~/services/page-number-reader'
+import { readPageNumbersNative } from '~/services/page-number-reader'
 import {
   clearSession,
   loadSession,
@@ -1873,7 +1873,8 @@ function movePageDown(idx: number): void {
 // In the Android app the capture button opens ML Kit's scanner (edge
 // detection + auto-capture) instead of the web camera pipeline. Returned
 // pages go to the end-of-scan list; each page's printed number is read with
-// NDLOCR and the sequence is checked for missing / duplicated pages.
+// ML Kit Text Recognition (on the device, full-size scan) and the sequence
+// is checked for missing / duplicated pages.
 
 const nativeMode = isNativeScanner()
 
@@ -1895,26 +1896,13 @@ function setPageNoRead(id: string, r: PageNoRead): void {
 function queuePageNumbers(pages: readonly Page[]): void {
   for (const p of pages) setPageNoRead(p.id, { status: 'reading' })
   pageNoQueue = pageNoQueue.then(async () => {
-    let ready = true
-    try {
-      await initOcr((pr) => {
-        statusText.value = `ページ番号の読み取り準備中 ${pr.percent}%`
-      })
-    } catch (err) {
-      console.warn('[native] OCR init failed:', err)
-      ready = false
-    }
     for (const [i, p] of pages.entries()) {
       if (!captured.value.some((c) => c.id === p.id)) continue
-      if (!ready) {
-        setPageNoRead(p.id, { status: 'error' })
-        continue
-      }
       statusText.value = `ページ番号を読み取り中 ${i + 1}/${pages.length}`
       try {
         setPageNoRead(p.id, {
           status: 'done',
-          nums: await readPageNumbers(p.dataUrl),
+          nums: await readPageNumbersNative(p.nativeUri ?? p.dataUrl),
         })
       } catch (err) {
         console.warn(`[native] page number OCR failed for ${p.id}:`, err)
