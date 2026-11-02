@@ -34,7 +34,6 @@ import java.io.ByteArrayOutputStream
 import java.io.File
 import java.net.HttpURLConnection
 import java.net.URL
-import java.util.Locale
 import java.util.UUID
 import java.util.concurrent.Executors
 
@@ -188,37 +187,35 @@ class ScannerPlugin(private val activity: Activity) : Plugin(activity) {
                 val w = page.width
                 val h = page.height
                 val band = (h * args.marginFrac.coerceIn(0.02, 0.5)).toInt().coerceAtLeast(1)
-                val up = (args.minWidth.toFloat() / w).coerceIn(1f, 4f)
                 val lines = JSArray()
+                // Pass "band": each whole margin band, enlarged to minWidth.
+                val bandLines = JSArray()
+                val up = (args.minWidth.toFloat() / w).coerceIn(1f, 4f)
                 for (top in listOf(true, false)) {
                     val y0 = if (top) 0 else h - band
-                    val strip = Bitmap.createBitmap(page, 0, y0, w, band)
-                    val input = if (up > 1f) {
-                        Bitmap.createScaledBitmap(strip, (w * up).toInt(), (band * up).toInt(), true)
-                            .also { if (it !== strip) strip.recycle() }
-                    } else {
-                        strip
-                    }
-                    val text = Tasks.await(recognizer.process(InputImage.fromBitmap(input, 0)))
-                    input.recycle()
-                    for (block in text.textBlocks) {
-                        for (line in block.lines) {
-                            val box = line.boundingBox ?: continue
-                            val cx = box.exactCenterX() / up / w
-                            val cy = (y0 + box.exactCenterY() / up) / h
-                            lines.put(
-                                JSObject()
-                                    .put("text", line.text)
-                                    .put("conf", line.confidence.toDouble())
-                                    .put("cx", cx.toDouble())
-                                    .put("cy", cy.toDouble())
-                                    .put("h", (box.height() / up / h).toDouble()),
-                            )
-                        }
+                    recognizeRegion(page, 0, y0, w, band, up, "band", bandLines)
+                }
+                // Pass "tile": the outer 10 % of the page at the top and the
+                // bottom, in three overlapping tiles, each enlarged up to 6×.
+                // A page number is a few characters in a wide, mostly empty
+                // strip; at emulator size ("— 33 —" ~10 px tall) the band
+                // pass found none (run 7).
+                val tileLines = JSArray()
+                val edge = (h * 0.10).toInt().coerceAtLeast(1)
+                val tw = (w * 0.40).toInt().coerceAtLeast(1)
+                val tUp = (TILE_MIN_WIDTH.toFloat() / tw).coerceIn(1f, 6f)
+                for (top in listOf(true, false)) {
+                    val y0 = if (top) 0 else h - edge
+                    for (x0 in listOf(0, (w - tw) / 2, w - tw)) {
+                        recognizeRegion(page, x0, y0, tw, edge, tUp, "tile", tileLines)
                     }
                 }
-                // One line per page for the emulator check (book-measure.py).
-                Log.i(TAG, "margins ${nameOf(args.uri)} ${w}x$h up=${String.format(Locale.US, "%.2f", up)} $lines")
+                for (i in 0 until bandLines.length()) lines.put(bandLines.get(i))
+                for (i in 0 until tileLines.length()) lines.put(tileLines.get(i))
+                // One line per pass and page for the emulator check (book-measure.py).
+                val name = nameOf(args.uri)
+                Log.i(TAG, "margins $name ${w}x$h pass=band $bandLines")
+                Log.i(TAG, "margins $name ${w}x$h pass=tile $tileLines")
                 invoke.resolve(JSObject().put("lines", lines).put("width", w).put("height", h))
             } catch (e: Exception) {
                 Log.e(TAG, "read margins failed", e)
@@ -226,6 +223,40 @@ class ScannerPlugin(private val activity: Activity) : Plugin(activity) {
             } finally {
                 page?.recycle()
             }
+        }
+    }
+
+    /** Recognise one region of the page (enlarged `up`×) into `out`, centres normalised to the page. */
+    private fun recognizeRegion(
+        page: Bitmap, x0: Int, y0: Int, rw: Int, rh: Int, up: Float, pass: String, out: JSArray,
+    ) {
+        val w = page.width
+        val h = page.height
+        val strip = Bitmap.createBitmap(page, x0, y0, rw, rh)
+        val input = if (up > 1f) {
+            Bitmap.createScaledBitmap(strip, (rw * up).toInt(), (rh * up).toInt(), true)
+                .also { if (it !== strip) strip.recycle() }
+        } else {
+            strip
+        }
+        try {
+            val text = Tasks.await(recognizer.process(InputImage.fromBitmap(input, 0)))
+            for (block in text.textBlocks) {
+                for (line in block.lines) {
+                    val box = line.boundingBox ?: continue
+                    out.put(
+                        JSObject()
+                            .put("text", line.text)
+                            .put("conf", line.confidence.toDouble())
+                            .put("cx", ((x0 + box.exactCenterX() / up) / w).toDouble())
+                            .put("cy", ((y0 + box.exactCenterY() / up) / h).toDouble())
+                            .put("h", (box.height() / up / h).toDouble())
+                            .put("pass", pass),
+                    )
+                }
+            }
+        } finally {
+            input.recycle()
         }
     }
 
@@ -434,6 +465,7 @@ class ScannerPlugin(private val activity: Activity) : Plugin(activity) {
     companion object {
         private const val TAG = "AstarScanMlkit"
         private const val MAX_OCR_SIDE = 4096
+        private const val TILE_MIN_WIDTH = 1200
         private const val MAX_ATTEMPTS = 36
         private const val RETRY_MS = 5000L
     }

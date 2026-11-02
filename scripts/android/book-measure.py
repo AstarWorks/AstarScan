@@ -22,8 +22,8 @@ row stands for it (撮れた, 重複, 番号を読めず, …) or a red 欠番 r
 covers it; otherwise it is a silent miss ("無表示").
 
 Page numbers: a row's number is right when it equals the truth (one of
-the two numbers of a spread also counts); a 抜け row is false when its
-range contains a page that was captured (a row stands for it). The ML
+the two numbers of a spread also counts); a 抜け row is false when no
+page in its range is really missing (all captured, or not in the book). The ML
 Kit lines the app read for every page (pageno.log, "margins" lines after
 each "clip" marker) are written to mlkit-lines.jsonl in the format of
 page-number-ocr.py, so `bun page-number-score.ts` can score them.
@@ -312,7 +312,7 @@ def number_right(nums, truth):
 
 
 def mlkit_reads(path):
-    """{clip: [ML Kit lines of the n-th page read]} from pageno.log."""
+    """{clip: [{w, h, passes: {pass: lines}}] per page read, in order} from pageno.log."""
     out, clip = {}, None
     try:
         with open(path, encoding="utf-8", errors="replace") as f:
@@ -322,13 +322,17 @@ def mlkit_reads(path):
                     clip = m.group(1)
                     out.setdefault(clip, [])
                     continue
-                m = re.search(r"AstarScanMlkit\s*:\s*margins \S+ (\d+)x(\d+) up=\S+ (\[.*\])\s*$", line)
-                if m and clip:
-                    try:
-                        lines = json.loads(m.group(3))
-                    except json.JSONDecodeError:
-                        lines = []
-                    out[clip].append({"w": int(m.group(1)), "h": int(m.group(2)), "lines": lines})
+                m = re.search(r"AstarScanMlkit\s*:\s*margins (\S+) (\d+)x(\d+) (?:pass=(\S+)|up=\S+) (\[.*\])\s*$", line)
+                if not (m and clip):
+                    continue
+                try:
+                    lines = json.loads(m.group(5))
+                except json.JSONDecodeError:
+                    lines = []
+                pages = out[clip]
+                if not pages or pages[-1]["name"] != m.group(1) or (m.group(4) or "band") in pages[-1]["passes"]:
+                    pages.append({"name": m.group(1), "w": int(m.group(2)), "h": int(m.group(3)), "passes": {}})
+                pages[-1]["passes"][m.group(4) or "band"] = lines
     except FileNotFoundError:
         pass
     return out
@@ -367,8 +371,12 @@ def main():
         for i, rd in enumerate(reads.get(name, [])):
             h = plan_holds[i] if i < len(plan_holds) else None
             truth = hold_pages[h] if h is not None and h < len(hold_pages) else []
-            ml_out.write(json.dumps({"clip": name, "hold": h, "res": "emulator", "decode": "mlkit", "truth": truth,
-                                     "readW": rd["w"], "readH": rd["h"], "lines": rd["lines"]}, ensure_ascii=False) + "\n")
+            variants = dict(rd["passes"])
+            variants["all"] = [ln for ls in rd["passes"].values() for ln in ls]
+            for pas, ls in variants.items():
+                ml_out.write(json.dumps({"clip": name, "hold": h, "res": "emulator", "decode": f"mlkit-{pas}",
+                                         "truth": truth, "readW": rd["w"], "readH": rd["h"], "lines": ls},
+                                        ensure_ascii=False) + "\n")
         xmls = sorted(glob.glob(os.path.join(a.out, f"*-{name}-list*.xml")))
         rows, gaps = parse_list(xmls)
         shown = set()
@@ -389,14 +397,26 @@ def main():
                 red_missing.update(range(gp["range"][0], gp["range"][1] + 1))
         targets = sorted({p for hp in hold_pages for p in hp})
         silent = [p for p in targets if p not in shown and p not in red_missing]
-        # A 抜け row that claims a captured page is missing.
-        false_gaps = [gp["range"] for gp in gaps if gp["range"]
-                      and any(p in shown for p in range(gp["range"][0], gp["range"][1] + 1))]
+        # A 抜け row is false when none of its pages is really missing (every
+        # page in it was captured, or is not in the book); one that also
+        # spans a captured page is counted apart ("mixed").
+        book = set(g["pages"])
+        def really_missing(p):
+            return p in book and p not in shown
+        false_gaps, mixed_gaps = [], []
+        for gp in gaps:
+            if not gp["range"]:
+                continue
+            span = range(gp["range"][0], gp["range"][1] + 1)
+            if not any(really_missing(p) for p in span):
+                false_gaps.append(gp["range"])
+            elif any(p in shown for p in span):
+                mixed_gaps.append(gp["range"])
         caps_c = [r for r in results if r["clip"] == name]
         errs = [r["best"]["mean_px"] for r in caps_c if r.get("best")]
         clips_out.append({
             "clip": name, "mode": g["mode"], "target_pages": targets, "captures": len(caps_c),
-            "rows": rows, "gaps": gaps, "silent_missing": silent, "misread": misread, "false_gaps": false_gaps,
+            "rows": rows, "gaps": gaps, "silent_missing": silent, "misread": misread, "false_gaps": false_gaps, "mixed_gaps": mixed_gaps,
             "right_numbers": sum(1 for r in rows if number_right(r["nums"], r.get("truth"))),
             "red_missing": sorted(red_missing),
             "ok_rows": sum(1 for r in rows if r["state"] == "ok"),
@@ -424,6 +444,7 @@ def main():
         tot["right"] += c["right_numbers"]
         tot["wrong"] += len(c["misread"])
         tot["false"] += len(c["false_gaps"])
+        tot["mixed"] = tot.get("mixed", 0) + len(c["mixed_gaps"])
         tot["t"] += len(c["target_pages"])
         tot["inf"] += len(c["pages_in_frames"])
         tot["silent"] += len(c["silent_missing"])
@@ -431,7 +452,9 @@ def main():
     md.append("")
     md.append(f"Total: {tot['t']} target pages, {tot['caps']} captures, {tot['inf']} pages inside ML Kit's frames, "
               f"{tot['silent']} silent misses; page numbers {tot['right']} right / {tot['wrong']} wrong of "
-              f"{sum(len(c['rows']) for c in clips_out)} rows; {tot['false']} false 抜け rows.")
+              f"{sum(len(c['rows']) for c in clips_out)} rows; {tot['false']} false 抜け rows (no page in them missing), "
+              f"{tot['mixed']} 抜け rows that also span a captured page "
+              f"({[r for c in clips_out for r in c['mixed_gaps']]}).")
     md.append("")
     md.append("| capture | hold | frame | handles | registration | best target | err per corner (clip px) | pages in frame |")
     md.append("| --- | --- | --- | --- | --- | --- | --- | --- |")
