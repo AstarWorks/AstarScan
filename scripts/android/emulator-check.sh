@@ -1,15 +1,28 @@
 #!/usr/bin/env bash
 #
-# Drive the AstarScan Android app on an emulator (Google Play image) through
-# the ML Kit Document Scanner and keep screenshots + UI dumps of each step.
-# Run by CI (`android-emulator` job) inside reactivecircus/android-emulator-runner.
+# Point the emulator's back camera at the synthetic book clips and scan
+# them with the AstarScan app (Google ML Kit Document Scanner). Run by CI
+# (`android-emulator` job) inside reactivecircus/android-emulator-runner,
+# with scripts/android/camera-feed.py already playing on the v4l2loopback
+# device that the emulator uses as `-camera-back webcam0`.
 #
 #   bash scripts/android/emulator-check.sh <apk> <out-dir>
 #
-# The pages come in through the scanner's gallery import (the emulator
-# camera cannot point at real paper): scripts/android/fixtures/*.jpg are
-# photos of pages numbered 12, 13, 13, 15, so the list should flag 13 as a
-# duplicate and 14 as missing. A camera screenshot is also taken.
+# Env: FEED_CONTROL / FEED_STATUS — the feed's control and status files.
+#
+# For every clip in scripts/eval/book-clips/clips the check opens the
+# scanner, lets ML Kit auto-capture the page shown, and after each
+# capture turns the page on the feed (the feed plays the page turn and
+# then holds the next spread until the next capture), until every hold
+# of the clip has been captured. It keeps:
+#   - a screenshot + UI dump of every scanner screen (camera, adjust
+#     corners, review), named after what the dump shows, not after the
+#     step we expected (scripts/android/ui.py kind);
+#   - captures.tsv: clip, capture index, hold shown, feed frame;
+#   - the app's page list (several scroll positions) after each clip.
+# book-measure.py turns that into corner errors and page counts.
+# The last clip skips one spread and takes another twice on purpose, so
+# the list must show a red 欠番 and a red 重複 there.
 # Never fails the job on a UI miss: every step leaves evidence in <out-dir>.
 
 set -uo pipefail
@@ -18,119 +31,64 @@ APK=$1
 OUT=$2
 PKG=com.astarworks.astarscan
 HERE=$(cd "$(dirname "$0")" && pwd)
+CLIPS=$HERE/../eval/book-clips/clips
+FEED_CONTROL=${FEED_CONTROL:-/tmp/feed.control}
+FEED_STATUS=${FEED_STATUS:-/tmp/feed.status}
 mkdir -p "$OUT"
 n=0
+printf 'clip\tcapture\thold\tframe\tshot\n' >"$OUT/captures.tsv"
 
-log() { echo "[emulator-check] $*" | tee -a "$OUT/steps.log"; }
+log() { echo "[emulator-check] $(date +%H:%M:%S) $*" | tee -a "$OUT/steps.log"; }
 
 dump() {
   local f=$OUT/ui.xml
-  for _ in 1 2 3; do
+  rm -f "$f"
+  for _ in 1 2; do
     adb shell uiautomator dump /sdcard/ui.xml >/dev/null 2>&1 && adb pull /sdcard/ui.xml "$f" >/dev/null 2>&1 && return 0
     sleep 1
   done
   return 1
 }
 
+kind() { python3 "$HERE/ui.py" kind "$OUT/ui.xml"; }
+
+# shot <label> — screenshot + the last dump, named "<n>-<screen kind>-<label>".
+# The kind comes from a fresh dump so the name says what is on screen.
+SHOT=
 shot() {
   n=$((n + 1))
-  local name
-  name=$(printf '%02d-%s' "$n" "$1")
-  adb exec-out screencap -p >"$OUT/$name.png"
-  dump && cp "$OUT/ui.xml" "$OUT/$name.xml" && python3 "$HERE/ui.py" list "$OUT/$name.xml" >"$OUT/$name.txt"
-  log "shot $name"
+  local k
+  adb exec-out screencap -p >"$OUT/tmp.png"
+  dump
+  k=$(kind)
+  SHOT=$(printf '%03d-%s%s' "$n" "$k" "${1:+-$1}")
+  mv "$OUT/tmp.png" "$OUT/$SHOT.png"
+  [ -f "$OUT/ui.xml" ] && cp "$OUT/ui.xml" "$OUT/$SHOT.xml" && python3 "$HERE/ui.py" list "$OUT/$SHOT.xml" >"$OUT/$SHOT.txt"
+  log "shot $SHOT"
 }
 
-# tap_match <regex> [package-regex] — tap the first matching node.
-tap_match() {
-  dump || return 1
-  local xy
-  xy=$(python3 "$HERE/ui.py" find "$OUT/ui.xml" "$1" "${2:-}") || return 1
-  log "tap '$1' at $xy"
-  # shellcheck disable=SC2086
-  adb shell input tap $xy
-}
+has() { python3 "$HERE/ui.py" find "$OUT/ui.xml" "$1" "${2:-}" >/dev/null; }
+xy() { python3 "$HERE/ui.py" find "$OUT/ui.xml" "$1" "${2:-}"; }
+# shellcheck disable=SC2086
+tap_now() { local p; p=$(xy "$@") || return 1; log "tap '$1' at $p"; adb shell input tap $p; }
 
-# wait_match <regex> <seconds> [package-regex]
-wait_match() {
-  local end=$((SECONDS + $2))
-  while [ $SECONDS -lt $end ]; do
-    dump && python3 "$HERE/ui.py" find "$OUT/ui.xml" "$1" "${3:-}" >/dev/null && return 0
-    sleep 3
-  done
-  log "timeout waiting for '$1'"
-  return 1
-}
-
-log "install"
-adb install -r "$APK" 2>&1 | tee -a "$OUT/steps.log"
-
-log "push fixture photos"
-adb shell mkdir -p /sdcard/Pictures/AstarScan
-for f in "$HERE"/fixtures/*.jpg; do
-  adb push "$f" /sdcard/Pictures/AstarScan/ >/dev/null
-  adb shell am broadcast -a android.intent.action.MEDIA_SCANNER_SCAN_FILE \
-    -d "file:///sdcard/Pictures/AstarScan/$(basename "$f")" >/dev/null
-done
-adb shell content call --uri content://media --method scan_volume --arg external_primary >/dev/null 2>&1 || true
-
-adb logcat -c
-adb shell monkey -p "$PKG" -c android.intent.category.LAUNCHER 1 >/dev/null
-wait_match '^スキャン$' 90 || true
-shot app-start
+feed() { echo "$1 $2" >"$FEED_CONTROL"; log "feed -> $1 hold $2"; }
+feed_frame() { cut -d' ' -f2 "$FEED_STATUS" 2>/dev/null; }
 
 GMS=com.google.android.gms
 DOCSCAN=com.google.android.gms.optional_mlkit_docscan_ui:id
 
-# has <regex> [package-regex] — the last dump has a matching node.
-has() { python3 "$HERE/ui.py" find "$OUT/ui.xml" "$1" "${2:-}" >/dev/null; }
-# xy <regex> [package-regex] — centre of the matching node in the last dump.
-xy() { python3 "$HERE/ui.py" find "$OUT/ui.xml" "$1" "${2:-}"; }
-# shellcheck disable=SC2046
-tap_now() { local p; p=$(xy "$@") || return 1; log "tap '$1' at $p"; adb shell input tap $p; }
+log "webcams seen by the emulator:"
+"${ANDROID_SDK_ROOT:-/usr/local/lib/android/sdk}/emulator/emulator" -webcam-list 2>&1 | tee -a "$OUT/steps.log"
+adb shell dumpsys media.camera 2>/dev/null | grep -iE 'Camera [0-9]|facing|webcam|qemu|SCALER_AVAILABLE_STREAM|availableStreamConfigurations' | head -20 >>"$OUT/steps.log"
 
-# Photo picker: select up to 4 photos (the fixtures), then confirm.
-pick_photos() {
-  for i in 1 2 3 4; do
-    dump
-    p=$(python3 - "$OUT/ui.xml" "$i" <<'PY'
-import re, sys, xml.etree.ElementTree as ET
-try:
-    root = ET.parse(sys.argv[1]).getroot()
-except Exception:
-    sys.exit(1)
-want = int(sys.argv[2])
-hits = []
-for n in root.iter("node"):
-    d = (n.get("content-desc") or "") + " " + (n.get("text") or "")
-    if re.search(r"(photo|image|写真|画像)", d, re.I) and n.get("clickable") == "true":
-        m = re.match(r"\[(\d+),(\d+)\]\[(\d+),(\d+)\]", n.get("bounds") or "")
-        if m:
-            x1, y1, x2, y2 = map(int, m.groups())
-            if y2 - y1 > 100:
-                hits.append(((x1 + x2) // 2, (y1 + y2) // 2))
-if len(hits) >= want:
-    print(*hits[want - 1])
-else:
-    sys.exit(1)
-PY
-    ) || break
-    log "select photo $i at $p"
-    # shellcheck disable=SC2086
-    adb shell input tap $p
-    sleep 1
-  done
-  shot photo-picker-selected
-  tap_match '^(add|done|ok|select|追加|完了|選択)( \(\d+\))?$' || true
-}
+log "install"
+adb install -r "$APK" 2>&1 | tee -a "$OUT/steps.log"
+adb shell pm grant "$PKG" android.permission.CAMERA 2>/dev/null || true
 
-# The scanner needs a recent Google Play services. An emulator image ships
-# an old one that Play updates in the background (~10-15 min), restarting
-# Play services, so the loop below keeps reacting to whatever screen is up
-# until the scan returns to the app with the imported pages.
-# Play updates the image's old Play services shortly after boot and kills
-# its processes (and any open scanner) while installing. Wait for that
-# install before scanning; carry on after 25 min regardless.
+# The scanner needs a recent Google Play services. The image ships an old
+# one that Play updates in the background shortly after boot, killing any
+# open scanner while it installs. Wait for that update (max 25 min).
 gms_version() { adb shell dumpsys package com.google.android.gms | grep -m1 versionName | tr -d ' \r'; }
 v0=$(gms_version)
 log "Play services $v0; waiting for its update"
@@ -141,119 +99,188 @@ while [ $SECONDS -lt $end ]; do
   sleep 20
 done
 
-# Newer Play services auto-capture the virtual room the moment the camera
-# opens, before a UI dump can see the camera. So open the scanner and, in
-# one adb shell, keep tapping the "Manual" chip and then the gallery button
-# at their fixed spots (pixel_6 layout) to win the race.
-MANUAL_XY="384 2220"
-GALLERY_XY="243 2005"
-open_scanner() {
-  tap_now '^(スキャン|もう一度スキャンを開く)$' "$PKG" || return 1
-  adb shell "i=0; while [ \$i -lt 14 ]; do input tap $MANUAL_XY; i=\$((i+1)); done; input tap $GALLERY_XY"
-  sleep 4
+adb logcat -c
+adb shell monkey -p "$PKG" -c android.intent.category.LAUNCHER 1 >/dev/null
+sleep 10
+shot app-launch
+
+# to_start — get the app back to its start screen with an empty list.
+to_start() {
+  local i
+  for i in 1 2 3 4 5 6; do
+    dump
+    case $(kind) in
+      app-start) return 0 ;;
+      dialog-full-screen) tap_now '^Got it$' ;;
+      app-list | app-list-empty) tap_now '^すべて削除$' "$PKG" ;;
+      scanner-*) adb shell input keyevent KEYCODE_BACK ;;
+      *) adb shell monkey -p "$PKG" -c android.intent.category.LAUNCHER 1 >/dev/null ;;
+    esac
+    sleep 3
+  done
+  return 1
 }
 
-log "scan: open ML Kit, import the fixture photos, show the page frame, finish"
-imported=0
-cropped=0
-saved=0
-attempts=0
-end=$((SECONDS + 3000))
-while [ $SECONDS -lt $end ]; do
+# page_count — "Page x of M" on the scanner's review screen -> M.
+page_count() {
+  python3 - "$OUT/ui.xml" <<'PY'
+import re, sys
+m = re.findall(r"Page \d+ of (\d+)", open(sys.argv[1], encoding="utf-8", errors="replace").read())
+print(max(map(int, m)) if m else 0)
+PY
+}
+
+# scan_clip <clip> <hold indices to capture, in order>
+scan_clip() {
+  local clip=$1
+  shift
+  local plan=("$@")
+  local want=${#plan[@]} m=0 adj=0 cam_shot=-1 cam_since=$SECONDS opens=0 saved=0
+  log "=== $clip: capture holds ${plan[*]}"
+  feed "$clip" "${plan[0]}"
+  to_start || log "could not get back to the start screen"
+  local end=$((SECONDS + 1200))
+  while [ $SECONDS -lt $end ]; do
+    dump
+    case $(kind) in
+      app-start)
+        [ $saved = 1 ] && break
+        opens=$((opens + 1))
+        [ $opens -gt 6 ] && { log "gave up opening the scanner"; break; }
+        tap_now '^スキャン$' "$PKG"
+        m=0
+        adj=0
+        cam_since=$SECONDS
+        sleep 5
+        ;;
+      app-waiting-scanner)
+        if [ $((SECONDS - cam_since)) -gt 90 ]; then
+          tap_now 'もう一度スキャンを開く' "$PKG"
+          cam_since=$SECONDS
+        fi
+        sleep 3
+        ;;
+      app-list | app-list-empty)
+        log "$clip: back in the app"
+        break
+        ;;
+      dialog-full-screen) tap_now '^Got it$' ;;
+      other-permissioncontroller)
+        shot "$clip-permission"
+        tap_now '(permission_allow_foreground_only_button|permission_allow_button|While using the app|^Allow$)' 'permissioncontroller'
+        ;;
+      scanner-dialog)
+        shot "$clip-dialog"
+        if has '^Keep editing$' "$GMS"; then tap_now '^Keep editing$' "$GMS"; else tap_now 'android:id/button1' "$GMS"; fi
+        ;;
+      scanner-adjust-corners)
+        local fr
+        fr=$(feed_frame)
+        shot "$clip-c$adj-adjust"
+        printf '%s\t%s\t%s\t%s\t%s\n' "$clip" "$adj" "${plan[$adj]:-}" "$fr" "$SHOT" >>"$OUT/captures.tsv"
+        adj=$((adj + 1))
+        tap_now "$DOCSCAN/confirm_crop_button" "$GMS"
+        sleep 2
+        ;;
+      scanner-review)
+        m=$(page_count)
+        if [ "$adj" -lt "$m" ]; then
+          # ML Kit went straight to the review: open the newest page's
+          # corners so its frame is on record too.
+          tap_now "Page $m of $m" "$GMS" || true
+          sleep 1
+          dump
+          if ! tap_now "$DOCSCAN/edit_menu_crop_and_rotate_button" "$GMS"; then adj=$m; fi
+          sleep 2
+        elif [ "$m" -lt "$want" ]; then
+          [ "$m" -le 1 ] && shot "$clip-review"
+          feed "$clip" "${plan[$m]}"
+          tap_now "$DOCSCAN/add_page" "$GMS" || tap_now '^Add page' "$GMS"
+          cam_since=$SECONDS
+          sleep 2
+        else
+          shot "$clip-review-final"
+          tap_now "$DOCSCAN/save_document_button" "$GMS"
+          saved=1
+          sleep 4
+        fi
+        ;;
+      *)
+        # ML Kit's live camera (usually not dumpable while the preview runs).
+        if [ "$cam_shot" != "$m" ] && [ $((SECONDS - cam_since)) -ge 2 ]; then
+          shot "$clip-c$m-camera"
+          cam_shot=$m
+        elif [ $((SECONDS - cam_since)) -gt 60 ]; then
+          # No auto-capture within a minute: press the shutter (manual).
+          shot "$clip-c$m-no-autocapture"
+          log "$clip c$m: no auto-capture in 60 s, pressing the shutter"
+          if has '(shutter|Take photo|Capture)' "$GMS"; then tap_now '(shutter|Take photo|Capture)' "$GMS"; else adb shell input tap 540 2005; fi
+          cam_since=$SECONDS
+        fi
+        sleep 1
+        ;;
+    esac
+  done
+  log "$clip: scanner loop ended (pages in scanner: $m / $want, saved=$saved)"
+
+  # Page list: wait for the page-number OCR, then keep the list at a few
+  # scroll positions (book-measure.py merges them).
+  local t_end=$((SECONDS + 420))
+  while [ $SECONDS -lt $t_end ]; do
+    dump
+    grep -qE '読み取り中|読み取り準備中' "$OUT/ui.xml" || break
+    sleep 10
+  done
+  shot "$clip-list"
+  local s
+  for s in 1 2 3 4 5 6; do
+    adb shell input swipe 540 1700 540 700 500
+    sleep 2
+    shot "$clip-list-s$s"
+  done
+}
+
+record_start() {
+  (for i in 1 2 3 4 5; do adb shell screenrecord --time-limit 180 --bit-rate 4000000 "/sdcard/rec-$i.mp4"; done) &
+  REC_PID=$!
+}
+record_stop() {
+  kill "$REC_PID" 2>/dev/null
+  adb shell pkill -INT screenrecord 2>/dev/null
   sleep 3
-  dump || continue
-  if has 'Keep editing' "$GMS"; then
-    tap_now 'Keep editing' "$GMS"
-  elif has "$DOCSCAN/confirm_crop_button" "$GMS"; then
-    # "Adjust corners": the detected page frame with its four handles.
-    if [ $imported = 1 ]; then shot scanner-adjust-corners; cropped=1; else shot scanner-adjust-corners-camera; fi
-    tap_now "$DOCSCAN/confirm_crop_button" "$GMS"
-  elif has "$DOCSCAN/gallery_button" "$GMS"; then
-    if [ $imported = 0 ]; then
-      shot scanner-camera
-      # Switch to manual first so auto-capture does not grab the room, then
-      # open the gallery (both from the same dump: no time for a capture).
-      man=$(xy '^Manual$' "$GMS") && adb shell input tap $man
-      tap_now "$DOCSCAN/gallery_button" "$GMS"
-      sleep 6
-      shot photo-picker
-      pick_photos
-      imported=1
-      sleep 8
-    else
-      log "back on the camera after import; closing"
-      tap_now "$DOCSCAN/close_button" "$GMS" || adb shell input keyevent KEYCODE_BACK
-    fi
-  elif has "$DOCSCAN/save_document_button" "$GMS"; then
-    if [ $imported = 0 ]; then
-      # Auto-capture grabbed the virtual room first (the frame it found is
-      # in the screenshot): discard the scan and open the scanner again.
-      shot scanner-review-room
-      tap_now "$DOCSCAN/discard_scan_button" "$GMS" || tap_now "$DOCSCAN/delete_button" "$GMS"
-    elif [ $cropped = 0 ]; then
-      shot scanner-review
-      tap_now "$DOCSCAN/edit_menu_crop_and_rotate_button" "$GMS" || cropped=1
-      cropped=1
-    else
-      shot scanner-review-final
-      tap_now "$DOCSCAN/save_document_button" "$GMS"
-      saved=1
-    fi
-  elif has 'android:id/button1' "$GMS"; then
-    # Confirm dialogs (delete page / discard scan).
-    tap_now 'android:id/button1' "$GMS"
-  elif has '(PDF 保存|追加スキャン)' "$PKG"; then
-    [ $saved = 1 ] && break
-    tap_now '追加スキャン' "$PKG"
-  elif has '^(スキャン|もう一度スキャンを開く)$' "$PKG"; then
-    # The scanner went away before finishing: import again next time.
-    imported=0
-    cropped=0
-    if has 'もう一度スキャンを開く' "$PKG"; then sleep 30; dump; fi
-    attempts=$((attempts + 1))
-    [ $attempts -gt 12 ] && { log "gave up opening the scanner"; break; }
-    open_scanner || true
-  elif has '(photo|写真)' 'providers.media|photopicker|documentsui'; then
-    pick_photos
-    imported=1
-  elif [ $saved = 1 ] && has "$DOCSCAN" "$GMS"; then
-    # Unknown post-save screen: try the obvious confirm buttons.
-    tap_now '^(Done|Save|Next|完了|保存|次へ)$' "$GMS" || true
+  local i
+  : >"$OUT/rec.txt"
+  for i in 1 2 3 4 5; do
+    adb pull "/sdcard/rec-$i.mp4" "$OUT/rec-$i.mp4" >/dev/null 2>&1 && echo "file 'rec-$i.mp4'" >>"$OUT/rec.txt"
+  done
+  if [ -s "$OUT/rec.txt" ]; then
+    (cd "$OUT" && ffmpeg -hide_banner -loglevel error -f concat -safe 0 -i rec.txt -c copy book-eval-recording.mp4) && rm -f "$OUT"/rec-*.mp4
   fi
-done
-log "scan loop ended (imported=$imported cropped=$cropped saved=$saved)"
-sleep 3
-shot app-list
+  rm -f "$OUT/rec.txt"
+}
 
-log "wait for page-number OCR (models download on first use)"
-end=$((SECONDS + 420))
-while [ $SECONDS -lt $end ]; do
-  dump
-  if ! grep -q '読み取り中' "$OUT/ui.xml" && ! grep -q '読み取り準備中' "$OUT/ui.xml"; then break; fi
-  sleep 10
-done
-shot app-list-page-numbers
-adb shell input swipe 540 1800 540 900 400
-sleep 2
-shot app-list-scrolled
+holds() { python3 -c 'import json,sys; d=json.load(open(sys.argv[1])); print(*range(sum(s["phase"]=="hold" for s in d["segments"])))' "$CLIPS/$1.gt.json"; }
 
-log "save PDF"
-tap_match 'PDF 保存' "$PKG" || log "save button not found"
+# shellcheck disable=SC2046
+scan_clip spread-land-wood $(holds spread-land-wood)
+# shellcheck disable=SC2046
+scan_clip spread-port-white $(holds spread-port-white)
+# shellcheck disable=SC2046
+scan_clip spread-land-white-thick $(holds spread-land-white-thick)
+# shellcheck disable=SC2046
+scan_clip single-port-wood $(holds single-port-wood)
+# Last clip (recorded): skip hold 3 (p37) and take hold 6 (p43) twice.
+record_start
+scan_clip single-land-white 0 1 2 4 5 6 6 7 8 9
+record_stop
+
+log "save PDF (last clip)"
+tap_match_pdf() { dump && tap_now '^PDF 保存' "$PKG"; }
+tap_match_pdf || log "save button not found"
 sleep 8
 shot pdf-saved
 adb shell ls -l /sdcard/Download/AstarScan/ 2>&1 | tee -a "$OUT/steps.log"
-adb shell input keyevent KEYCODE_BACK
-sleep 3
-shot app-after-save
-
-log "open the AstarManagement send form (not sent: no server in CI)"
-tap_match '^Astar に送る$' "$PKG" || log "send form not found"
-sleep 2
-adb shell input swipe 540 1800 540 900 400
-sleep 2
-shot astar-send-form
 
 adb logcat -d >"$OUT/logcat.txt" 2>&1
-adb logcat -d -s AstarScanMlkit chromium Tauri RustStdoutStderr >"$OUT/logcat-app.txt" 2>&1
 log "done"
 exit 0

@@ -80,6 +80,8 @@ apps/web/public/fonts/*.ttf
 # Test videos (too large for git)
 *.mp4
 *.mov
+# …except the small synthetic eval clips (≤ 8 MB each, see scripts/eval/book-clips/README.md)
+!scripts/eval/book-clips/clips/*.mp4
 
 # Tauri
 src-tauri/target/
@@ -103,3 +105,4 @@ scripts/dataset/scene-reps.json
 # External datasets (SmartDoc etc.) — downloaded, not committed
 scripts/dataset/external/
 apps/web/public/ort/
+__pycache__/

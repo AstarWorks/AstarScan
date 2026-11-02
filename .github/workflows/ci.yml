@@ -303,11 +303,11 @@ jobs:
           echo "$url"
 
   android-emulator:
-    name: Android emulator check (ML Kit scanner)
+    name: Android emulator check (ML Kit scanner, book clips on the camera)
     needs: android
     if: github.event_name == 'push'
     runs-on: ubuntu-latest
-    timeout-minutes: 100
+    timeout-minutes: 200
     permissions:
       contents: write
 
@@ -324,16 +324,49 @@ jobs:
           sudo udevadm control --reload-rules
           sudo udevadm trigger --name-match=kvm
 
+      # The emulator's back camera is a v4l2loopback webcam that plays the
+      # book clips (scripts/eval/book-clips) — see camera-feed.py.
+      - name: Virtual webcam (v4l2loopback) playing the book clips
+        id: cam
+        run: |
+          set -uo pipefail
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq ffmpeg python3-opencv python3-numpy v4l-utils >/dev/null
+          if ! sudo modprobe v4l2loopback devices=1 video_nr=0 card_label=BookCam exclusive_caps=1 2>/dev/null; then
+            sudo apt-get install -y -qq "linux-modules-extra-$(uname -r)" >/dev/null 2>&1 || true
+            sudo modprobe v4l2loopback devices=1 video_nr=0 card_label=BookCam exclusive_caps=1 2>/dev/null || {
+              sudo apt-get install -y -qq v4l2loopback-dkms "linux-headers-$(uname -r)" >/dev/null
+              sudo modprobe v4l2loopback devices=1 video_nr=0 card_label=BookCam exclusive_caps=1
+            }
+          fi
+          sudo chmod 666 /dev/video0
+          nohup python3 -I scripts/android/camera-feed.py scripts/eval/book-clips/clips \
+            /tmp/feed.control /tmp/feed.status >/tmp/camera-feed.log 2>&1 &
+          for _ in $(seq 60); do [ -s /tmp/feed.status ] && break; sleep 2; done
+          cat /tmp/camera-feed.log
+          v4l2-ctl -d /dev/video0 --all | head -30
+          test -s /tmp/feed.status
+
       - name: Run the app on a Google Play emulator
         uses: reactivecircus/android-emulator-runner@v2
+        env:
+          FEED_CONTROL: /tmp/feed.control
+          FEED_STATUS: /tmp/feed.status
         with:
           api-level: 35
           target: google_apis_playstore
           arch: x86_64
           profile: pixel_6
           disable-animations: true
-          emulator-options: -no-window -gpu swiftshader_indirect -noaudio -no-boot-anim -camera-back virtualscene -camera-front emulated -virtualscene-poster wall=${{ github.workspace }}/scripts/android/fixtures/page-1-no12.jpg
+          emulator-options: -no-window -gpu swiftshader_indirect -noaudio -no-boot-anim -camera-back webcam0 -camera-front emulated
           script: bash scripts/android/emulator-check.sh AstarScan-android.apk emulator-out
+
+      - name: Score the run (corner error, pages, silent misses)
+        if: always()
+        run: |
+          [ -d emulator-out ] || exit 0
+          cp /tmp/camera-feed.log emulator-out/ 2>/dev/null || true
+          python3 -I scripts/android/book-measure.py emulator-out scripts/eval/book-clips/clips | tee -a "$GITHUB_STEP_SUMMARY"
 
       - uses: actions/upload-artifact@v4
         if: always()
@@ -341,7 +374,7 @@ jobs:
           name: emulator-check
           path: emulator-out
 
-      - name: Attach screenshots to the prerelease
+      - name: Attach screenshots and the screen recording to the prerelease
         if: always()
         env:
           GH_TOKEN: ${{ github.token }}
@@ -349,5 +382,8 @@ jobs:
         run: |
           set -euo pipefail
           [ -d emulator-out ] || exit 0
-          (cd emulator-out && zip -q -r ../emulator-check.zip .)
+          if [ -f emulator-out/book-eval-recording.mp4 ]; then
+            gh release upload "$TAG" emulator-out/book-eval-recording.mp4 --clobber
+          fi
+          (cd emulator-out && zip -q -r ../emulator-check.zip . -x book-eval-recording.mp4)
           gh release upload "$TAG" emulator-check.zip --clobber
