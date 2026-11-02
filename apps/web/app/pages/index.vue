@@ -2049,7 +2049,11 @@ const ASTAR_TARGET_KEY = 'astarscan.astarTarget'
 /** BookCaptureService.MAX_FRAMES */
 const ASTAR_MAX_PAGES = 150
 
-function loadAstarTarget(): { server: string; token: string; folderId: string } {
+function loadAstarTarget(): {
+  server: string
+  token: string
+  folderId: string
+} {
   const empty = { server: '', token: '', folderId: '' }
   try {
     const raw = localStorage.getItem(ASTAR_TARGET_KEY)
@@ -2065,7 +2069,9 @@ function loadAstarTarget(): { server: string; token: string; folderId: string } 
   }
 }
 
-const astarTarget = ref(nativeMode ? loadAstarTarget() : { server: '', token: '', folderId: '' })
+const astarTarget = ref(
+  nativeMode ? loadAstarTarget() : { server: '', token: '', folderId: '' },
+)
 const astarName = ref('')
 const astarSending = ref(false)
 const astarResult = ref('')
