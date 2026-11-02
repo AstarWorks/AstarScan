@@ -206,6 +206,9 @@ export class LiveCaptureJudge<T = unknown> {
     this.#samePage = samePage
   }
 
+  /** The last `#same` answer came from `samePage` (not pHash). */
+  #byTest = false
+
   /** Same picture: `samePage` when it answers, else pHash ≤ `maxDist`. */
   #same(
     ref: LiveFrame<T>,
@@ -214,8 +217,40 @@ export class LiveCaptureJudge<T = unknown> {
     maxDist: number,
   ): boolean {
     const v = this.#samePage?.(ref, f) ?? null
+    this.#byTest = v !== null
     if (v !== null) return v
     return f.hash !== null && hamming(f.hash, refHash) <= maxDist
+  }
+
+  /**
+   * A page was swapped for a different one (decided by `samePage`, which
+   * unlike pHash tells book pages apart) without leaving the view. If it
+   * was in view for `missMinS` without a ✓, it is reported as missed now
+   * — on a book the page never leaves the view, so the stretch rule alone
+   * never fired and unturned-to pages went by without any sign. The
+   * stretch restarts on the new page.
+   */
+  #swapped(prev: Hold<T>, seed: LiveFrame<T>[], out: LiveCaptureEvent<T>[]): void {
+    const v = this.#visit
+    if (
+      prev.pageNo === null &&
+      !v?.captured &&
+      prev.lastSeenT - prev.startT + EPS >= this.opts.missMinS
+    ) {
+      out.push({
+        type: 'missed',
+        holdId: prev.id,
+        best: prev.best,
+        startT: prev.startT,
+        endT: prev.lastSeenT,
+        t: seed[seed.length - 1]!.t,
+      })
+    }
+    if (v) {
+      v.startT = seed[0]!.t
+      v.best = seed.reduce((a, b) => (b.score > a.score ? b : a))
+      v.captured = false
+    }
   }
 
   /** Spans of every captured page so far, in capture order. */
@@ -308,6 +343,7 @@ export class LiveCaptureJudge<T = unknown> {
     }
 
     // Different picture. Only a change that persists is a page turn.
+    const changedByTest = this.#byTest
     h.pending.push(f)
     const first = h.pending[0]!
     if (f.t - first.t >= o.changeS - EPS) {
@@ -323,6 +359,7 @@ export class LiveCaptureJudge<T = unknown> {
       const seed = h.pending.slice(k)
       h.pending = []
       this.#close()
+      if (changedByTest) this.#swapped(h, seed, out)
       this.#open(seed, still, out)
     }
   }

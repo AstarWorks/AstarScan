@@ -263,6 +263,25 @@ describe('LiveCaptureJudge with a samePage test', () => {
     expect(caps[1]!.t).toBeGreaterThan(2)
   })
 
+  it('reports a page swapped without a ✓ as missed (it never left the view)', () => {
+    // Page 2 (1.5–3 s) never holds still; page 3 follows without a gap.
+    const pg = (t: number) => (t < 1.5 ? 1 : t < 3 ? 2 : 3)
+    const j = new LiveCaptureJudge<number>({}, (a, b) => pg(a.t) === pg(b.t))
+    const frames = span(0, 4.5, (t) =>
+      frame(t, PAGE_A, {
+        quad: quad(pg(t) === 2 ? (Math.round(t * 10) % 2) * 300 : 0),
+      }),
+    )
+    const ev = [...frames.flatMap((f) => j.push(f)), ...j.finish(4.5)]
+    expect(ev.filter((e) => e.type === 'captured')).toHaveLength(2)
+    const miss = ev.filter((e) => e.type === 'missed')
+    expect(miss).toHaveLength(1)
+    const m = miss[0]!
+    if (m.type !== 'missed') throw new Error('unreachable')
+    expect(m.startT).toBeGreaterThanOrEqual(1.5)
+    expect(m.endT).toBeLessThan(3)
+  })
+
   it('falls back to pHash when the test has no answer', () => {
     const j = new LiveCaptureJudge<number>({}, () => null)
     const frames = [
