@@ -132,7 +132,7 @@ screenshots: [emulator-check.zip](https://github.com/AstarWorks/AstarScan/releas
   ![run 6 single-land-white](images/android-book-eval/run6-list-single-land-white.png)
 - The "1" reads from the dashes are gone, but the Japanese "— NN —"
   numbers are still mostly not read (1 of 10 read, as 10), and the
-  spreads (4–8 px digits) read 1 of 19. single-port-wood: 13, 15, 17
+  spreads (4–8 px digits): 2 of 19 rows got a number, both a wrong "1". single-port-wood: 13, 15, 17
   right; 10, 5, 20, 1, 3 wrong, giving false 抜け rows (11〜12, 14, 16,
   18〜19). Widening the page-number box did not clearly help.
   ![run 6 single-port-wood](images/android-book-eval/run6-list-single-port-wood.png)
