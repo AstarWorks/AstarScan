@@ -62,3 +62,8 @@ pages (like holding the phone so the book fills the screen —
 manual shutter comes after 15 s; a clip gets ~75 s per page (min 10
 min), and when that runs out or the clip is given up, the pages taken so
 far are saved instead of dropped.
+
+After run 4 (in the APK from run 5 on): 番号を読めず and 読み取りできず
+are drawn in red like 欠番 / 重複 (`CaptureReport.vue`) — a page whose
+number cannot be read cannot be checked for gaps or repeats, so the user
+has to look at it.

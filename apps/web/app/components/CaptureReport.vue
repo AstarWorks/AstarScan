@@ -65,10 +65,14 @@ const PRINTED_LABEL: Record<PrintedNoState, string> = {
   missing: '欠番',
   suspect: '欠番（読み違いかも）',
 }
+// Red: anything the user has to look at. A page whose number could not be
+// read cannot be checked for gaps or repeats, so it is flagged as well.
 const ALERT_STATES: readonly PrintedNoState[] = [
   'duplicate',
   'missing',
   'suspect',
+  'unread',
+  'failed',
 ]
 function isAlert(r: ReportViewRow): boolean {
   return r.printedState !== undefined && ALERT_STATES.includes(r.printedState)
@@ -226,12 +230,16 @@ function isAlert(r: ReportViewRow): boolean {
 }
 .report__printed--duplicate,
 .report__printed--missing,
-.report__printed--suspect {
+.report__printed--suspect,
+.report__printed--unread,
+.report__printed--failed {
   color: #b91c1c;
 }
 .report__printed--duplicate .report__printed-state,
 .report__printed--missing .report__printed-state,
-.report__printed--suspect .report__printed-state {
+.report__printed--suspect .report__printed-state,
+.report__printed--unread .report__printed-state,
+.report__printed--failed .report__printed-state {
   color: #b91c1c;
   font-weight: 700;
 }
