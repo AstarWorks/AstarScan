@@ -230,7 +230,11 @@ export class LiveCaptureJudge<T = unknown> {
    * never fired and unturned-to pages went by without any sign. The
    * stretch restarts on the new page.
    */
-  #swapped(prev: Hold<T>, seed: LiveFrame<T>[], out: LiveCaptureEvent<T>[]): void {
+  #swapped(
+    prev: Hold<T>,
+    seed: LiveFrame<T>[],
+    out: LiveCaptureEvent<T>[],
+  ): void {
     const v = this.#visit
     if (
       prev.pageNo === null &&
@@ -351,10 +355,7 @@ export class LiveCaptureJudge<T = unknown> {
       // picture as the newest one: frames from the middle of a page turn
       // differ from both pages and must not become the new reference.
       let k = h.pending.length - 1
-      while (
-        k > 0 &&
-        this.#same(f, f.hash, h.pending[k - 1]!, o.changeDist)
-      )
+      while (k > 0 && this.#same(f, f.hash, h.pending[k - 1]!, o.changeDist))
         k -= 1
       const seed = h.pending.slice(k)
       h.pending = []

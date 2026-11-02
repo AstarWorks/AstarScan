@@ -134,6 +134,12 @@ the same JSON format.
   then launch Chromium with `--use-fake-device-for-media-stream
 --use-file-for-fake-video-capture=/tmp/spread.y4m`. Y4M is uncompressed
   (~1.8 GB for a 20 s 1080p clip), so keep it out of the repo.
+- The browser app end to end: `book-e2e.mjs` converts the clip to MJPEG,
+  plays it through the fake camera into the running app (2 loops) and
+  scores ✓ / red guide / silent pages, corner error and whole-paper saved
+  images against this ground truth; `table.mjs <run-dir>` prints the table.
+  `NODE_PATH=<global node_modules> node book-e2e.mjs http://localhost:4173/
+spread-land-wood /tmp/out [--record]`. Results: `docs/book-eval.md`.
 - Android emulator: play the mp4 on a virtual webcam (e.g. v4l2loopback +
   `ffmpeg -re -stream_loop -1 -i clip.mp4 -f v4l2 /dev/video9`) and
   start the emulator with `-camera-back webcam0`.

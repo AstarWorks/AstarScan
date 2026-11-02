@@ -9,13 +9,14 @@
  *   - follows the page it is on (largest box overlap with the last one);
  *   - when a new page appears after a finished spread (`onNewHold`), goes
  *     to the LEFT page first;
+ *   - but when one page sits under the frame centre (one page at a time,
+ *     the neighbouring page half in view) takes that page and does not
+ *     move on from it;
  *   - after a ✓ (`onCaptured`), moves to the other page of the spread when
  *     there is one — a candidate that does not overlap the captured page,
- *     lies wholly inside the frame (a page cut by the frame edge is the
- *     neighbouring page of a one-page-at-a-time scan, not a target) and is
- *     at least `minAreaRatio` of the captured page's size; after that
- *     page's ✓ the spread is done and it stays put until the next new
- *     page.
+ *     is not cut by the frame edge and is at least `minAreaRatio` of the
+ *     captured page's size; after that page's ✓ the spread is done and it
+ *     stays put until the next new page.
  *
  * Reading order is assumed left → right (pages turned right to left).
  *
@@ -27,8 +28,15 @@ import { boxIou, type PixelBox } from './yolo-decode.js'
 export const SPREAD_PICK_DEFAULTS = {
   /** Boxes overlapping more than this are the same page. */
   sameIou: 0.3,
-  /** A page's box must keep this fraction of the frame from every edge. */
-  edgeMargin: 0.005,
+  /** A page whose box runs past the frame edge by more than this fraction
+   *  of its own size is cut by the frame (the model's box of a whole page
+   *  overflows by up to ~7 %). */
+  cutFrac: 0.12,
+  /** A page whose box centre is within this fraction of its width from
+   *  the frame centre is the page being aimed at (one page at a time):
+   *  it is taken first and has no facing page to move to. When the frame
+   *  centre falls between pages (a spread) the left page goes first. */
+  centerFrac: 0.25,
   /** The other page must be at least this fraction of the captured one. */
   minAreaRatio: 0.5,
   /** Candidates below this fraction of the top confidence are ignored. */
@@ -66,15 +74,21 @@ export class SpreadPicker {
   #onSecond = false
   /** Both pages of the spread (or the only page) have their ✓. */
   #done = false
+  #frameW = 0
 
   constructor(opts: Partial<SpreadPickOptions> = {}) {
     this.opts = { ...SPREAD_PICK_DEFAULTS, ...opts }
   }
 
   #inside(b: PixelBox, w: number, h: number): boolean {
-    const mx = this.opts.edgeMargin * w
-    const my = this.opts.edgeMargin * h
-    return b.x0 >= mx && b.y0 >= my && b.x1 <= w - mx && b.y1 <= h - my
+    const mx = this.opts.cutFrac * (b.x1 - b.x0)
+    const my = this.opts.cutFrac * (b.y1 - b.y0)
+    return b.x0 >= -mx && b.y0 >= -my && b.x1 <= w + mx && b.y1 <= h + my
+  }
+
+  #centred(b: PixelBox, w: number): boolean {
+    const bw = b.x1 - b.x0
+    return bw > 0 && Math.abs(cx(b) - w / 2) <= this.opts.centerFrac * bw
   }
 
   /**
@@ -82,8 +96,13 @@ export class SpreadPicker {
    * there are none. Does not change state; call `commit` with the box
    * that was used.
    */
-  choose(cands: readonly PageCandidate[], frameW: number, frameH: number): number {
+  choose(
+    cands: readonly PageCandidate[],
+    frameW: number,
+    frameH: number,
+  ): number {
     if (!cands.length) return -1
+    this.#frameW = frameW
     const top = cands[0]!.confidence
     const ok = cands
       .map((c, i) => ({ c, i }))
@@ -91,6 +110,8 @@ export class SpreadPicker {
     if (this.#mode === 'left') {
       const inside = ok.filter(({ c }) => this.#inside(c.box, frameW, frameH))
       const pool = inside.length ? inside : ok
+      const aimed = pool.find(({ c }) => this.#centred(c.box, frameW))
+      if (aimed) return aimed.i
       return pool.reduce((a, b) => (cx(b.c.box) < cx(a.c.box) ? b : a)).i
     }
     if (this.#mode === 'other' && this.#captured) {
@@ -139,6 +160,11 @@ export class SpreadPicker {
       return
     }
     if (this.#done || !this.#last) return
+    if (this.#centred(this.#last, this.#frameW)) {
+      // The page aimed at, one page at a time: nothing to move to.
+      this.#done = true
+      return
+    }
     this.#captured = this.#last
     this.#mode = 'other'
   }

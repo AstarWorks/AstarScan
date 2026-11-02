@@ -202,7 +202,9 @@ export function decodeYoloCandidates(
   const idx: number[] = []
   for (let a = 0; a < anchors; a += 1)
     if ((data[classOffset + a] ?? 0) >= minConf) idx.push(a)
-  idx.sort((p, q) => (data[classOffset + q] ?? 0) - (data[classOffset + p] ?? 0))
+  idx.sort(
+    (p, q) => (data[classOffset + q] ?? 0) - (data[classOffset + p] ?? 0),
+  )
   const kept: YoloDetection[] = []
   for (const a of idx) {
     if (kept.length >= maxDet) break

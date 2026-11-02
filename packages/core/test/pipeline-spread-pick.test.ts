@@ -54,6 +54,17 @@ describe('SpreadPicker', () => {
     expect(step(p, frame)).toBe(RIGHT)
   })
 
+  it('takes the page under the frame centre and does not leave it', () => {
+    const p = new SpreadPicker()
+    const AIMED = box(300, 600, 800, 1300)
+    const SIDE = box(20, 600, 290, 1300)
+    const frame = [cand(SIDE, 0.85), cand(AIMED, 0.8)]
+    expect(step(p, frame)).toBe(AIMED)
+    p.onCaptured()
+    expect(p.wantsModel).toBe(false)
+    expect(step(p, frame)).toBe(AIMED)
+  })
+
   it('new holds before the spread is done do not move it', () => {
     const p = new SpreadPicker()
     const frame = [cand(RIGHT, 0.88), cand(LEFT, 0.85)]

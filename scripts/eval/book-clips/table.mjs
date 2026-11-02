@@ -11,7 +11,8 @@ const dir = process.argv[2]
 const rows = []
 for (const name of fs.readdirSync(dir).sort()) {
   const f = path.join(dir, name, 'result.json')
-  if (fs.existsSync(f)) rows.push(JSON.parse(fs.readFileSync(f, 'utf8')).summary)
+  if (fs.existsSync(f))
+    rows.push(JSON.parse(fs.readFileSync(f, 'utf8')).summary)
 }
 const sum = (k) => rows.reduce((s, r) => s + (r[k] ?? 0), 0)
 console.log(
