@@ -432,7 +432,7 @@ def main():
         })
 
     with open(os.path.join(a.out, "measure.json"), "w") as f:
-        json.dump({"captures": results, "clips": clips_out}, f, ensure_ascii=False, indent=1)
+        json.dump({"captures": results, "clips": clips_out}, f, ensure_ascii=False, indent=1, default=float)
 
     ml_out.close()
     md = ["| clip | target pages | captures | pages inside ML Kit frames | frame matched (spread/left/right) | corner err mean / max (clip px) | list rows ok / 重複 / 番号読めず | numbers right / wrong | red 欠番 | false 抜け | silent misses (無表示) |",
