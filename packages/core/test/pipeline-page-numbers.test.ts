@@ -109,10 +109,10 @@ describe('checkPageSequence', () => {
   })
 
   it('counts unread captures inside a gap (emulator run 11: 33, ?, 39)', () => {
-    const r = checkPageSequence([[31], [33], [], [39], [], [], [47]])
+    const r = checkPageSequence([[33], [], [39], [], [], [47]])
     expect(r.missing).toEqual([
-      { from: 34, to: 38, beforeIndex: 3, suspect: false, unreadBetween: 1 },
-      { from: 40, to: 46, beforeIndex: 6, suspect: false, unreadBetween: 2 },
+      { from: 34, to: 38, beforeIndex: 2, suspect: false, unreadBetween: 1 },
+      { from: 40, to: 46, beforeIndex: 5, suspect: false, unreadBetween: 2 },
     ])
   })
 
