@@ -35,6 +35,8 @@ export interface ModelAnchor {
   quad: Quad
   /** Model class confidence, carried over to the snapped frames. */
   confidence: number
+  /** Boxes of the other pages the model found (kept out of the snap). */
+  exclude?: readonly PixelBox[]
   frameW: number
   frameH: number
 }

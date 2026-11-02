@@ -30,7 +30,7 @@
 import type { Quad } from '@astarworks/scan-core'
 import {
   YOLO_INPUT_SIZE,
-  decodeYoloOutput,
+  decodeYoloCandidates,
   letterboxToFloat32,
   type CanvasLike,
   type FrameTurn,
@@ -81,6 +81,17 @@ export class YoloPoseBackend {
     frame: HTMLCanvasElement,
     turn: FrameTurn = 'none',
   ): Promise<YoloPoseDetection | null> {
+    return (await this.detectAll(frame, turn))[0] ?? null
+  }
+
+  /**
+   * Every page the model found, best first (NMS; an open book gives both
+   * pages — scan-core `decodeYoloCandidates`).
+   */
+  async detectAll(
+    frame: HTMLCanvasElement,
+    turn: FrameTurn = 'none',
+  ): Promise<YoloPoseDetection[]> {
     const session = this.#session
     if (!session || !this.#ready) {
       throw new Error('YoloPoseBackend.warmUp() must be called before detect()')
@@ -106,9 +117,9 @@ export class YoloPoseBackend {
     // Ultralytics names the output "output0" by default. Fall back to
     // the first tensor if the name has been customized at export time.
     const out = results['output0'] ?? results[Object.keys(results)[0] ?? '']
-    if (!out) return null
+    if (!out) return []
 
-    const det = decodeYoloOutput(
+    return decodeYoloCandidates(
       out.data as Float32Array,
       Number(out.dims[1] ?? 0),
       Number(out.dims[2] ?? 0),
@@ -116,14 +127,12 @@ export class YoloPoseBackend {
       padX,
       padY,
       rotation,
-    )
-    if (!det) return null
-    return {
+    ).map((det) => ({
       quad: det.quad as Quad,
       box: det.box,
       confidence: det.confidence,
       visibility: det.visibility,
-    }
+    }))
   }
 
   dispose(): void {

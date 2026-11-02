@@ -39,6 +39,8 @@ import type { Quad } from '@astarworks/scan-core'
 import {
   ModelCadence,
   OrientationPicker,
+  SpreadPicker,
+  boxIou,
   detectPageCorners,
   type CornerRefineResult,
   type PixelBox,
@@ -88,6 +90,58 @@ const picker = new OrientationPicker()
  *  (scan-core `model-cadence.ts`). */
 const cadence = new ModelCadence()
 
+/** Which page of an open book to follow (scan-core `spread-pick.ts`). */
+const spread = new SpreadPicker()
+
+/** Size of the last tracked (video) frame, to map the followed box onto
+ *  a still of another resolution. */
+let lastFrameSize: { w: number; h: number } | null = null
+
+/** Candidate of a still that is the page being followed (best overlap
+ *  with the followed box scaled to the still), else the best one. */
+function followedIn(
+  all: readonly { box: PixelBox }[],
+  frame: { width: number; height: number },
+): number {
+  if (!all.length) return -1
+  const cur = spread.current
+  if (!cur || !lastFrameSize) return 0
+  const sx = frame.width / lastFrameSize.w
+  const sy = frame.height / lastFrameSize.h
+  const want: PixelBox = {
+    x0: cur.x0 * sx,
+    y0: cur.y0 * sy,
+    x1: cur.x1 * sx,
+    y1: cur.y1 * sy,
+  }
+  let best = 0
+  let bestIou = -1
+  all.forEach((c, i) => {
+    const v = boxIou(c.box, want)
+    if (v > bestIou) {
+      bestIou = v
+      best = i
+    }
+  })
+  return best
+}
+
+/** A ✓ on the page being followed: move to the other page of a spread. */
+export function notifyPageCaptured(): void {
+  spread.onCaptured()
+}
+
+/** The live judge saw a new picture: after a finished spread, go left. */
+export function notifyNewHold(): void {
+  spread.onNewHold()
+}
+
+/** New scan: forget the followed page. */
+export function resetPageTracking(): void {
+  spread.reset()
+  cadence.reset()
+}
+
 async function ensureMlBackend(): Promise<void> {
   if (!ENABLE_ML_DETECTOR) return
   if (mlState.kind === 'ready' || mlState.kind === 'unavailable') return
@@ -117,16 +171,30 @@ async function ensureMlBackend(): Promise<void> {
  */
 export async function detectDocument(
   frame: HTMLCanvasElement,
+  opts: {
+    /** A still taken at a ✓: crop the page being followed, and leave the
+     *  frame-to-frame tracking alone. */
+    still?: boolean
+  } = {},
 ): Promise<DocDetection | null> {
+  const still = opts.still === true
   if (ENABLE_ML_DETECTOR) {
     await ensureMlBackend()
     if (mlState.kind === 'ready') {
       try {
         // Between model runs: snap onto the paper edge inside the last
         // model box. A failed snap hands the frame to the model.
-        const anchor = cadence.anchorFor(frame.width, frame.height)
+        const anchor =
+          still || spread.wantsModel
+            ? null
+            : cadence.anchorFor(frame.width, frame.height)
         if (anchor) {
-          const snap = refineCorners(frame, anchor.quad, anchor.box)
+          const snap = refineCorners(
+            frame,
+            anchor.quad,
+            anchor.box,
+            anchor.exclude,
+          )
           if (snap?.refined) {
             cadence.snapped(snap.quad)
             return {
@@ -143,18 +211,46 @@ export async function detectDocument(
         // which shrink inside the page, onto the paper edge found inside
         // the model's box (scan-core corner-refine / orientation).
         const backend = mlState.backend
+        // Boxes of the pages not chosen in the turn just run; `refine`
+        // runs right after `run` for the same turn.
+        let others: PixelBox[] = []
+        const othersByBox = new Map<PixelBox, PixelBox[]>()
         const found = await detectPageCorners(
           frame,
-          (turn) => backend.detect(frame, turn),
-          (quad, box) => refineCorners(frame, quad, box),
+          async (turn) => {
+            const all = await backend.detectAll(frame, turn)
+            const i = still
+              ? followedIn(all, frame)
+              : spread.choose(all, frame.width, frame.height)
+            const chosen = all[i]
+            if (!chosen) return null
+            others = all.filter((_, k) => k !== i).map((c) => c.box)
+            othersByBox.set(chosen.box, others)
+            return chosen
+          },
+          (quad, box) => refineCorners(frame, quad, box, others),
           picker,
         )
         const result = found?.detection
+        if (still) {
+          return found && result && result.confidence >= ML_MIN_CONFIDENCE
+            ? {
+                quad: found.refine.quad,
+                confidence: result.confidence,
+                source: 'yolo-pose',
+                boxAgreement: found.refine.boxAgreement,
+                refined: found.refine.refined,
+              }
+            : null
+        }
+        if (found) lastFrameSize = { w: frame.width, h: frame.height }
         if (found && result && result.confidence >= ML_MIN_CONFIDENCE) {
+          spread.commit(result.box)
           cadence.modelRan({
             box: result.box,
             quad: found.refine.quad,
             confidence: result.confidence,
+            exclude: othersByBox.get(result.box) ?? [],
             frameW: frame.width,
             frameH: frame.height,
           })
@@ -194,6 +290,7 @@ function refineCorners(
   frame: HTMLCanvasElement,
   quad: Quad,
   box: PixelBox,
+  exclude: readonly PixelBox[] = [],
 ): CornerRefineResult | null {
   const ops = getPipelineOps()
   if (!ops) return null
@@ -202,6 +299,8 @@ function refineCorners(
       frame as unknown as Parameters<typeof ops.refineCorners>[0],
       quad,
       box,
+      {},
+      exclude,
     )
   } catch (err) {
     console.warn('[doc-detector] corner refine threw, using model corners', err)

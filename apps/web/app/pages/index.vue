@@ -49,6 +49,7 @@ import {
   type LiveCaptureEvent,
   type LiveFrame,
   type LivePageSpan,
+  type OrbResult,
   type SegmentCluster,
   type SegmentHooks,
 } from '@astarworks/scan-core/pipeline'
@@ -57,6 +58,9 @@ import {
   detectDocument,
   ensureDocDetector,
   getDetectorSource,
+  notifyNewHold,
+  notifyPageCaptured,
+  resetPageTracking,
 } from '~/services/doc-detector'
 import { rotateAndCropQuad } from '~/services/rotate-crop'
 import { downscaleToLongSide } from '~/services/canvas-helpers'
@@ -375,8 +379,66 @@ function thumbOf(canvas: HTMLCanvasElement): string {
   return downscaleToLongSide(canvas, 120).toDataURL('image/jpeg', 0.6)
 }
 
+/**
+ * Same page or not, by ORB inliers between the two warped pages (scan-core
+ * `orb.ts`). The live judge's pHash cannot tell typeset book pages apart;
+ * ORB can (book-clip frames warped to 400 px: same page ≥ 15 inliers in
+ * 95 %, different pages ≤ 8). Null (pHash decides) when OpenCV is not
+ * loaded or a page has no features.
+ */
+const ORB_SAME_PAGE_MIN_INLIERS = 12
+const ORB_LONG_SIDE = 400
+const ORB_CACHE_MAX = 16
+const orbCache = new Map<HTMLCanvasElement, OrbResult | null>()
+
+function orbOf(canvas: HTMLCanvasElement): OrbResult | null {
+  if (orbCache.has(canvas)) return orbCache.get(canvas) ?? null
+  const ops = getPipelineOps()
+  if (!ops) return null
+  const r = ops.computeOrbDescriptors(
+    downscaleToLongSide(canvas, ORB_LONG_SIDE) as unknown as CanvasLike,
+  )
+  orbCache.set(canvas, r)
+  while (orbCache.size > ORB_CACHE_MAX) {
+    const [k, v] = orbCache.entries().next().value!
+    v?.descriptors.delete()
+    orbCache.delete(k)
+  }
+  return r
+}
+
+function clearOrbCache(): void {
+  for (const v of orbCache.values()) v?.descriptors.delete()
+  orbCache.clear()
+}
+
+function orbSamePage(
+  a: LiveFrame<LiveFrameData>,
+  b: LiveFrame<LiveFrameData>,
+): boolean | null {
+  const ops = getPipelineOps()
+  const wa = a.data.warped
+  const wb = b.data.warped
+  if (!ops || !wa || !wb) return null
+  if (wa === wb) return true
+  try {
+    const ra = orbOf(wa)
+    const rb = orbOf(wb)
+    if (!ra || !rb) return null
+    const { inliers } = ops.countOrbMatches(ra, rb)
+    probe({ type: 'orb', a: a.data.idx, b: b.data.idx, inliers })
+    return inliers >= ORB_SAME_PAGE_MIN_INLIERS
+  } catch (err) {
+    console.warn('[live] ORB compare failed, using pHash', err)
+    return null
+  }
+}
+
 function startLive(track: MediaStreamTrack | undefined): void {
-  judge = new LiveCaptureJudge<LiveFrameData>()
+  clearOrbCache()
+  resetPageTracking()
+  lastHoldId = 0
+  judge = new LiveCaptureJudge<LiveFrameData>({}, orbSamePage)
   stillCapturer = createStillCapturer(track)
   lastJudgeT = 0
   pendingShots = []
@@ -415,7 +477,14 @@ async function endLive(): Promise<void> {
   pendingShots = []
 }
 
+/** Latest hold the judge reported (a new id = the picture changed). */
+let lastHoldId = 0
+
 function onLiveEvent(e: LiveCaptureEvent<LiveFrameData>): void {
+  if (e.holdId !== lastHoldId && e.type !== 'missed') {
+    lastHoldId = e.holdId
+    notifyNewHold()
+  }
   switch (e.type) {
     case 'hold':
       liveProgress.value = e.progress
@@ -445,6 +514,9 @@ function onLiveEvent(e: LiveCaptureEvent<LiveFrameData>): void {
       if (target !== null) retakeTarget.value = null
       const p = takeShot(warped).then(async (shot) => {
         probe({ type: 'shot', pageNo: e.pageNo, source: shot.source })
+        // After the still is cropped (it must show this page): on an open
+        // book, move to the other page of the spread.
+        notifyPageCaptured()
         if (target !== null) {
           await finishRetake(target, shot)
         } else {
@@ -485,8 +557,9 @@ function quadLongEdge(q: Quad): number {
 let detectChain: Promise<unknown> = Promise.resolve()
 function detectSerial(
   canvas: HTMLCanvasElement,
+  opts: { still?: boolean } = {},
 ): ReturnType<typeof detectDocument> {
-  const next = detectChain.then(() => detectDocument(canvas))
+  const next = detectChain.then(() => detectDocument(canvas, opts))
   detectChain = next.catch(() => null)
   return next
 }
@@ -503,7 +576,7 @@ async function takeShot(videoWarped: HTMLCanvasElement): Promise<LiveShot> {
       // Detect on a reduced copy (detector input is small anyway), then
       // crop the full-resolution still with the scaled-up quad.
       const small = downscaleToLongSide(full, 1280)
-      const det = await detectSerial(small)
+      const det = await detectSerial(small, { still: true })
       if (
         det &&
         judge &&

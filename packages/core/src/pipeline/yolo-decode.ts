@@ -174,6 +174,66 @@ export function decodeYoloOutput(
     }
   }
   if (bestA < 0) return null
+  return decodeAnchor(data, anchors, bestA, scale, padX, padY, rotation)
+}
+
+/**
+ * Every page the model found, best first: anchors at or above `minConf`,
+ * greedy NMS on the boxes (IoU above `nmsIou` = same page), at most
+ * `maxDet`. On an open book the two pages come back as the top two
+ * (book clips: 0.64–0.88 each), which `decodeYoloOutput` reduces to
+ * whichever wins the frame — the reason a spread flickered between pages.
+ */
+export function decodeYoloCandidates(
+  data: Float32Array | ArrayLike<number>,
+  channels: number,
+  anchors: number,
+  scale: number,
+  padX: number,
+  padY: number,
+  rotation: YoloRotation | null = null,
+  opts: { minConf?: number; nmsIou?: number; maxDet?: number } = {},
+): YoloDetection[] {
+  if (channels !== YOLO_OUTPUT_CHANNELS || !anchors) return []
+  const minConf = opts.minConf ?? 0.25
+  const nmsIou = opts.nmsIou ?? 0.5
+  const maxDet = opts.maxDet ?? 3
+  const classOffset = 4 * anchors
+  const idx: number[] = []
+  for (let a = 0; a < anchors; a += 1)
+    if ((data[classOffset + a] ?? 0) >= minConf) idx.push(a)
+  idx.sort((p, q) => (data[classOffset + q] ?? 0) - (data[classOffset + p] ?? 0))
+  const kept: YoloDetection[] = []
+  for (const a of idx) {
+    if (kept.length >= maxDet) break
+    const d = decodeAnchor(data, anchors, a, scale, padX, padY, rotation)
+    if (kept.every((k) => boxIou(k.box, d.box) <= nmsIou)) kept.push(d)
+  }
+  return kept
+}
+
+/** Intersection over union of two boxes (0 when either is empty). */
+export function boxIou(a: PixelBox, b: PixelBox): number {
+  const iw = Math.max(0, Math.min(a.x1, b.x1) - Math.max(a.x0, b.x0))
+  const ih = Math.max(0, Math.min(a.y1, b.y1) - Math.max(a.y0, b.y0))
+  const inter = iw * ih
+  const ua =
+    Math.max(0, a.x1 - a.x0) * Math.max(0, a.y1 - a.y0) +
+    Math.max(0, b.x1 - b.x0) * Math.max(0, b.y1 - b.y0) -
+    inter
+  return ua > 0 ? inter / ua : 0
+}
+
+function decodeAnchor(
+  data: Float32Array | ArrayLike<number>,
+  anchors: number,
+  bestA: number,
+  scale: number,
+  padX: number,
+  padY: number,
+  rotation: YoloRotation | null,
+): YoloDetection {
+  const bestConf = data[4 * anchors + bestA] ?? 0
   // Input space (0..640) → model-view pixels → source pixels. When the
   // view was turned clockwise, view (xv, yv) is source (yv, srcH - xv);
   // counter-clockwise, source (srcW - yv, xv).

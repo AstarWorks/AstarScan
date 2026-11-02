@@ -170,6 +170,11 @@ export interface CornerRefineOps {
     quad: Quad,
     box: PixelBox,
     opts?: Partial<CornerRefineOptions>,
+    /** Other pages the model found (e.g. the facing page of an open
+     *  book). Blacked out in the search window outside `box`, so the
+     *  paper found is this page only — without it the window around one
+     *  page of a spread holds both and the snap fails. */
+    exclude?: readonly PixelBox[],
   ): CornerRefineResult
 }
 
@@ -270,7 +275,7 @@ export function createCornerRefiner({
   }
 
   return {
-    refineCorners(frame, quad, box, opts = {}) {
+    refineCorners(frame, quad, box, opts = {}, exclude = []) {
       const o = { ...CORNER_REFINE_DEFAULTS, ...opts }
       const keep: CornerRefineResult = {
         quad,
@@ -300,6 +305,34 @@ export function createCornerRefiner({
           const ctx = canvas.getContext('2d', { willReadFrequently: true })
           if (!ctx) return null
           ctx.drawImage(frame, win.x0, win.y0, ww, wh, 0, 0, cw, ch)
+          if (exclude.length) {
+            const toWin = (b: PixelBox) => ({
+              x0: Math.max(0, (b.x0 - win.x0) * s),
+              y0: Math.max(0, (b.y0 - win.y0) * s),
+              x1: Math.min(cw, (b.x1 - win.x0) * s),
+              y1: Math.min(ch, (b.y1 - win.y0) * s),
+            })
+            ctx.fillStyle = '#000'
+            for (const ex of exclude) {
+              const r = toWin(ex)
+              if (r.x1 > r.x0 && r.y1 > r.y0)
+                ctx.fillRect(r.x0, r.y0, r.x1 - r.x0, r.y1 - r.y0)
+            }
+            // Put this page's own box back where the boxes overlap.
+            const own = toWin(box)
+            if (own.x1 > own.x0 && own.y1 > own.y0)
+              ctx.drawImage(
+                frame,
+                win.x0 + own.x0 / s,
+                win.y0 + own.y0 / s,
+                (own.x1 - own.x0) / s,
+                (own.y1 - own.y0) / s,
+                own.x0,
+                own.y0,
+                own.x1 - own.x0,
+                own.y1 - own.y0,
+              )
+          }
           const found = findPaper(canvas, o.maxAreaOfWindow * cw * ch, level)
           if (!found || found.corners.length !== 4) return null
           // The paper runs into a window edge that is not the frame edge:
