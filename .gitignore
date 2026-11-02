@@ -82,6 +82,8 @@ apps/web/public/fonts/*.ttf
 *.mov
 # …except the small synthetic eval clips (≤ 8 MB each, see scripts/eval/book-clips/README.md)
 !scripts/eval/book-clips/clips/*.mp4
+# Screen recording of the book-clip check (5 MB, PR evidence).
+!docs/images/book-eval/*.mp4
 
 # Tauri
 src-tauri/target/

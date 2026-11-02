@@ -49,6 +49,7 @@ import {
   type LiveCaptureEvent,
   type LiveFrame,
   type LivePageSpan,
+  type OrbResult,
   type SegmentCluster,
   type SegmentHooks,
 } from '@astarworks/scan-core/pipeline'
@@ -57,6 +58,9 @@ import {
   detectDocument,
   ensureDocDetector,
   getDetectorSource,
+  notifyNewHold,
+  notifyPageCaptured,
+  resetPageTracking,
 } from '~/services/doc-detector'
 import { rotateAndCropQuad } from '~/services/rotate-crop'
 import { downscaleToLongSide } from '~/services/canvas-helpers'
@@ -282,6 +286,38 @@ interface LiveShot {
   source: 'photo' | 'video'
 }
 
+/**
+ * Eval hook: when a test harness defines `window.__astarProbe`, the scan
+ * reports each sampled frame's quad, every ✓ / miss and the saved pages'
+ * origins to it (scripts/eval/book-clips/book-e2e.mjs). No-op otherwise.
+ */
+function probe(ev: Record<string, unknown>): void {
+  const fn = (globalThis as { __astarProbe?: (e: unknown) => void })
+    .__astarProbe
+  if (!fn) return
+  try {
+    fn({ ...ev, wall: performance.now() })
+  } catch {
+    /* harness errors never reach the scan */
+  }
+}
+
+/** 32×18 grey thumbnail of a frame, so the eval harness can tell which
+ *  clip frame the fake camera delivered. Only computed for the probe. */
+function frameSignature(src: HTMLCanvasElement): number[] {
+  const c = document.createElement('canvas')
+  c.width = 32
+  c.height = 18
+  const ctx = c.getContext('2d', { willReadFrequently: true })
+  if (!ctx) return []
+  ctx.drawImage(src, 0, 0, 32, 18)
+  const d = ctx.getImageData(0, 0, 32, 18).data
+  const out: number[] = []
+  for (let i = 0; i < d.length; i += 4)
+    out.push(Math.round(0.299 * d[i]! + 0.587 * d[i + 1]! + 0.114 * d[i + 2]!))
+  return out
+}
+
 type LiveSignal = 'none' | 'hold' | 'captured' | 'missed'
 
 interface StripChip {
@@ -343,8 +379,66 @@ function thumbOf(canvas: HTMLCanvasElement): string {
   return downscaleToLongSide(canvas, 120).toDataURL('image/jpeg', 0.6)
 }
 
+/**
+ * Same page or not, by ORB inliers between the two warped pages (scan-core
+ * `orb.ts`). The live judge's pHash cannot tell typeset book pages apart;
+ * ORB can (book-clip frames warped to 400 px: same page ≥ 15 inliers in
+ * 95 %, different pages ≤ 8). Null (pHash decides) when OpenCV is not
+ * loaded or a page has no features.
+ */
+const ORB_SAME_PAGE_MIN_INLIERS = 12
+const ORB_LONG_SIDE = 400
+const ORB_CACHE_MAX = 16
+const orbCache = new Map<HTMLCanvasElement, OrbResult | null>()
+
+function orbOf(canvas: HTMLCanvasElement): OrbResult | null {
+  if (orbCache.has(canvas)) return orbCache.get(canvas) ?? null
+  const ops = getPipelineOps()
+  if (!ops) return null
+  const r = ops.computeOrbDescriptors(
+    downscaleToLongSide(canvas, ORB_LONG_SIDE) as unknown as CanvasLike,
+  )
+  orbCache.set(canvas, r)
+  while (orbCache.size > ORB_CACHE_MAX) {
+    const [k, v] = orbCache.entries().next().value!
+    v?.descriptors.delete()
+    orbCache.delete(k)
+  }
+  return r
+}
+
+function clearOrbCache(): void {
+  for (const v of orbCache.values()) v?.descriptors.delete()
+  orbCache.clear()
+}
+
+function orbSamePage(
+  a: LiveFrame<LiveFrameData>,
+  b: LiveFrame<LiveFrameData>,
+): boolean | null {
+  const ops = getPipelineOps()
+  const wa = a.data.warped
+  const wb = b.data.warped
+  if (!ops || !wa || !wb) return null
+  if (wa === wb) return true
+  try {
+    const ra = orbOf(wa)
+    const rb = orbOf(wb)
+    if (!ra || !rb) return null
+    const { inliers } = ops.countOrbMatches(ra, rb)
+    probe({ type: 'orb', a: a.data.idx, b: b.data.idx, inliers })
+    return inliers >= ORB_SAME_PAGE_MIN_INLIERS
+  } catch (err) {
+    console.warn('[live] ORB compare failed, using pHash', err)
+    return null
+  }
+}
+
 function startLive(track: MediaStreamTrack | undefined): void {
-  judge = new LiveCaptureJudge<LiveFrameData>()
+  clearOrbCache()
+  resetPageTracking()
+  lastHoldId = 0
+  judge = new LiveCaptureJudge<LiveFrameData>({}, orbSamePage)
   stillCapturer = createStillCapturer(track)
   lastJudgeT = 0
   pendingShots = []
@@ -383,13 +477,28 @@ async function endLive(): Promise<void> {
   pendingShots = []
 }
 
+/** Latest hold the judge reported (a new id = the picture changed). */
+let lastHoldId = 0
+
 function onLiveEvent(e: LiveCaptureEvent<LiveFrameData>): void {
+  if (e.holdId !== lastHoldId && e.type !== 'missed') {
+    lastHoldId = e.holdId
+    notifyNewHold()
+  }
   switch (e.type) {
     case 'hold':
       liveProgress.value = e.progress
       setSignal('hold')
       break
     case 'captured': {
+      probe({
+        type: 'captured',
+        pageNo: e.pageNo,
+        bestT: e.best.t,
+        bestIdx: e.best.data.idx,
+        quad: e.best.quad,
+        t: e.t,
+      })
       liveProgress.value = 1
       setSignal('captured', 700)
       vibrateCaptured()
@@ -404,6 +513,10 @@ function onLiveEvent(e: LiveCaptureEvent<LiveFrameData>): void {
       // A retake ends at its first ✓.
       if (target !== null) retakeTarget.value = null
       const p = takeShot(warped).then(async (shot) => {
+        probe({ type: 'shot', pageNo: e.pageNo, source: shot.source })
+        // After the still is cropped (it must show this page): on an open
+        // book, move to the other page of the spread.
+        notifyPageCaptured()
         if (target !== null) {
           await finishRetake(target, shot)
         } else {
@@ -416,6 +529,7 @@ function onLiveEvent(e: LiveCaptureEvent<LiveFrameData>): void {
       break
     }
     case 'missed': {
+      probe({ type: 'missed', startT: e.startT, endT: e.endT, t: e.t })
       setSignal('missed', 1500)
       const warped = e.best.data.warped
       const thumb = warped ? thumbOf(warped) : ''
@@ -443,8 +557,9 @@ function quadLongEdge(q: Quad): number {
 let detectChain: Promise<unknown> = Promise.resolve()
 function detectSerial(
   canvas: HTMLCanvasElement,
+  opts: { still?: boolean } = {},
 ): ReturnType<typeof detectDocument> {
-  const next = detectChain.then(() => detectDocument(canvas))
+  const next = detectChain.then(() => detectDocument(canvas, opts))
   detectChain = next.catch(() => null)
   return next
 }
@@ -461,7 +576,7 @@ async function takeShot(videoWarped: HTMLCanvasElement): Promise<LiveShot> {
       // Detect on a reduced copy (detector input is small anyway), then
       // crop the full-resolution still with the scaled-up quad.
       const small = downscaleToLongSide(full, 1280)
-      const det = await detectSerial(small)
+      const det = await detectSerial(small, { still: true })
       if (
         det &&
         judge &&
@@ -475,6 +590,15 @@ async function takeShot(videoWarped: HTMLCanvasElement): Promise<LiveShot> {
           full.width,
           full.height,
         )
+        probe({
+          type: 'photo',
+          quad,
+          w: full.width,
+          h: full.height,
+          sig: (globalThis as { __astarProbe?: unknown }).__astarProbe
+            ? frameSignature(full)
+            : null,
+        })
         const warped = rotateAndCropQuad(
           full,
           quad,
@@ -1178,7 +1302,22 @@ async function processFrame(
   work.height = video.videoHeight
   work.getContext('2d', { willReadFrequently: true })?.drawImage(video, 0, 0)
 
+  const detectStart = performance.now()
   const detection = await detectSerial(work)
+  probe({
+    type: 'frame',
+    idx,
+    t: opts.t,
+    detectMs: Math.round(performance.now() - detectStart),
+    w: work.width,
+    h: work.height,
+    quad: detection?.quad ?? null,
+    confidence: detection?.confidence ?? 0,
+    boxAgreement: detection?.boxAgreement ?? null,
+    sig: (globalThis as { __astarProbe?: unknown }).__astarProbe
+      ? frameSignature(work)
+      : null,
+  })
   const liveBase = {
     t: opts.t,
     frameW: work.width,
@@ -1250,6 +1389,12 @@ async function processFrame(
   const ten = computeTenengrad(warped)
   const areaFrac = quadArea(detection.quad) / (work.width * work.height)
   const score = combinedScore(lap, ten, detection.confidence, areaFrac)
+  probe({
+    type: 'hash',
+    idx,
+    hash: hash.toString(16),
+    tile: tileHash.map((h) => h.toString(16)),
+  })
 
   // Live ✓ / miss judgment sees every detected frame — no blur gate.
   feedLive({
@@ -1744,6 +1889,7 @@ async function startCamera(retakeOf?: number): Promise<void> {
       if (now - lastSampleT >= SAMPLE_INTERVAL_S * 1000) {
         lastSampleT = now
         await processFrame(video, { t: (now - t0) / 1000, collect: !retaking })
+        probe({ type: 'frameDone', ms: Math.round(performance.now() - now) })
       }
       video.requestVideoFrameCallback(loop)
     }
@@ -1783,6 +1929,16 @@ async function stopCamera(): Promise<void> {
   await endLive()
   statusText.value = `選抜中… (候補 ${acceptedRecords.length})`
   await finalizeScan({ enableLlm: false })
+  probe({
+    type: 'pages',
+    pages: captured.value.map((p) => ({
+      id: p.id,
+      livePageNo: p.livePageNo ?? null,
+      clusterKey: p.clusterKey ?? null,
+      width: p.width,
+      height: p.height,
+    })),
+  })
 
   phase.value =
     captured.value.length > 0 || reportView.value.length > 0 ? 'done' : 'idle'
