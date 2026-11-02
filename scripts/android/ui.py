@@ -8,6 +8,9 @@
     python3 ui.py kind <dump.xml>
         Print what screen the dump shows (scanner-adjust-corners,
         app-list, ...).
+    python3 ui.py shutter <dump.xml>
+        Print "x y" of ML Kit's shutter button (by name, else the lowest
+        clickable node at the bottom centre); exit 1 when none.
 """
 
 import re
@@ -70,10 +73,43 @@ def kind(path):
     return "other-" + (sorted(pkgs)[0].split(".")[-1] if pkgs else "unknown")
 
 
+def shutter(path):
+    """Centre of ML Kit's shutter button: a node named like a shutter, else
+    the lowest clickable Play-services node near the bottom centre (the
+    round capture button), never the gallery / flash / close buttons."""
+    ns = [n for n in nodes(path) if "com.google.android.gms" in (n.get("package") or "")]
+    named = re.compile(r"shutter|capture|take.?photo|撮影|シャッター", re.I)
+    skip = re.compile(r"gallery|flash|close|back|auto|done|navigate|thumbnail", re.I)
+    for n in ns:
+        label = " ".join(n.get(k) or "" for k in ("resource-id", "content-desc", "text"))
+        if named.search(label) and not skip.search(label) and centre(n.get("bounds")):
+            return centre(n.get("bounds")), label
+    xs = [int(m.group(1)) for n in ns if (m := re.search(r"\]\[(\d+),", n.get("bounds") or ""))]
+    width = max(xs) if xs else 1080
+    best = None
+    for n in ns:
+        c = centre(n.get("bounds"))
+        label = " ".join(n.get(k) or "" for k in ("resource-id", "content-desc", "text"))
+        if not c or n.get("clickable") != "true" or skip.search(label):
+            continue
+        if abs(c[0] - width / 2) > width * 0.15:
+            continue
+        if best is None or c[1] > best[0][1]:
+            best = (c, label)
+    return best
+
+
 def main():
     cmd, path = sys.argv[1], sys.argv[2]
     if cmd == "kind":
         print(kind(path))
+        return 0
+    if cmd == "shutter":
+        s = shutter(path)
+        if not s:
+            return 1
+        print(s[0][0], s[0][1])
+        print(f"shutter: {s[1]!r}", file=sys.stderr)
         return 0
     if cmd == "list":
         for n in nodes(path):

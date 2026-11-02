@@ -391,5 +391,8 @@ jobs:
           if [ -f emulator-out/book-eval-recording.mp4 ]; then
             gh release upload "$TAG" emulator-out/book-eval-recording.mp4 --clobber
           fi
-          (cd emulator-out && zip -q -r ../emulator-check.zip . -x book-eval-recording.mp4)
+          # zip exits 18 when a file vanished while zipping (a cancelled run
+          # leaves half-written tmp files); the rest is still worth having.
+          rm -f emulator-out/tmp.png emulator-out/ui.xml
+          (cd emulator-out && zip -q -r ../emulator-check.zip . -x book-eval-recording.mp4) || [ $? -eq 18 ]
           gh release upload "$TAG" emulator-check.zip --clobber

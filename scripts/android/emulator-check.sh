@@ -64,7 +64,32 @@ shot() {
   SHOT=$(printf '%03d-%s%s' "$n" "$k" "${1:+-$1}")
   mv "$OUT/tmp.png" "$OUT/$SHOT.png"
   [ -f "$OUT/ui.xml" ] && cp "$OUT/ui.xml" "$OUT/$SHOT.xml" && python3 "$HERE/ui.py" list "$OUT/$SHOT.xml" >"$OUT/$SHOT.txt"
-  log "shot $SHOT"
+  log "shot $SHOT ($(preview_stats "$OUT/$SHOT.png"))"
+}
+
+# Brightness of the middle of a screenshot (the camera preview area), so
+# the job log alone tells a black / frozen preview from a live one.
+preview_stats() {
+  python3 - "$1" <<'PY' 2>/dev/null || echo "stats n/a"
+import sys
+import cv2
+im = cv2.imread(sys.argv[1], cv2.IMREAD_GRAYSCALE)
+h, w = im.shape
+c = im[h // 5 : h * 3 // 4, w // 8 : w * 7 // 8]
+print(f"centre mean {c.mean():.0f} std {c.std():.0f}")
+PY
+}
+
+# Once per run: what the camera screen offers and what the camera stack
+# says, printed to the job log (the artifact is not always reachable).
+DIAG=0
+diag() {
+  [ $DIAG = 1 ] && return
+  DIAG=1
+  log "camera screen nodes:"
+  python3 "$HERE/ui.py" list "$OUT/ui.xml" | tee -a "$OUT/steps.log"
+  log "camera logcat:"
+  adb logcat -d 2>/dev/null | grep -iE 'camera|docscan|webcam|v4l2' | tail -40 | tee -a "$OUT/steps.log"
 }
 
 has() { python3 "$HERE/ui.py" find "$OUT/ui.xml" "$1" "${2:-}" >/dev/null; }
@@ -80,7 +105,7 @@ DOCSCAN=com.google.android.gms.optional_mlkit_docscan_ui:id
 
 log "webcams seen by the emulator:"
 "${ANDROID_SDK_ROOT:-/usr/local/lib/android/sdk}/emulator/emulator" -webcam-list 2>&1 | tee -a "$OUT/steps.log"
-adb shell dumpsys media.camera 2>/dev/null | grep -iE 'Camera [0-9]|facing|webcam|qemu|SCALER_AVAILABLE_STREAM|availableStreamConfigurations' | head -20 >>"$OUT/steps.log"
+adb shell dumpsys media.camera 2>/dev/null | grep -iE 'Camera [0-9]|facing|webcam|qemu|SCALER_AVAILABLE_STREAM|availableStreamConfigurations' | head -20 | tee -a "$OUT/steps.log"
 
 log "install"
 adb install -r "$APK" 2>&1 | tee -a "$OUT/steps.log"
@@ -112,6 +137,8 @@ to_start() {
     case $(kind) in
       app-start) return 0 ;;
       dialog-full-screen) tap_now '^Got it$' ;;
+      # "Discard this scan?" left over from an abandoned clip.
+      scanner-dialog) tap_now '^(Discard|Delete|破棄|削除)' "$GMS" || adb shell input keyevent KEYCODE_BACK ;;
       app-list | app-list-empty) tap_now '^すべて削除$' "$PKG" ;;
       scanner-*) adb shell input keyevent KEYCODE_BACK ;;
       *) adb shell monkey -p "$PKG" -c android.intent.category.LAUNCHER 1 >/dev/null ;;
@@ -135,11 +162,11 @@ scan_clip() {
   local clip=$1
   shift
   local plan=("$@")
-  local want=${#plan[@]} m=0 adj=0 cam_shot=-1 cam_since=$SECONDS opens=0 saved=0
+  local want=${#plan[@]} m=0 adj=0 cam_shot=-1 cam_since=$SECONDS opens=0 saved=0 presses=0
   log "=== $clip: capture holds ${plan[*]}"
   feed "$clip" "${plan[0]}"
   to_start || log "could not get back to the start screen"
-  local end=$((SECONDS + 1200))
+  local end=$((SECONDS + 600))
   while [ $SECONDS -lt $end ]; do
     dump
     case $(kind) in
@@ -210,11 +237,27 @@ scan_clip() {
         if [ "$cam_shot" != "$m" ] && [ $((SECONDS - cam_since)) -ge 2 ]; then
           shot "$clip-c$m-camera"
           cam_shot=$m
-        elif [ $((SECONDS - cam_since)) -gt 60 ]; then
-          # No auto-capture within a minute: press the shutter (manual).
+          presses=0
+          diag
+        elif [ $((SECONDS - cam_since)) -gt 25 ]; then
+          # No auto-capture within 25 s: press the shutter (manual). Give
+          # the clip up after a few presses that took nothing, so one
+          # stuck clip cannot eat the whole job.
+          presses=$((presses + 1))
           shot "$clip-c$m-no-autocapture"
-          log "$clip c$m: no auto-capture in 60 s, pressing the shutter"
-          if has '(shutter|Take photo|Capture)' "$GMS"; then tap_now '(shutter|Take photo|Capture)' "$GMS"; else adb shell input tap 540 2005; fi
+          if [ "$presses" -gt 3 ]; then
+            log "$clip c$m: nothing captured after 3 shutter presses, giving the clip up"
+            break
+          fi
+          local p
+          if p=$(python3 "$HERE/ui.py" shutter "$OUT/ui.xml" 2>>"$OUT/steps.log"); then
+            log "$clip c$m: no auto-capture in 25 s, pressing the shutter at $p ($(tail -n1 "$OUT/steps.log"))"
+            # shellcheck disable=SC2086
+            adb shell input tap $p
+          else
+            log "$clip c$m: no auto-capture in 25 s and no shutter in the dump, tapping 540 2150"
+            adb shell input tap 540 2150
+          fi
           cam_since=$SECONDS
         fi
         sleep 1
