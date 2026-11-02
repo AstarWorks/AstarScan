@@ -190,7 +190,6 @@ class ScannerPlugin(private val activity: Activity) : Plugin(activity) {
                 val band = (h * args.marginFrac.coerceIn(0.02, 0.5)).toInt().coerceAtLeast(1)
                 val up = (args.minWidth.toFloat() / w).coerceIn(1f, 4f)
                 val lines = JSArray()
-                val log = StringBuilder()
                 for (top in listOf(true, false)) {
                     val y0 = if (top) 0 else h - band
                     val strip = Bitmap.createBitmap(page, 0, y0, w, band)
@@ -215,12 +214,11 @@ class ScannerPlugin(private val activity: Activity) : Plugin(activity) {
                                     .put("cy", cy.toDouble())
                                     .put("h", (box.height() / up / h).toDouble()),
                             )
-                            log.append(String.format(Locale.US, "%s@%.2f(%.2f,%.2f) ", line.text.replace('\n', ' '), line.confidence, cx, cy))
                         }
                     }
                 }
                 // One line per page for the emulator check (book-measure.py).
-                Log.i(TAG, "margins ${nameOf(args.uri)} ${w}x$h up=${String.format(Locale.US, "%.2f", up)} | $log")
+                Log.i(TAG, "margins ${nameOf(args.uri)} ${w}x$h up=${String.format(Locale.US, "%.2f", up)} $lines")
                 invoke.resolve(JSObject().put("lines", lines).put("width", w).put("height", h))
             } catch (e: Exception) {
                 Log.e(TAG, "read margins failed", e)

@@ -20,6 +20,13 @@ the n-th capture, i.e. hold plan[n] of captures.tsv, so every row stands
 for the target pages of that hold. A target page counts as shown when a
 row stands for it (撮れた, 重複, 番号を読めず, …) or a red 欠番 range
 covers it; otherwise it is a silent miss ("無表示").
+
+Page numbers: a row's number is right when it equals the truth (one of
+the two numbers of a spread also counts); a 抜け row is false when its
+range contains a page that was captured (a row stands for it). The ML
+Kit lines the app read for every page (pageno.log, "margins" lines after
+each "clip" marker) are written to mlkit-lines.jsonl in the format of
+page-number-ocr.py, so `bun page-number-score.ts` can score them.
 """
 
 import argparse
@@ -299,6 +306,34 @@ def parse_list(xml_paths):
     return out, gaps
 
 
+def number_right(nums, truth):
+    return bool(nums) and bool(truth) and (
+        sorted(nums) == sorted(truth) or (len(nums) == 1 and nums[0] in truth))
+
+
+def mlkit_reads(path):
+    """{clip: [ML Kit lines of the n-th page read]} from pageno.log."""
+    out, clip = {}, None
+    try:
+        with open(path, encoding="utf-8", errors="replace") as f:
+            for line in f:
+                m = re.search(r"AstarScanEval\s*:\s*clip (\S+)", line)
+                if m:
+                    clip = m.group(1)
+                    out.setdefault(clip, [])
+                    continue
+                m = re.search(r"AstarScanMlkit\s*:\s*margins \S+ (\d+)x(\d+) up=\S+ (\[.*\])\s*$", line)
+                if m and clip:
+                    try:
+                        lines = json.loads(m.group(3))
+                    except json.JSONDecodeError:
+                        lines = []
+                    out[clip].append({"w": int(m.group(1)), "h": int(m.group(2)), "lines": lines})
+    except FileNotFoundError:
+        pass
+    return out
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("out")
@@ -315,6 +350,8 @@ def main():
         gts[g["clip"]] = g
 
     results = [measure_capture(a.out, a.clips, r, gts, size) for r in caps if r["clip"] in gts]
+    reads = mlkit_reads(os.path.join(a.out, "pageno.log"))
+    ml_out = open(os.path.join(a.out, "mlkit-lines.jsonl"), "w", encoding="utf-8")
     clips_out = []
     for name in [c for c in dict.fromkeys(r["clip"] for r in caps)] + [g for g in gts if g not in {r["clip"] for r in caps}]:
         g = gts[name]
@@ -327,6 +364,11 @@ def main():
         # Only captures whose scan reached the app become list rows (a scan the
         # scanner lost is on record with kept=0).
         plan_holds = [int(r["hold"]) for r in plan if r["hold"].isdigit() and (r.get("kept") or "1") == "1"]
+        for i, rd in enumerate(reads.get(name, [])):
+            h = plan_holds[i] if i < len(plan_holds) else None
+            truth = hold_pages[h] if h is not None and h < len(hold_pages) else []
+            ml_out.write(json.dumps({"clip": name, "hold": h, "res": "emulator", "decode": "mlkit", "truth": truth,
+                                     "readW": rd["w"], "readH": rd["h"], "lines": rd["lines"]}, ensure_ascii=False) + "\n")
         xmls = sorted(glob.glob(os.path.join(a.out, f"*-{name}-list*.xml")))
         rows, gaps = parse_list(xmls)
         shown = set()
@@ -339,7 +381,7 @@ def main():
             # 番号を読めず …), so the pages of that capture are not silent;
             # a wrong number is counted separately as a misread.
             shown.update(truth)
-            if r["nums"] and truth and sorted(r["nums"]) != sorted(truth):
+            if r["nums"] and truth and not number_right(r["nums"], truth):
                 misread.append({"no": r["no"], "read": r["nums"], "truth": truth})
         red_missing = set()
         for gp in gaps:
@@ -347,11 +389,15 @@ def main():
                 red_missing.update(range(gp["range"][0], gp["range"][1] + 1))
         targets = sorted({p for hp in hold_pages for p in hp})
         silent = [p for p in targets if p not in shown and p not in red_missing]
+        # A 抜け row that claims a captured page is missing.
+        false_gaps = [gp["range"] for gp in gaps if gp["range"]
+                      and any(p in shown for p in range(gp["range"][0], gp["range"][1] + 1))]
         caps_c = [r for r in results if r["clip"] == name]
         errs = [r["best"]["mean_px"] for r in caps_c if r.get("best")]
         clips_out.append({
             "clip": name, "mode": g["mode"], "target_pages": targets, "captures": len(caps_c),
-            "rows": rows, "gaps": gaps, "silent_missing": silent, "misread": misread,
+            "rows": rows, "gaps": gaps, "silent_missing": silent, "misread": misread, "false_gaps": false_gaps,
+            "right_numbers": sum(1 for r in rows if number_right(r["nums"], r.get("truth"))),
             "red_missing": sorted(red_missing),
             "ok_rows": sum(1 for r in rows if r["state"] == "ok"),
             "dup_rows": sum(1 for r in rows if r["state"] == "duplicate" or r["kind"] == "重複候補"),
@@ -365,22 +411,27 @@ def main():
     with open(os.path.join(a.out, "measure.json"), "w") as f:
         json.dump({"captures": results, "clips": clips_out}, f, ensure_ascii=False, indent=1)
 
-    md = ["| clip | target pages | captures | pages inside ML Kit frames | frame matched (spread/left/right) | corner err mean / max (clip px) | list rows ok / 重複 / 番号読めず | red 欠番 | misread | silent misses (無表示) |",
-          "| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |"]
-    tot = {"t": 0, "inf": 0, "silent": 0, "caps": 0}
+    ml_out.close()
+    md = ["| clip | target pages | captures | pages inside ML Kit frames | frame matched (spread/left/right) | corner err mean / max (clip px) | list rows ok / 重複 / 番号読めず | numbers right / wrong | red 欠番 | false 抜け | silent misses (無表示) |",
+          "| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |"]
+    tot = {"t": 0, "inf": 0, "silent": 0, "caps": 0, "right": 0, "wrong": 0, "false": 0}
     for c in clips_out:
         ft = c["frame_targets"]
         md.append(f"| {c['clip']} | {len(c['target_pages'])} | {c['captures']} | {len(c['pages_in_frames'])} | "
                   f"{ft['spread']}/{ft['left']}/{ft['right']} | {c['corner_mean_px']} / {c['corner_max_px']} | "
-                  f"{c['ok_rows']} / {c['dup_rows']} / {c['unread_rows']} | {c['red_missing'] or '-'} | {len(c['misread'])} | "
-                  f"{c['silent_missing'] or 0} |")
+                  f"{c['ok_rows']} / {c['dup_rows']} / {c['unread_rows']} | {c['right_numbers']} / {len(c['misread'])} | "
+                  f"{c['red_missing'] or '-'} | {c['false_gaps'] or 0} | {c['silent_missing'] or 0} |")
+        tot["right"] += c["right_numbers"]
+        tot["wrong"] += len(c["misread"])
+        tot["false"] += len(c["false_gaps"])
         tot["t"] += len(c["target_pages"])
         tot["inf"] += len(c["pages_in_frames"])
         tot["silent"] += len(c["silent_missing"])
         tot["caps"] += c["captures"]
     md.append("")
     md.append(f"Total: {tot['t']} target pages, {tot['caps']} captures, {tot['inf']} pages inside ML Kit's frames, "
-              f"{tot['silent']} silent misses.")
+              f"{tot['silent']} silent misses; page numbers {tot['right']} right / {tot['wrong']} wrong of "
+              f"{sum(len(c['rows']) for c in clips_out)} rows; {tot['false']} false 抜け rows.")
     md.append("")
     md.append("| capture | hold | frame | handles | registration | best target | err per corner (clip px) | pages in frame |")
     md.append("| --- | --- | --- | --- | --- | --- | --- | --- |")
