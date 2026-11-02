@@ -282,6 +282,38 @@ interface LiveShot {
   source: 'photo' | 'video'
 }
 
+/**
+ * Eval hook: when a test harness defines `window.__astarProbe`, the scan
+ * reports each sampled frame's quad, every ✓ / miss and the saved pages'
+ * origins to it (scripts/eval/book-clips/book-e2e.mjs). No-op otherwise.
+ */
+function probe(ev: Record<string, unknown>): void {
+  const fn = (globalThis as { __astarProbe?: (e: unknown) => void })
+    .__astarProbe
+  if (!fn) return
+  try {
+    fn({ ...ev, wall: performance.now() })
+  } catch {
+    /* harness errors never reach the scan */
+  }
+}
+
+/** 32×18 grey thumbnail of a frame, so the eval harness can tell which
+ *  clip frame the fake camera delivered. Only computed for the probe. */
+function frameSignature(src: HTMLCanvasElement): number[] {
+  const c = document.createElement('canvas')
+  c.width = 32
+  c.height = 18
+  const ctx = c.getContext('2d', { willReadFrequently: true })
+  if (!ctx) return []
+  ctx.drawImage(src, 0, 0, 32, 18)
+  const d = ctx.getImageData(0, 0, 32, 18).data
+  const out: number[] = []
+  for (let i = 0; i < d.length; i += 4)
+    out.push(Math.round(0.299 * d[i]! + 0.587 * d[i + 1]! + 0.114 * d[i + 2]!))
+  return out
+}
+
 type LiveSignal = 'none' | 'hold' | 'captured' | 'missed'
 
 interface StripChip {
@@ -390,6 +422,14 @@ function onLiveEvent(e: LiveCaptureEvent<LiveFrameData>): void {
       setSignal('hold')
       break
     case 'captured': {
+      probe({
+        type: 'captured',
+        pageNo: e.pageNo,
+        bestT: e.best.t,
+        bestIdx: e.best.data.idx,
+        quad: e.best.quad,
+        t: e.t,
+      })
       liveProgress.value = 1
       setSignal('captured', 700)
       vibrateCaptured()
@@ -404,6 +444,7 @@ function onLiveEvent(e: LiveCaptureEvent<LiveFrameData>): void {
       // A retake ends at its first ✓.
       if (target !== null) retakeTarget.value = null
       const p = takeShot(warped).then(async (shot) => {
+        probe({ type: 'shot', pageNo: e.pageNo, source: shot.source })
         if (target !== null) {
           await finishRetake(target, shot)
         } else {
@@ -416,6 +457,7 @@ function onLiveEvent(e: LiveCaptureEvent<LiveFrameData>): void {
       break
     }
     case 'missed': {
+      probe({ type: 'missed', startT: e.startT, endT: e.endT, t: e.t })
       setSignal('missed', 1500)
       const warped = e.best.data.warped
       const thumb = warped ? thumbOf(warped) : ''
@@ -475,6 +517,15 @@ async function takeShot(videoWarped: HTMLCanvasElement): Promise<LiveShot> {
           full.width,
           full.height,
         )
+        probe({
+          type: 'photo',
+          quad,
+          w: full.width,
+          h: full.height,
+          sig: (globalThis as { __astarProbe?: unknown }).__astarProbe
+            ? frameSignature(full)
+            : null,
+        })
         const warped = rotateAndCropQuad(
           full,
           quad,
@@ -1178,7 +1229,22 @@ async function processFrame(
   work.height = video.videoHeight
   work.getContext('2d', { willReadFrequently: true })?.drawImage(video, 0, 0)
 
+  const detectStart = performance.now()
   const detection = await detectSerial(work)
+  probe({
+    type: 'frame',
+    idx,
+    t: opts.t,
+    detectMs: Math.round(performance.now() - detectStart),
+    w: work.width,
+    h: work.height,
+    quad: detection?.quad ?? null,
+    confidence: detection?.confidence ?? 0,
+    boxAgreement: detection?.boxAgreement ?? null,
+    sig: (globalThis as { __astarProbe?: unknown }).__astarProbe
+      ? frameSignature(work)
+      : null,
+  })
   const liveBase = {
     t: opts.t,
     frameW: work.width,
@@ -1250,6 +1316,12 @@ async function processFrame(
   const ten = computeTenengrad(warped)
   const areaFrac = quadArea(detection.quad) / (work.width * work.height)
   const score = combinedScore(lap, ten, detection.confidence, areaFrac)
+  probe({
+    type: 'hash',
+    idx,
+    hash: hash.toString(16),
+    tile: tileHash.map((h) => h.toString(16)),
+  })
 
   // Live ✓ / miss judgment sees every detected frame — no blur gate.
   feedLive({
@@ -1744,6 +1816,7 @@ async function startCamera(retakeOf?: number): Promise<void> {
       if (now - lastSampleT >= SAMPLE_INTERVAL_S * 1000) {
         lastSampleT = now
         await processFrame(video, { t: (now - t0) / 1000, collect: !retaking })
+        probe({ type: 'frameDone', ms: Math.round(performance.now() - now) })
       }
       video.requestVideoFrameCallback(loop)
     }
@@ -1783,6 +1856,16 @@ async function stopCamera(): Promise<void> {
   await endLive()
   statusText.value = `選抜中… (候補 ${acceptedRecords.length})`
   await finalizeScan({ enableLlm: false })
+  probe({
+    type: 'pages',
+    pages: captured.value.map((p) => ({
+      id: p.id,
+      livePageNo: p.livePageNo ?? null,
+      clusterKey: p.clusterKey ?? null,
+      width: p.width,
+      height: p.height,
+    })),
+  })
 
   phase.value =
     captured.value.length > 0 || reportView.value.length > 0 ? 'done' : 'idle'
