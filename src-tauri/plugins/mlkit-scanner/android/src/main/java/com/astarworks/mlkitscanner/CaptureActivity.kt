@@ -736,10 +736,9 @@ class CaptureActivity : ComponentActivity() {
     }
 
     private fun readNumber(page: Bitmap, name: String): PageNumbers.Pick {
-        val band = MarginReader.bandLines(page, PageNumbers.MARGIN_FRAC, BAND_WIDTH)
         if (evalDir != null && !name.contains('#')) {
             try {
-                val pic = MarginReader.bandPicture(page, PageNumbers.MARGIN_FRAC, BAND_WIDTH)
+                val pic = MarginReader.marginPicture(page, BAND_FRAC, PageNumbers.MARGIN_FRAC, BAND_WIDTH)
                 synchronized(this) {
                     soloSample?.recycle()
                     soloSample = pic
@@ -747,12 +746,11 @@ class CaptureActivity : ComponentActivity() {
             } catch (_: Exception) {
             }
         }
-        Log.i(AstarScanMlkit, "margins $name ${page.width}x${page.height} pass=band ${MarginReader.json(band)}")
-        val b = PageNumbers.pick(band)
-        if (b.nums.isNotEmpty()) return b
-        val folio = MarginReader.folioLines(page, PageNumbers.MARGIN_FRAC)
-        Log.i(AstarScanMlkit, "margins $name ${page.width}x${page.height} pass=folio ${MarginReader.json(folio)}")
-        return PageNumbers.pick(folio)
+        // One ML Kit call: the bands and the folio pieces in one picture.
+        val lines = MarginReader.marginLines(page, BAND_FRAC, PageNumbers.MARGIN_FRAC, BAND_WIDTH)
+        Log.i(AstarScanMlkit, "margins $name ${page.width}x${page.height} pass=band ${MarginReader.json(lines.filter { it.pass == "band" })}")
+        Log.i(AstarScanMlkit, "margins $name ${page.width}x${page.height} pass=folio ${MarginReader.json(lines.filter { it.pass == "folio" })}")
+        return PageNumbers.pickNative(lines)
     }
 
     /**
@@ -949,6 +947,14 @@ class CaptureActivity : ComponentActivity() {
         private const val MATCH_EVERY_MS = 400L
         /** The margin bands go to ML Kit at this width (run 21: 1600 px, 20–180 s a call). */
         private const val BAND_WIDTH = 1000
+        /**
+         * Height of the top / bottom band read whole (share of the page):
+         * the numbers of the five book clips sit within 7 % of the edge;
+         * a smaller band is less body text for ML Kit to read (run 22: one
+         * call ~9 s while pages were taken). Folio pieces are still looked
+         * for in PageNumbers.MARGIN_FRAC.
+         */
+        private const val BAND_FRAC = 0.10
         /** Done waits this long for numbers still being read. */
         private const val FINISH_READ_WAIT_MS = 15_000L
         /** Frames whose corners are combined (median) for the stillness check. */

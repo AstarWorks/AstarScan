@@ -133,6 +133,39 @@ describe('checkPageSequence', () => {
     ])
   })
 
+  it("learns one side only with singleStep 'auto' (emulator run 22: 3, 5, 7 … all red)", () => {
+    const r = checkPageSequence([[3], [5], [], [9], [11], [13]], 20, {
+      singleStep: 'auto',
+    })
+    expect(r.missing).toEqual([])
+    // Step not learnt yet: an even jump over an unread page is no gap.
+    expect(
+      checkPageSequence([[3], [], [7]], 20, { singleStep: 'auto' }).missing,
+    ).toEqual([])
+  })
+
+  it("still shows a skipped page with singleStep 'auto' (single-land-white p37)", () => {
+    const r = checkPageSequence([[31], [33], [], [39], [41]], 20, {
+      singleStep: 'auto',
+    })
+    expect(r.missing).toEqual([
+      {
+        from: 35,
+        to: 37,
+        beforeIndex: 3,
+        suspect: false,
+        unreadBetween: 1,
+        step: 2,
+      },
+    ])
+    // Both sides of every leaf: +1 learnt, 12 is missing.
+    expect(
+      checkPageSequence([[10], [11], [13]], 20, { singleStep: 'auto' }).missing,
+    ).toEqual([
+      { from: 12, to: 12, beforeIndex: 2, suspect: false, unreadBetween: 0 },
+    ])
+  })
+
   it('marks a lower number as out of order', () => {
     const r = checkPageSequence([[5], [3], [6]])
     expect(r.pages.map((p) => p.state)).toEqual(['ok', 'outOfOrder', 'ok'])

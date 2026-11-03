@@ -41,6 +41,11 @@ object MarginReader {
     private const val CENTER_STRIP_FRAC = 0.07
     /** A page number's height as a share of the page height (~9–10 px on a 1040 px page). */
     private const val FOLIO_TEXT_FRAC = 0.009
+    /** A spread's spots (shares of its width, bottom strip): outer left corner, middle of the left page, middle of the right page, outer right corner. */
+    private val SPREAD_SPOTS = arrayOf(
+        doubleArrayOf(0.0, 0.16), doubleArrayOf(0.17, 0.33), doubleArrayOf(0.67, 0.83), doubleArrayOf(0.84, 1.0),
+    )
+    private const val SPREAD_UP_MAX = 5f
     /** White rows between the pieces put into one picture. */
     private const val GAP_PX = 24
     /**
@@ -94,6 +99,16 @@ object MarginReader {
     fun bandLines(page: Bitmap, marginFrac: Double, minWidth: Int): List<PageNumbers.Line> =
         recognizeTiles(page, bandTiles(page, marginFrac, minWidth), "band")
 
+    /**
+     * The band tiles AND the folio tiles in ONE picture, one ML Kit call
+     * (run 22: band then folio = two calls of ~9 s each on the CI emulator
+     * while pages are taken; the number came 14 s after the page, 32 s with
+     * the second read). Lines keep their pass ("band" / "folio"), so the
+     * caller still prefers the band's number (PageNumbers.pickNative).
+     */
+    fun marginLines(page: Bitmap, bandFrac: Double, folioFrac: Double, minWidth: Int): List<PageNumbers.Line> =
+        recognizeTiles(page, bandTiles(page, bandFrac, minWidth) + folioTiles(page, folioFrac), "margins")
+
     private fun bandTiles(page: Bitmap, marginFrac: Double, minWidth: Int): List<Tile> {
         val w = page.width
         val h = page.height
@@ -109,6 +124,10 @@ object MarginReader {
 
     /** The picture `bandLines` hands to ML Kit (for [timeAlone]). */
     fun bandPicture(page: Bitmap, marginFrac: Double, minWidth: Int): Bitmap = compose(page, bandTiles(page, marginFrac, minWidth))
+
+    /** The picture `marginLines` hands to ML Kit (for [timeAlone]). */
+    fun marginPicture(page: Bitmap, bandFrac: Double, folioFrac: Double, minWidth: Int): Bitmap =
+        compose(page, bandTiles(page, bandFrac, minWidth) + folioTiles(page, folioFrac))
 
     /**
      * One ML Kit call on `pic` (consumed), logged as "ocr solo …": the
@@ -128,6 +147,12 @@ object MarginReader {
      * other in one picture).
      */
     fun folioLines(page: Bitmap, marginFrac: Double): List<PageNumbers.Line> {
+        val tiles = folioTiles(page, marginFrac)
+        if (tiles.isEmpty()) return emptyList()
+        return recognizeTiles(page, tiles, "folio")
+    }
+
+    private fun folioTiles(page: Bitmap, marginFrac: Double): List<Tile> {
         val w = page.width
         val h = page.height
         val band = (h * marginFrac.coerceIn(0.02, 0.5)).toInt().coerceAtLeast(1)
@@ -145,21 +170,33 @@ object MarginReader {
                 val ry1 = (seg[3] + padY).coerceAtMost(h)
                 if (x1 - x0 < 4 || ry1 - ry0 < 4 || sw < 2) continue
                 val up = (FOLIO_TEXT_PX.toFloat() / sh).coerceIn(1f, 8f)
-                tiles.add(Tile(Rect(x0, ry0, x1, ry1), up))
+                tiles.add(Tile(Rect(x0, ry0, x1, ry1), up, "folio"))
             }
         }
         // Where a folio usually sits: the middle of the top and bottom
-        // margins (and their outer corners on a spread), cut out whether or
-        // not a piece was found there (run 22: single-land-white's "— 33 —"
-        // next to a thumb was found on 1 page of 10).
+        // margins, cut out whether or not a piece was found there (run 22:
+        // single-land-white's "— 33 —" next to a thumb was found on 1 page
+        // of 10). On a spread (wider than tall) the middle of each page's
+        // bottom margin and the outer bottom corners instead, enlarged more:
+        // its numbers are ~5 px tall in the CI emulator's 960×1280 picture.
         val strip = (h * CENTER_STRIP_FRAC).toInt().coerceAtLeast(4)
-        val upC = (FOLIO_TEXT_PX / (h * FOLIO_TEXT_FRAC)).toFloat().coerceIn(1f, 3.5f)
-        for (top in listOf(true, false)) {
-            val ry0 = if (top) 0 else h - strip
-            tiles.add(Tile(Rect((w * 0.3).toInt(), ry0, (w * 0.7).toInt(), ry0 + strip), upC))
+        val textPx = h * FOLIO_TEXT_FRAC
+        if (w > h) {
+            val upS = (FOLIO_TEXT_PX / textPx).toFloat().coerceIn(1f, SPREAD_UP_MAX)
+            val y0 = h - strip
+            for (fr in SPREAD_SPOTS) {
+                tiles.add(Tile(Rect((w * fr[0]).toInt(), y0, (w * fr[1]).toInt(), h), upS, "folio"))
+            }
+        } else {
+            // (2.5×: the digits ~22 px, the picture small enough to share
+            // one ML Kit call with the bands.)
+            val upC = (FOLIO_TEXT_PX / textPx).toFloat().coerceIn(1f, 2.5f)
+            for (top in listOf(true, false)) {
+                val ry0 = if (top) 0 else h - strip
+                tiles.add(Tile(Rect((w * 0.33).toInt(), ry0, (w * 0.67).toInt(), ry0 + strip), upC, "folio"))
+            }
         }
-        if (tiles.isEmpty()) return emptyList()
-        return recognizeTiles(page, tiles, "folio")
+        return tiles
     }
 
     /** Lines as JSON for the log lines the emulator check reads (book-measure.py). */
@@ -181,7 +218,7 @@ object MarginReader {
     }
 
     /** A region of the page and how much it is enlarged in the picture read. */
-    private class Tile(val src: Rect, val up: Float) {
+    private class Tile(val src: Rect, val up: Float, val pass: String = "band") {
         val outW: Int get() = (src.width() * up).toInt().coerceAtLeast(1)
         val outH: Int get() = (src.height() * up).toInt().coerceAtLeast(1)
         var top = 0
@@ -207,7 +244,7 @@ object MarginReader {
                         text = line.text,
                         cx = ((t.src.left + bx / t.up) / page.width).toDouble(),
                         cy = ((t.src.top + (by - t.top) / t.up) / page.height).toDouble(),
-                        pass = pass,
+                        pass = if (pass == "margins") t.pass else pass,
                         conf = line.confidence.toDouble(),
                     ),
                 )

@@ -552,10 +552,16 @@ def main():
     md.append(f"| one page's number (first read, + second read when needed) | {ms_stats([c['number_ms'] for c in caps if 'number_ms' in c])} |")
     md.append(f"| first read only | {ms_stats([c['read_ms'] for c in caps if 'read_ms' in c])} |")
     md.append(f"| waiting behind earlier pages | {ms_stats([c['queued_ms'] for c in caps if 'queued_ms' in c])} |")
-    label = {"band": "band (while taking pages)", "folio": "folio (while taking pages)", "warmup": "warmup (screen opening)",
-             "solo": "band picture alone (camera stopped, on close)"}
-    for ps in ("band", "folio", "warmup", "solo"):
+    kept = [c for c in caps if c.get("kind") not in (None, "duplicate")]
+    fast = [c for c in kept if c["nums"] and c.get("shot_ms", 0) + c.get("number_ms", 10**9) <= 30000]
+    md.append(f"| pages whose number was up within 30 s of the shot (「✓ N ページ」) | {len(fast)} of {len(kept)} |")
+    label = {"margins": "bands + folio pieces, one picture (while taking pages)", "band": "band (while taking pages)",
+             "folio": "folio (while taking pages)", "warmup": "warmup (screen opening)",
+             "solo": "margin picture alone (camera stopped, on close)"}
+    for ps in ("margins", "band", "folio", "warmup", "solo"):
         calls = [o for o in ocr if o["pass"] == ps]
+        if not calls and ps in ("band", "folio"):
+            continue
         bad = sum(1 for o in calls if not o["ok"])
         md.append(f"| one ML Kit call, {label[ps]} | {ms_stats([o['ms'] for o in calls])}{f', {bad} failed' if bad else ''} |")
     waits = []

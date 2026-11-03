@@ -1928,8 +1928,11 @@ function rangeLabel(from: number, to: number, step = 1): string {
   return `${from}〜${to}`
 }
 
-/** What the capture screen learnt: 2 when single pages go one side only. */
-const nativeSideStep = ref<1 | 2>(1)
+/**
+ * What the capture screen learnt: 2 when single pages go one side only;
+ * null until it learnt one (the list then learns it from the numbers).
+ */
+const nativeSideStep = ref<1 | 2 | null>(null)
 
 const nativeReportRows = computed<ReportViewRow[]>(() => {
   const pages = captured.value
@@ -1937,7 +1940,7 @@ const nativeReportRows = computed<ReportViewRow[]>(() => {
   const seq = checkPageSequence(
     reads.map((r) => (r?.status === 'done' ? r.nums : [])),
     20,
-    { singleStep: nativeSideStep.value },
+    { singleStep: nativeSideStep.value ?? 'auto' },
   )
   const rows: ReportViewRow[] = []
   pages.forEach((p, i) => {
@@ -2093,7 +2096,7 @@ async function startNativeScan(): Promise<void> {
       const r = pageNoReads.value[p.id]
       return r?.status === 'done' ? r.nums : []
     })
-    const res = await nativeScan(known, nativeSideStep.value)
+    const res = await nativeScan(known, nativeSideStep.value ?? 0)
     await importNativeResult(res)
     phase.value = captured.value.length > 0 ? 'done' : 'idle'
     statusText.value = ''
@@ -2339,6 +2342,7 @@ async function exportDebugJson(): Promise<void> {
 async function clearAll(): Promise<void> {
   captured.value = []
   pageNoReads.value = {}
+  nativeSideStep.value = null
   savedPdfPath.value = ''
   resetPipelineState()
   await clearSession()

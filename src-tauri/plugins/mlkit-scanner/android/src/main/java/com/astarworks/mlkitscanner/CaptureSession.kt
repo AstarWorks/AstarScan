@@ -80,6 +80,10 @@ class CaptureSession(known: Collection<Int> = emptyList(), step: Int = 0) {
         if (lo == next) return "expected"
         // Step not learnt yet: +1 and +2 are both "next" for a single page.
         if (!spread && step == 0 && lo == l + 2) return "expected"
+        // One side only, pages in between taken without a number: still the
+        // next page as far as the step goes (no second read needed).
+        if (!spread && step == 2 && (lo - l) % 2 == 0 && (lo - l) / 2 - 1 <= unreadSince) return "expected"
+        if (!spread && step == 1 && lo - l - 1 <= unreadSince) return "expected"
         if (lo - l > MAX_JUMP) return "far"
         return "jump"
     }
@@ -144,7 +148,12 @@ class CaptureSession(known: Collection<Int> = emptyList(), step: Int = 0) {
         }
         val gap = ArrayList<Int>()
         if (l != null && lo > l + 1) {
-            val s = if (!spread && step == 2) 2 else 1
+            // Step not learnt yet (no two numbered single pages in a row): an
+            // even jump is read as one side only — 3, (5 unread), 7 is not a
+            // gap; 35 → 39 still leaves 37 missing (run 22: 4, 6, 8 … red on
+            // a right-pages-only book).
+            val oneSide = step == 2 || (step == 0 && (lo - l) % 2 == 0)
+            val s = if (!spread && sorted.size == 1 && oneSide) 2 else 1
             var n = l + s
             while (n < lo) {
                 if (n !in taken) gap.add(n)

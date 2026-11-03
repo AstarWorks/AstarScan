@@ -4,6 +4,7 @@ import android.graphics.Bitmap
 import android.graphics.Canvas
 import android.graphics.Matrix
 import android.graphics.Paint
+import android.util.Log
 import kotlin.math.abs
 import kotlin.math.atan2
 import kotlin.math.hypot
@@ -117,18 +118,73 @@ object PageFrame {
             } finally {
                 probe.recycle()
             }
-            if (!cut.any) return Pair(q, cut)
-            val pts = floatArrayOf(
-                cut.leftTop.toFloat(), 0f,
-                (1 - cut.rightTop).toFloat(), 0f,
-                (1 - cut.rightBottom).toFloat(), 1f,
-                cut.leftBottom.toFloat(), 1f,
-            )
+            // Corners in the frame's unit square: tl, tr, br, bl.
+            val pts = floatArrayOf(0f, 0f, 1f, 0f, 1f, 1f, 0f, 1f)
+            val cutLeft = cut.leftTop > 0 || cut.leftBottom > 0
+            val cutRight = cut.rightTop > 0 || cut.rightBottom > 0
+            if (cutLeft) {
+                pts[0] = cut.leftTop.toFloat()
+                pts[6] = cut.leftBottom.toFloat()
+            }
+            if (cutRight) {
+                pts[2] = (1 - cut.rightTop).toFloat()
+                pts[4] = (1 - cut.rightBottom).toFloat()
+            }
+            // A side not cut back may stop short of the gutter: out to the fold.
+            val reach: Array<GutterTrim.Side?> = if (cutLeft && cutRight) arrayOfNulls(2) else try {
+                reachOut(img, q)
+            } catch (e: Exception) {
+                arrayOfNulls<GutterTrim.Side>(2)
+            }
+            val l = reach[0]
+            if (!cutLeft && l != null) {
+                pts[0] = l.uTop.toFloat(); pts[1] = l.vTop.toFloat()
+                pts[6] = l.uBottom.toFloat(); pts[7] = l.vBottom.toFloat()
+            }
+            val r = reach[1]
+            if (!cutRight && r != null) {
+                pts[2] = r.uTop.toFloat(); pts[3] = r.vTop.toFloat()
+                pts[4] = r.uBottom.toFloat(); pts[5] = r.vBottom.toFloat()
+            }
+            if (!cut.any && reach.all { it == null }) return Pair(q, cut)
             unitTo(q).mapPoints(pts)
-            return Pair(Quad(floatArrayOf(pts[0], pts[2], pts[4], pts[6]), floatArrayOf(pts[1], pts[3], pts[5], pts[7])), cut)
+            val out = Quad(floatArrayOf(pts[0], pts[2], pts[4], pts[6]), floatArrayOf(pts[1], pts[3], pts[5], pts[7]))
+            Log.i("AstarScanCapture", "page frame reach left=${l ?: "-"} right=${r ?: "-"}")
+            return Pair(if (out.convex()) out else q, cut)
         }
         return Pair(refineEdges(img, q), null)
     }
+
+    /**
+     * GutterTrim.reach on the frame widened by REACH_OUT / REACH_V; a side
+     * whose widened edge leaves the picture is not looked at (null).
+     */
+    private fun reachOut(img: Bitmap, q: Quad): Array<GutterTrim.Side?> {
+        val e = GutterTrim.REACH_OUT.toFloat()
+        val v = GutterTrim.REACH_V.toFloat()
+        val wide = floatArrayOf(-e, -v, 1 + e, -v, 1 + e, 1 + v, -e, 1 + v)
+        unitTo(q).mapPoints(wide)
+        val inside = BooleanArray(4) { i -> wide[2 * i] >= 0 && wide[2 * i] < img.width && wide[2 * i + 1] >= 0 && wide[2 * i + 1] < img.height }
+        val pw = REACH_PROBE_W
+        val ph = max(8, (pw * q.height * (1 + 2 * v) / (q.width * (1 + 2 * e))).roundToInt())
+        val m = Matrix()
+        m.setPolyToPoly(wide, 0, floatArrayOf(0f, 0f, pw.toFloat(), 0f, pw.toFloat(), ph.toFloat(), 0f, ph.toFloat()), 0, 4)
+        val probe = Bitmap.createBitmap(pw, ph, Bitmap.Config.ARGB_8888)
+        val px = IntArray(pw * ph)
+        try {
+            Canvas(probe).drawBitmap(img, m, Paint(Paint.FILTER_BITMAP_FLAG or Paint.ANTI_ALIAS_FLAG))
+            probe.getPixels(px, 0, pw, 0, 0, pw, ph)
+        } finally {
+            probe.recycle()
+        }
+        val found = GutterTrim.reach(luminance(px), pw, ph)
+        if (!(inside[0] && inside[3])) found[0] = null
+        if (!(inside[1] && inside[2])) found[1] = null
+        return found
+    }
+
+    /** Width of the picture GutterTrim.reach looks at. */
+    private const val REACH_PROBE_W = 600
 
     fun luminance(px: IntArray): IntArray = IntArray(px.size) { i ->
         val c = px[i]

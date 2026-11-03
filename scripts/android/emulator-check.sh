@@ -194,11 +194,17 @@ take_page() {
   mark=$(events_lines)
   t0=$SECONDS
   while [ $((SECONDS - t0)) -lt "$WAIT_S" ]; do
-    line=$(events_since "$mark" | grep -m1 -E 'AstarScanCapture.*: banner (shot|taken|unread|filled|gap) ')
-    if [ -n "$line" ]; then
-      result=$(sed -E 's/.*: banner ([a-z]+) .*/\1/' <<<"$line")
-      text=$(sed -E 's/.*: banner [a-z]+ //' <<<"$line")
-      break
+    # A page taken in THIS hold: its "capture" line, then its "✓ 撮れた"
+    # banner. A number result of the page before (read while the camera
+    # turned on) is not this hold's page (run 22: spread-land-white-thick
+    # h3 counted h2's late "番号なし" after 1 s and moved on untaken).
+    if events_since "$mark" | grep -q -E 'AstarScanCapture.*: capture [^ ]+ t='; then
+      line=$(events_since "$mark" | sed -n '/AstarScanCapture.*: capture [^ ]* t=/,$p' | grep -m1 -E 'AstarScanCapture.*: banner (shot|taken|unread|filled|gap|duplicate) ')
+      if [ -n "$line" ]; then
+        result=$(sed -E 's/.*: banner ([a-z]+) .*/\1/' <<<"$line")
+        text=$(sed -E 's/.*: banner [a-z]+ //' <<<"$line")
+        break
+      fi
     fi
     # "撮影済み": the same page again (not turned) — keep waiting for this page.
     [ -z "$dup" ] && dup=$(events_since "$mark" | grep -m1 -E 'AstarScanCapture.*: banner duplicate ')

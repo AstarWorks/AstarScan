@@ -204,7 +204,7 @@ export interface PageSequenceOptions {
    * page is taken) or 2 (one side only — e.g. every right page, as the
    * Android capture screen learns it: 31, 33, 35 is not a gap).
    */
-  readonly singleStep?: 1 | 2
+  readonly singleStep?: 1 | 2 | 'auto'
 }
 
 /**
@@ -218,17 +218,23 @@ export function checkPageSequence(
   maxGap = 20,
   opts: PageSequenceOptions = {},
 ): PageSequenceCheck {
-  const oneSide = opts.singleStep === 2
+  // 'auto': learnt from the first two numbered single pages in a row (+1 or
+  // +2), as the Android capture screen does; until then an even jump
+  // between single pages counts as one side only.
+  let singleStep: 1 | 2 | null =
+    opts.singleStep === 'auto' ? null : (opts.singleStep ?? 1)
   const seen = new Map<number, number>()
   const out: PageNumberCheck[] = []
   const missing: MissingPageRange[] = []
   let last: number | null = null
   let unread = 0
+  let prevSingle: number | null = null
 
   pages.forEach((nums, i) => {
     if (nums.length === 0) {
       out.push({ state: 'unread', duplicateOf: null })
       unread++
+      prevSingle = null
       return
     }
     const sorted = [...nums].sort((a, b) => a - b)
@@ -244,8 +250,26 @@ export function checkPageSequence(
       out.push({ state: 'outOfOrder', duplicateOf: null })
       return
     }
-    const step = oneSide && sorted.length === 1 ? 2 : 1
-    if (last !== null && lo > last + step) {
+    const single = sorted.length === 1
+    if (
+      single &&
+      singleStep === null &&
+      prevSingle !== null &&
+      prevSingle === last
+    ) {
+      if (lo === prevSingle + 1) singleStep = 1
+      else if (lo === prevSingle + 2) singleStep = 2
+    }
+    prevSingle = single ? lo : null
+    const oneSide =
+      singleStep === 2 ||
+      (singleStep === null && last !== null && (lo - last) % 2 === 0)
+    const step = oneSide && single ? 2 : 1
+    // In 'auto' mode a gap no wider than the captures without a number
+    // between is most likely those pages (the capture screen says the same).
+    const count = last === null ? 0 : Math.floor((lo - 1 - last) / step)
+    const covered = opts.singleStep === 'auto' && count <= unread
+    if (last !== null && lo > last + step && !covered) {
       missing.push({
         from: last + step,
         to: lo - step,

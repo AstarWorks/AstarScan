@@ -199,6 +199,144 @@ object GutterTrim {
         return if (at(best) <= paper * SHADOW_MAX) best.toDouble() / w else null
     }
 
+    // ------------------------------------------------------------ reach
+
+    /** [reach]'s picture: the frame widened by this share of its width on each side… */
+    const val REACH_OUT = 0.10
+    /** …and heightened by this share of its height at the top and the bottom. */
+    const val REACH_V = 0.06
+    /** A side moves out only by at least this share of the width (smaller: noise)… */
+    private const val REACH_MIN = 0.015
+    /** …and when the upper and lower bands agree within this share. */
+    private const val REACH_AGREE = 0.015
+    /** A corner moves up or down at most this share of the height. */
+    private const val REACH_V_MAX = 0.04
+
+    /**
+     * Where one side of the page really ends, in the frame's own unit
+     * square (u across, v down; the frame is 0..1): the corner at the top
+     * (uTop, vTop) and at the bottom (uBottom, vBottom).
+     */
+    class Side(val uTop: Double, val vTop: Double, val uBottom: Double, val vBottom: Double) {
+        override fun toString(): String = "%.4f,%.4f/%.4f,%.4f".format(uTop, vTop, uBottom, vBottom)
+    }
+
+    /**
+     * The other way round from [find]: a single page's frame that stops
+     * SHORT of the gutter. Run 22, single-port-wood: the frame's left edge
+     * sat on the bright, curved strip where the page bends into the spine,
+     * 25–37 clip px inside the fold on every page; the fold (where the
+     * page meets the facing page) is the page's real corner.
+     *
+     * `lum` (w × h) is the frame widened by REACH_OUT / REACH_V (see
+     * PageFrame.keep). Per side and per band (upper, lower) the fold is the
+     * darkest column beyond the frame's edge — darker than 0.8× the paper
+     * and not at the picture's outer end (the facing page or the desk is
+     * beyond it); without such a valley, where the paper ends (the first
+     * column darker than 0.8× the paper). Both bands must agree. The
+     * corners then sit on the fold line, at the rows where the paper next
+     * to the fold begins and ends (the page dips into the spine there).
+     * Returns [left, right]; null for a side that stays.
+     */
+    fun reach(lum: IntArray, w: Int, h: Int): Array<Side?> {
+        val e = REACH_OUT
+        val vm = REACH_V
+        fun ux(u: Double) = (u + e) / (1 + 2 * e) * w
+        fun vy(v: Double) = (v + vm) / (1 + 2 * vm) * h
+        fun xu(x: Double) = x / w * (1 + 2 * e) - e
+        fun yv(y: Double) = y / h * (1 + 2 * vm) - vm
+        val per = BANDS.map { b -> bandProfile(lum, w, h, vy(b[0]).toInt(), vy(b[1]).toInt()) }
+        val out = arrayOfNulls<Side>(2)
+        for ((si, fromRight) in listOf(false, true).withIndex()) {
+            val stops = per.map { p -> reachStop(p, fromRight, ux(0.0), ux(1.0), ux(-e), ux(1 + e), ux(0.35), ux(0.65)) }
+            val a = stops[0] ?: continue
+            val b = stops[1] ?: continue
+            val ua = xu(a.toDouble())
+            val ub = xu(b.toDouble())
+            val da = if (fromRight) ua - 1 else -ua
+            val db = if (fromRight) ub - 1 else -ub
+            if (maxOf(da, db) < REACH_MIN || Math.abs(da - db) > REACH_AGREE) continue
+            // The fold line through the band centres, to the top and bottom edge.
+            val va = (BANDS[0][0] + BANDS[0][1]) / 2
+            val vb = (BANDS[1][0] + BANDS[1][1]) / 2
+            val slope = (ub - ua) / (vb - va)
+            val uTop = ua - slope * va
+            val uBottom = ua + slope * (1 - va)
+            val inside = if (fromRight) -0.012 else 0.012
+            val vTop = paperEnd(lum, w, h, ux(uTop + inside), true, ::vy, ::yv)
+            val vBottom = paperEnd(lum, w, h, ux(uBottom + inside), false, ::vy, ::yv)
+            out[si] = Side(uTop, vTop, uBottom, vBottom)
+        }
+        return out
+    }
+
+    /** One band's fold (or paper end) beyond one side, as a column of the widened picture; null when none. */
+    private fun reachStop(
+        p: DoubleArray, fromRight: Boolean, edgeL: Double, edgeR: Double, outL: Double, outR: Double, midA: Double, midB: Double,
+    ): Int? {
+        val w = p.size
+        val mid = (midA.toInt().coerceIn(0, w - 1)..midB.toInt().coerceIn(0, w - 1)).map { p[it] }.sorted()
+        if (mid.isEmpty()) return null
+        val paper = mid[mid.size / 2]
+        if (paper < 60) return null
+        val t = paper * 0.8
+        val x0 = if (fromRight) edgeR else edgeL
+        val lo = if (fromRight) Math.round(x0 - 0.015 * w).toInt() else Math.round(outL).toInt() + 1
+        val hi = if (fromRight) Math.round(outR).toInt() - 2 else Math.round(x0 + 0.015 * w).toInt()
+        val a = lo.coerceIn(0, w - 1)
+        val b = hi.coerceIn(0, w - 1)
+        if (b <= a) return null
+        var m = a
+        for (x in a..b) if (p[x] < p[m]) m = x
+        val k = (0.02 * w).toInt()
+        if (p[m] < t && (if (fromRight) b - m >= k else m - a >= k)) return m
+        // No fold: where the paper ends.
+        val step = if (fromRight) 1 else -1
+        var x = Math.round(x0 - step * 0.01 * w).toInt().coerceIn(0, w - 1)
+        if (p[x] < t) return null
+        val lim = if (fromRight) outR - 2 else outL + 2
+        while (if (fromRight) x < lim else x > lim) {
+            if (x < 0 || x >= w) return null
+            if (p[x] < t) return x
+            x += step
+        }
+        return null
+    }
+
+    /**
+     * The row (as v of the frame) where the paper begins (top) or ends
+     * (bottom) in the column at `cx` of the widened picture: from 10 % in,
+     * outwards while brighter than 0.8× that column's paper. At most
+     * REACH_V_MAX away from the frame's own edge.
+     */
+    private fun paperEnd(
+        lum: IntArray, w: Int, h: Int, cxD: Double, top: Boolean, vy: (Double) -> Double, yv: (Double) -> Double,
+    ): Double {
+        val edge = if (top) 0.0 else 1.0
+        val cx = Math.round(cxD).toInt().coerceIn(1, w - 2)
+        val col = DoubleArray(h) { y ->
+            val a = lum[y * w + cx - 1]
+            val b = lum[y * w + cx]
+            val c = lum[y * w + cx + 1]
+            maxOf(minOf(a, b), minOf(maxOf(a, b), c)).toDouble()
+        }
+        val ya = vy(0.3).toInt().coerceIn(0, h - 1)
+        val yb = vy(0.7).toInt().coerceIn(ya + 1, h)
+        val s = col.copyOfRange(ya, yb).sorted()
+        val t = s[s.size / 2] * 0.8
+        var v = edge
+        if (top) {
+            var y = vy(0.10).toInt().coerceIn(0, h - 1)
+            while (y > 0 && col[y] >= t) y--
+            if (y > 0) v = yv((y + 1).toDouble())
+        } else {
+            var y = vy(0.90).toInt().coerceIn(0, h - 1)
+            while (y < h - 1 && col[y] >= t) y++
+            if (y < h - 1) v = yv((y - 1).toDouble())
+        }
+        return v.coerceIn(edge - REACH_V_MAX, edge + REACH_V_MAX)
+    }
+
     /** Rewrite `file` with the quad inside the cut warped to a rectangle (JPEG 92). */
     private fun warp(file: File, w: Int, h: Int, cut: Cut) {
         val src = BitmapFactory.decodeFile(file.path) ?: return
