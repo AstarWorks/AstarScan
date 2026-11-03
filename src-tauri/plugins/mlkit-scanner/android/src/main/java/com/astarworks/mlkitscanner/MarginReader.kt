@@ -1,10 +1,13 @@
 package com.astarworks.mlkitscanner
 
 import android.graphics.Bitmap
+import android.util.Log
 import com.google.android.gms.tasks.Tasks
 import com.google.mlkit.vision.common.InputImage
 import com.google.mlkit.vision.text.TextRecognition
 import com.google.mlkit.vision.text.japanese.JapaneseTextRecognizerOptions
+import java.util.concurrent.TimeUnit
+import java.util.concurrent.TimeoutException
 
 /**
  * Text in the top and bottom margins of a page (where the printed page
@@ -24,6 +27,7 @@ import com.google.mlkit.vision.text.japanese.JapaneseTextRecognizerOptions
 object MarginReader {
     private const val FOLIO_TEXT_PX = 48
     private const val MAX_FOLIO_SEGMENTS = 4
+    private const val RECOGNIZE_TIMEOUT_S = 8L
 
     private val recognizer by lazy {
         TextRecognition.getClient(JapaneseTextRecognizerOptions.Builder().build())
@@ -104,7 +108,14 @@ object MarginReader {
             strip
         }
         try {
-            val text = Tasks.await(recognizer.process(InputImage.fromBitmap(input, 0)))
+            // Bounded: a recognition that never returns must not hold the
+            // capture screen on "撮影中…" (run 19).
+            val text = try {
+                Tasks.await(recognizer.process(InputImage.fromBitmap(input, 0)), RECOGNIZE_TIMEOUT_S, TimeUnit.SECONDS)
+            } catch (e: TimeoutException) {
+                Log.w("AstarScanMlkit", "text recognition timed out ($pass ${input.width}x${input.height})")
+                return
+            }
             for (block in text.textBlocks) {
                 for (line in block.lines) {
                     val box = line.boundingBox ?: continue

@@ -211,6 +211,9 @@ take_page() {
   events_since "$mark" | grep -E 'AstarScanCapture.*: banner (yellow|gap) ' | while read -r l; do
     printf '%s\t%s\t%s\t%s\n' "$clip" "$hold" "$(sed -E 's/.*: banner ([a-z]+) .*/\1/' <<<"$l")" "$(sed -E 's/.*: banner [a-z]+ //' <<<"$l")" >>"$OUT/notices.tsv"
   done
+  # The screen's own log for this page, into the job log too (what the frame
+  # finder saw, how long each part of taking the page took).
+  events_since "$mark" | grep -E 'AstarScan(Capture|Mlkit)' | grep -v ': margins ' | cut -c19- | cut -c1-300 | sed 's/^/    /'
   log "$clip step $step hold $hold: $result ${text:+($text)} after ${waited}s"
   printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\n' "$clip" "$step" "$hold" "$result" "$text" "$SHOT" "$waited" >>"$OUT/checks.tsv"
   RESULT=$result

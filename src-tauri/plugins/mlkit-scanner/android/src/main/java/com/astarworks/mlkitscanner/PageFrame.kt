@@ -83,6 +83,16 @@ object PageFrame {
 
     fun plausible(q: Quad, w: Int, h: Int): Boolean = q.convex() && q.area() >= MIN_AREA * w * h
 
+    /** A corner further than OUT_TOL of the picture outside it (DocAligner pads to a square, so corners can land off the picture). */
+    const val OUT_TOL = 0.03
+
+    /** The paper runs off the w×h camera picture (a corner clearly outside it). */
+    fun outside(q: Quad, w: Int, h: Int): Boolean {
+        val mx = w * OUT_TOL
+        val my = h * OUT_TOL
+        return (0 until 4).any { q.x[it] < -mx || q.x[it] > w + mx || q.y[it] < -my || q.y[it] > h + my }
+    }
+
     /** Matrix taking the unit square (0,0)(1,0)(1,1)(0,1) to `q`. */
     private fun unitTo(q: Quad): Matrix = Matrix().apply {
         setPolyToPoly(floatArrayOf(0f, 0f, 1f, 0f, 1f, 1f, 0f, 1f), 0, q.points(), 0, 4)

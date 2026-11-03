@@ -106,6 +106,9 @@ class CaptureActivity : ComponentActivity() {
     private var lastCaptureAt = 0L
     private var lastSigLog = 0L
     private var frameInfoLogged = false
+    private var lastStatusLog = 0L
+    /** Since when the frame found runs off the camera picture (0: it does not). */
+    @Volatile private var offSince = 0L
     private val busy = AtomicBoolean(false)
     private val finishing = AtomicBoolean(false)
 
@@ -167,7 +170,10 @@ class CaptureActivity : ComponentActivity() {
         val root = FrameLayout(this)
         root.setBackgroundColor(Color.BLACK)
         previewView = PreviewView(this).apply {
-            scaleType = PreviewView.ScaleType.FILL_CENTER
+            // The whole camera picture on the screen (run 19: FILL_CENTER cut the
+            // sides of a spread off a tall phone screen, so the user could not
+            // see whether all the paper was in).
+            scaleType = PreviewView.ScaleType.FIT_CENTER
             implementationMode = PreviewView.ImplementationMode.COMPATIBLE
         }
         root.addView(previewView, FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT))
@@ -310,7 +316,12 @@ class CaptureActivity : ComponentActivity() {
     private fun analyze(image: ImageProxy) {
         try {
             val now = SystemClock.elapsedRealtime()
-            if (now - lastAnalyzed < ANALYSIS_MS || finishing.get()) return
+            // While a page is being taken the frame is looked at less often:
+            // on a slow phone (and the CI emulator, run 19) DocAligner at full
+            // rate starved the number reading, and "撮影中…" stayed up for
+            // minutes. The newest frame is still kept for the second read.
+            val every = if (busy.get()) BUSY_ANALYSIS_MS else ANALYSIS_MS
+            if (now - lastAnalyzed < every || finishing.get()) return
             lastAnalyzed = now
             val det = detector ?: return
             val rot = image.imageInfo.rotationDegrees
@@ -319,18 +330,36 @@ class CaptureActivity : ComponentActivity() {
                 frameInfoLogged = true
                 Log.i(TAG, "frame ${image.width}x${image.height} rotation=$rot upright=${frame.width}x${frame.height}")
             }
+            val t0 = SystemClock.elapsedRealtime()
             val res = try {
                 det.detect(frame)
             } catch (e: Exception) {
                 Log.w(TAG, "detect failed", e)
                 null
             }
-            val q = res?.quad?.takeIf { res.minPeak >= CaptureDetector.MIN_PEAK && PageFrame.plausible(it, frame.width, frame.height) }
+            val detectMs = SystemClock.elapsedRealtime() - t0
+            val sure = res != null && res.minPeak >= CaptureDetector.MIN_PEAK
+            val plausible = res != null && PageFrame.plausible(res.quad, frame.width, frame.height)
+            val found = res?.quad?.takeIf { sure && plausible }
+            // Paper running off the camera picture: framed, but not taken
+            // (the page would be cut) — the yellow notice asks for all of it.
+            val off = found != null && PageFrame.outside(found, frame.width, frame.height)
+            val q = if (off) null else found
+            if (!off) offSince = 0L else if (offSince == 0L) offSince = now
             // Older frames are left to the GC: the work thread may still be copying one.
             latest.set(Frame(frame, q, now))
             step(now, q, frame)
             val stable = q != null && now - stableSince >= STABLE_MS
-            runOnUiThread { overlay.show(q, frame.width, frame.height, stable) }
+            if (now - lastStatusLog >= STATUS_LOG_MS) {
+                lastStatusLog = now
+                Log.i(
+                    TAG,
+                    "status detect=${detectMs}ms peaks=${res?.peaks?.joinToString(",") { "%.2f".format(it) } ?: "-"} " +
+                        "plausible=$plausible off=$off frame=${found ?: "-"} stableFor=${if (q != null) now - stableSince else -1} " +
+                        "armed=$armed turnSeen=$turnSeen busy=${busy.get()} banner=$bannerKind",
+                )
+            }
+            runOnUiThread { overlay.show(found, frame.width, frame.height, stable, off) }
         } catch (e: Exception) {
             Log.w(TAG, "analysis failed", e)
         } finally {
@@ -382,7 +411,8 @@ class CaptureActivity : ComponentActivity() {
         // Yellow: waiting for a page, and for YELLOW_MS no frame held still.
         val waiting = armed || turnSeen
         val quiet = now - lastCaptureAt > BANNER_MS
-        if (waiting && quiet && !busy.get() && now - max(lastGoodAt, lastCaptureAt) >= YELLOW_MS) {
+        val offLong = offSince != 0L && now - offSince >= OFF_YELLOW_MS
+        if (waiting && quiet && !busy.get() && (offLong || now - max(lastGoodAt, lastCaptureAt) >= YELLOW_MS)) {
             runOnUiThread { if (bannerKind != "yellow" && bannerKind != "gap") setBanner("yellow", "紙全体を画面に入れてください") }
         } else if (q != null && stableFor >= GOOD_MS) {
             runOnUiThread { if (bannerKind == "yellow") setBanner("idle", "そのまま止めてください") }
@@ -425,7 +455,9 @@ class CaptureActivity : ComponentActivity() {
         var photo: Bitmap? = null
         try {
             val det = detector ?: return
+            val t0 = SystemClock.elapsedRealtime()
             photo = takeStill() ?: frame
+            val tStill = SystemClock.elapsedRealtime()
             // The frame found on the still itself; when the model is not
             // sure there, the analysis frame's scaled over.
             var q = frameQuad.scaled(photo.width.toFloat() / frame.width, photo.height.toFloat() / frame.height)
@@ -437,6 +469,7 @@ class CaptureActivity : ComponentActivity() {
                     source = "still"
                 }
             }
+            val tDetect = SystemClock.elapsedRealtime()
             // Gutter cut / edge fit on a copy of at most 1600 px.
             val ks = min(1f, 1600f / max(photo.width, photo.height))
             val probe = if (ks < 1f) Bitmap.createScaledBitmap(photo, (photo.width * ks).roundToInt(), (photo.height * ks).roundToInt(), true) else photo
@@ -452,9 +485,17 @@ class CaptureActivity : ComponentActivity() {
             }
             // t = wall clock (ms) of the analysed frame that triggered the page.
             Log.i(TAG, "capture $name t=$at photo=${photo.width}x${photo.height} source=$source spread=${kept.isSpread} found=$q kept=$kept cut=$cut")
+            val tPage = SystemClock.elapsedRealtime()
             val pick = readNumber(page, name)
+            val tRead = SystemClock.elapsedRealtime()
             val spread = kept.isSpread
             val nums = confirm(pick, spread, name)
+            val tConfirm = SystemClock.elapsedRealtime()
+            Log.i(
+                TAG,
+                "timing $name still=${tStill - t0}ms detect=${tDetect - tStill}ms page=${tPage - tDetect}ms " +
+                    "read=${tRead - tPage}ms confirm=${tConfirm - tRead}ms total=${tConfirm - t0}ms",
+            )
             val outcome = session.add(name, page.width, page.height, nums, spread)
             page.recycle()
             if (outcome is CaptureSession.Outcome.Duplicate) File(scansDir, name).delete()
@@ -655,7 +696,7 @@ class CaptureActivity : ComponentActivity() {
         finish()
     }
 
-    /** The green frame, drawn over the preview (FILL_CENTER: the frame scaled to cover the view). */
+    /** The frame found, drawn over the preview (FIT_CENTER: the camera picture fitted into the view); yellow when it runs off the picture. */
     private class OverlayView(context: Context) : View(context) {
         private var quad: Quad? = null
         private var fw = 1
@@ -672,18 +713,21 @@ class CaptureActivity : ComponentActivity() {
         }
         private val path = Path()
 
-        fun show(q: Quad?, w: Int, h: Int, stable: Boolean) {
+        private var off = false
+
+        fun show(q: Quad?, w: Int, h: Int, stable: Boolean, off: Boolean) {
             quad = q
             fw = w
             fh = h
             this.stable = stable
+            this.off = off
             invalidate()
         }
 
         override fun onDraw(canvas: Canvas) {
             super.onDraw(canvas)
             val q = quad ?: return
-            val s = max(width.toFloat() / fw, height.toFloat() / fh)
+            val s = min(width.toFloat() / fw, height.toFloat() / fh)
             val ox = (width - fw * s) / 2
             val oy = (height - fh * s) / 2
             path.reset()
@@ -694,7 +738,8 @@ class CaptureActivity : ComponentActivity() {
             }
             path.close()
             stroke.strokeWidth = resources.displayMetrics.density * if (stable) 6 else 4
-            if (stable) canvas.drawPath(path, fill)
+            stroke.color = if (off) 0xFFF9C80E.toInt() else 0xFF2EE66B.toInt()
+            if (stable && !off) canvas.drawPath(path, fill)
             canvas.drawPath(path, stroke)
         }
     }
@@ -710,6 +755,12 @@ class CaptureActivity : ComponentActivity() {
 
         /** At most ~7 analysed frames a second (CLAUDE.md: 5–10 FPS is enough). */
         private const val ANALYSIS_MS = 140L
+        /** While a page is being taken (still, number reading). */
+        private const val BUSY_ANALYSIS_MS = 700L
+        /** The paper runs off the camera picture this long → yellow notice. */
+        private const val OFF_YELLOW_MS = 1000L
+        /** One "status" log line (what the frame finder sees) this often. */
+        private const val STATUS_LOG_MS = 2000L
         /** The frame must stand still this long before the page is taken. */
         private const val STABLE_MS = 1000L
         /** "Still": no corner moves more than this share of the diagonal. */

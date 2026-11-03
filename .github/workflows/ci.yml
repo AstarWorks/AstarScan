@@ -404,7 +404,11 @@ jobs:
         run: |
           set -uo pipefail
           mkdir -p emulator-out
-          python3 -m pip install --quiet --break-system-packages onnxruntime 2>/dev/null || python3 -m pip install --quiet onnxruntime || true
+          # Into the system site-packages: `python3 -I` (below) ignores the
+          # user site where a plain `pip install` puts it (run 19). A failed
+          # install stops the step here.
+          sudo -H python3 -m pip install --quiet --break-system-packages onnxruntime
+          python3 -I -c 'import onnxruntime, cv2, numpy; print("onnxruntime", onnxruntime.__version__, "cv2", cv2.__version__, "numpy", numpy.__version__)'
           bash scripts/android/fetch-docaligner.sh /tmp/docaligner
           {
             echo
