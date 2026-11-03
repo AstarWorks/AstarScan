@@ -1973,10 +1973,41 @@ const reportRows = computed<ReportViewRow[]>(() =>
   nativeMode ? nativeReportRows.value : reportView.value,
 )
 
+/**
+ * Red notice when the scanner gives no pages back. ML Kit returns the same
+ * "closed" result for Back, for Play services' scanner process dying, and
+ * for its module screen ("Something went wrong" → Cancel), so the app
+ * cannot tell them apart — but it never goes back to the list silently:
+ * the user is told that pages were not received and how to go on.
+ */
+const NATIVE_NOTICE_FIRST =
+  'スキャナーを開けませんでした（ページを受け取れませんでした）。下の「スキャン」でもう一度開いてください。'
+const NATIVE_NOTICE_LATER =
+  'スキャナーが閉じられました。閉じる前に撮ったページ（保存前のもの）は受け取れていません。続けるなら「追加スキャン」を押してください。'
+
+function nativeFailureText(code: string, msg: string): string {
+  if (code === 'MODULE_INSTALL_FAILED' || code === 'MODULE_INSTALL_CANCELED') {
+    return `スキャナーを開けませんでした: Google Play 開発者サービスがスキャナーの部品を入れられませんでした（${msg}）。通信を確認して、もう一度スキャンしてください。`
+  }
+  if (/feature not available/i.test(msg)) {
+    return 'スキャナーを開けませんでした: スキャナーの部品を Google Play 開発者サービスが取得中です（初回のみ）。少し待ってからもう一度スキャンしてください。'
+  }
+  return `スキャナーを開けませんでした: ${msg}。もう一度スキャンしてください。`
+}
+
+/** Plugin rejections carry a code (`MODULE_INSTALL_FAILED`, …) next to the message. */
+function nativeErrorCode(err: unknown): string {
+  if (err && typeof err === 'object' && 'code' in err) {
+    return String((err as { code: unknown }).code)
+  }
+  return ''
+}
+
 async function startNativeScan(): Promise<void> {
   phase.value = 'loading'
   errorText.value = ''
   statusText.value = 'スキャナー起動中…（初回は部品の取得で数分かかります）'
+  let sessions = 0
   try {
     // Scan in sessions of NATIVE_PAGES_PER_SCAN pages: each full session
     // is saved into the list and the scanner opens again for the next
@@ -1984,7 +2015,12 @@ async function startNativeScan(): Promise<void> {
     // A session the user ends (Back / save before the limit) stops it.
     for (;;) {
       const res = await nativeScan(NATIVE_PAGES_PER_SCAN)
-      if (res.canceled || res.pages.length === 0) break
+      if (res.canceled || res.pages.length === 0) {
+        errorText.value =
+          sessions === 0 ? NATIVE_NOTICE_FIRST : NATIVE_NOTICE_LATER
+        break
+      }
+      sessions++
       statusText.value = '取り込み中…'
       const now = Date.now()
       const pages: Page[] = []
@@ -2005,14 +2041,15 @@ async function startNativeScan(): Promise<void> {
       if (res.pages.length < NATIVE_PAGES_PER_SCAN) break
       statusText.value = `${captured.value.length} ページ保存済み。続きを撮影します…`
     }
-    phase.value = captured.value.length > 0 ? 'done' : 'idle'
+    // No page at all: the start screen shows the notice in red (error
+    // phase) with 「スキャン」 under it; with pages, the list shows it.
+    phase.value =
+      captured.value.length > 0 ? 'done' : errorText.value ? 'error' : 'idle'
     statusText.value = ''
   } catch (err) {
-    phase.value = 'error'
     const msg = nativeErrorMessage(err)
-    errorText.value = /feature not available/i.test(msg)
-      ? 'スキャナーの部品を Google Play 開発者サービスが取得しています（初回のみ・数分〜10 分ほど）。少し待ってからもう一度「スキャン」を押してください。'
-      : `スキャナーを起動できませんでした: ${msg}`
+    errorText.value = nativeFailureText(nativeErrorCode(err), msg)
+    phase.value = captured.value.length > 0 ? 'done' : 'error'
     statusText.value = ''
   }
 }

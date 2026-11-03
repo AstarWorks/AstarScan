@@ -37,6 +37,7 @@ FEED_STATUS=${FEED_STATUS:-/tmp/feed.status}
 mkdir -p "$OUT"
 n=0
 printf 'clip\tcapture\thold\tframe\tshot\tkept\n' >"$OUT/captures.tsv"
+printf 'clip\tholds\tshot\tshown\ttext\n' >"$OUT/notices.tsv"
 
 log() { echo "[emulator-check] $(date +%H:%M:%S) $*" | tee -a "$OUT/steps.log"; }
 
@@ -264,6 +265,27 @@ close_scanner() {
   return 1
 }
 
+# scanner_failed_notice <clip> <holds of the session> — after Cancel on
+# Play services' failed module screen: wait for the app, keep its screen
+# and record in notices.tsv whether it showed its red notice (book-measure
+# counts the session's untaken pages as "red notice", not silent, only then).
+NOTICE_RE='スキャナーを開けませんでした|スキャナーが閉じられました'
+scanner_failed_notice() {
+  local i shown=0 text=
+  for i in 1 2 3 4 5 6 7 8 9 10; do
+    sleep 2
+    dump
+    case $(kind) in app-*) break ;; esac
+  done
+  shot "$1-scanner-failed-notice"
+  if grep -qE "$NOTICE_RE" "$OUT/ui.xml" 2>/dev/null; then
+    shown=1
+    text=$(grep -oE "($NOTICE_RE)[^\"]*" "$OUT/ui.xml" | head -n1)
+  fi
+  log "$1: app after the failed scanner: red notice shown=$shown ${text:+($text)}"
+  printf '%s\t%s\t%s\t%s\t%s\n' "$1" "$2" "$SHOT" "$shown" "$text" >>"$OUT/notices.tsv"
+}
+
 # scan_session <clip> <index of its first capture in the clip> <holds>
 # One ML Kit scan (at most SESSION_MAX pages), saved into the app. Returns
 # 1 when nothing was saved.
@@ -444,7 +466,7 @@ scan_session() {
             shot "$clip-module-update-failed"
             log "$clip: Play services could not update the scanner module; cancelling to open the scanner again"
             tap_now '^Cancel$' "$GMS" || adb shell input keyevent KEYCODE_BACK
-            sleep 3
+            scanner_failed_notice "$clip" "${plan[*]}"
           else
             sleep 5
           fi
