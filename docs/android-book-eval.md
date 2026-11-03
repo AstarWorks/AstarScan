@@ -40,7 +40,7 @@ what ML Kit saw. GitHub's `ubuntu-latest` runner loads `v4l2loopback`
 | 12  | fcb9918 | a gap with unread captures inside is shown as 欠番？; probe gets 30 min                                                                       | 41 taken, 41 reached the list, no crash                                                                                                                                                                                                                       | spreads: mean 16.4 / 12.0 / 11.6, max 29; single-port-wood: 18.5 (max 41); single-land-white: 11.8 (max 95)                                                                                                                                   | 1 (p37 — single-land-white read only p43 this time, so no 欠番 covers p37); numbers **11 right / 0 wrong**; false 抜け 0; plain 抜け spanning a captured page 0 (6〜8 and 10〜12 shown as 欠番？)     |
 | 13  | 194b33e | folio crops enlarged to 64 px with stretched levels                                                                                           | 41 taken, 41 reached the list, no crash; PDF saved                                                                                                                                                                                                            | spreads: mean 13.3 / 11.4 / 14.2, max 26; single-port-wood: 19.4 (max 53); single-land-white: 17.2 (max 117)                                                                                                                                  | 1 (p37); numbers 8 right / 0 wrong; false 抜け 0; plain 抜け spanning a captured page 0 (8〜12 shown as 欠番？)                                                                                       |
 | 13b | bdd0f91 | run 13 reverted to the run 12 folio pass (the push's own CI run, no new change)                                                               | 41 taken, 41 reached the list, no crash                                                                                                                                                                                                                       | spreads: mean 14.9 / 11.0 / 15.2, max 35; single-port-wood: 17.7 (max 46); single-land-white: 8.5 (max 21)                                                                                                                                    | 1 (p37); numbers 11 right / 0 wrong; false 抜け 0; plain 抜け spanning a captured page 0                                                                                                              |
-| 13c | 2b2c3e7 | docs-only push; same app code as 13b                                                                                                          | 41 taken, 21 reached the list — ML Kit's scanner (Play services 26.43.30) crashed with the `CarouselLayoutManager` NullPointerException of runs 4–5 nine times in single-port-wood and single-land-white; the scans it took were lost before the app got them | spreads: mean 14.9 / 12.3 / 13.7, max 31                                                                                                                                                                                                      | 20 (all pages of the two lost clips; the 3 spread clips: 0); numbers 0 / 0 (the spreads are not read at this size); false 抜け 0                                                                      |
+| 13c | 2b2c3e7 | docs-only push; same app code as 13b (run 41544015513) | 41 taken, 21 reached the list — Play services' scanner process (26.43.30) died 10 times in single-port-wood and single-land-white: 1 Java NullPointerException in its `CarouselLayoutManager`, 9 native SIGSEGVs in its glide thumbnail thread (tombstones; logcat has no "FATAL EXCEPTION" line for these); every page of the scan it held was lost | spreads: mean 14.9 / 12.3 / 13.7, max 31 | 20 (all pages of the two lost clips; the 3 spread clips: 0); numbers 0 / 0 — no single-page row reached the list, and the numbers of runs 11–13b were all read on the single-page clips (the spreads read 0 in every run), so this is the lost pages, not a reading change |
 
 Run 2 finding: the portrait scanner shows only a 3:4 window at the left
 of the 1280×960 webcam frame (columns 0–719), upright. The feed had
@@ -351,6 +351,49 @@ Run 13 findings (run 41515622322):
   the tl corner at the curled spine (see the run 9 check),
   single-land-white max 117 a capture whose left edge sat on the facing
   page (as in runs 4–8).
+
+Run 13c findings (run 41544015513, logcat + steps.log + every adjust screenshot opened):
+
+- Why the scanner closed, all 10 times: `com.google.android.gms.ui` (the
+  scanner's process) died. 00:28:00 Java `NullPointerException` in
+  `CarouselLayoutManager` right after Add page; the other 9 (00:29:48,
+  00:34:36, 00:37:54, 00:38:54, 00:41:05, 00:42:03, 00:43:14, 00:45:37,
+  00:46:44) are native `SIGSEGV` in thread `glide-source-th` of
+  `dl-MlkitDocscanUi.optional_264330100800.apk`, all at fault address
+  0x4ab9f000/8, followed by `GmsDocScanDelAct: Failed to handle scanning
+  result` in the app. No low-memory kill. Not the check's Back, not a
+  time-out: the activity result was a cancel because the process was gone.
+  6 of the 9 native crashes came within 1 s of the check pressing
+  **Apply** on the Crop & rotate screen it opens only to record ML Kit's
+  frame (the review then reloads the re-cropped page), 2 within 3–5 s of
+  Add page, 1 after a shutter press. Run 13b (same APK, same Play services
+  26.43.30) had none, so the crash is intermittent.
+- Check script faults found on the way: (1) the third try of
+  single-port-wood started with 20 s of the session budget left (the budget
+  was not renewed after a lost scan), so the clip saved nothing; (2) at
+  00:27:34 the "shutter" pressed was the review carousel's "Page 4 of 6"
+  (the dump showed the review, not the camera); (3) a later session lost
+  on the list screen would not have been recorded as lost.
+- Frames (adjust screenshots): spreads on the outer corners of the open
+  book as before. single-land-white 137 (also 129 and 160, tl 92 / 108 px): top, right and
+  bottom edges on p31; the left edge is at the left border of the image,
+  past the gutter shadow, so a strip of the facing page (text fragments
+  and a figure edge) is inside the frame (tl error 118 px). ML Kit's own
+  detection; the other 5 tries of the same page (133, 141, 145, 150, 154)
+  put the left edge on the gutter (tl 4–21 px; 150 opened: on the gutter).
+
+Fixes after 13c (run 14):
+
+- App: the ML Kit scanner is opened with a page limit of 5
+  (`NATIVE_PAGES_PER_SCAN`, `setPageLimit`); each full session is saved
+  into the list and the app opens the scanner again by itself, until a
+  session ends with fewer pages (Back or save). A scanner crash now loses
+  at most the pages of one short session.
+- Check: sessions of 5 pages to match; the record-only Crop & rotate
+  screen is left with **Close**, not Apply (the page is not re-cropped);
+  no shutter press when the fresh dump shows the review; a lost session is
+  detected on the list screen too and gets a fresh time budget; the
+  shutter finder skips carousel / edit-menu nodes.
 
 Runs 10–13 summary (the 4 runs of this round):
 
