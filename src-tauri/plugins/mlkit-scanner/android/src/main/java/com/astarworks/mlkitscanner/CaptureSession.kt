@@ -50,6 +50,8 @@ class CaptureSession(known: Collection<Int> = emptyList(), step: Int = 0) {
     var step: Int = step
         private set
     private var lastSingle: Int? = null
+    /** Pages kept without a number since the last numbered one: they may be the pages a jump skips. */
+    private var unreadSince = 0
 
     /** Highest number taken so far (this screen or the list before it). */
     val last: Int? get() = if (taken.isEmpty()) null else taken.last()
@@ -116,6 +118,7 @@ class CaptureSession(known: Collection<Int> = emptyList(), step: Int = 0) {
         if (nums.isEmpty()) {
             pages.add(pos, Page(name, width, height, nums, spread, "unread"))
             lastSingle = null
+            unreadSince += if (spread) 2 else 1
             return Outcome.Unread
         }
         val sorted = nums.sorted()
@@ -150,7 +153,11 @@ class CaptureSession(known: Collection<Int> = emptyList(), step: Int = 0) {
         }
         pages.add(pos, Page(name, width, height, sorted, spread, "ok"))
         taken.addAll(sorted)
-        if (gap.isEmpty()) return Outcome.Taken(sorted)
+        // As many pages as were skipped were taken without a number: they
+        // are most likely those pages, not missing ones.
+        val unread = unreadSince
+        unreadSince = 0
+        if (gap.isEmpty() || gap.size <= unread) return Outcome.Taken(sorted)
         missing.addAll(gap)
         return Outcome.Gap(sorted, gap)
     }

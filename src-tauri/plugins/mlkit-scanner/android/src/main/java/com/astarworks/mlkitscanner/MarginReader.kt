@@ -37,6 +37,10 @@ import java.util.concurrent.TimeoutException
 object MarginReader {
     private const val FOLIO_TEXT_PX = 48
     private const val MAX_FOLIO_SEGMENTS = 4
+    /** Height of the top / bottom centre strips (share of the page height). */
+    private const val CENTER_STRIP_FRAC = 0.07
+    /** A page number's height as a share of the page height (~9–10 px on a 1040 px page). */
+    private const val FOLIO_TEXT_FRAC = 0.009
     /** White rows between the pieces put into one picture. */
     private const val GAP_PX = 24
     /**
@@ -143,6 +147,16 @@ object MarginReader {
                 val up = (FOLIO_TEXT_PX.toFloat() / sh).coerceIn(1f, 8f)
                 tiles.add(Tile(Rect(x0, ry0, x1, ry1), up))
             }
+        }
+        // Where a folio usually sits: the middle of the top and bottom
+        // margins (and their outer corners on a spread), cut out whether or
+        // not a piece was found there (run 22: single-land-white's "— 33 —"
+        // next to a thumb was found on 1 page of 10).
+        val strip = (h * CENTER_STRIP_FRAC).toInt().coerceAtLeast(4)
+        val upC = (FOLIO_TEXT_PX / (h * FOLIO_TEXT_FRAC)).toFloat().coerceIn(1f, 3.5f)
+        for (top in listOf(true, false)) {
+            val ry0 = if (top) 0 else h - strip
+            tiles.add(Tile(Rect((w * 0.3).toInt(), ry0, (w * 0.7).toInt(), ry0 + strip), upC))
         }
         if (tiles.isEmpty()) return emptyList()
         return recognizeTiles(page, tiles, "folio")

@@ -143,7 +143,11 @@ class CaptureActivity : ComponentActivity() {
         super.onCreate(savedInstanceState)
         window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
         val known = intent.getIntArrayExtra(EXTRA_KNOWN)?.toList() ?: emptyList()
-        session = CaptureSession(known, intent.getIntExtra(EXTRA_STEP, 0))
+        // The step (every page / one side only) belongs to the book being
+        // taken: with an empty list it is learnt again (run 22: the web app's
+        // default 1 made 3, 5, 7 … of a right-pages-only book "jumps", every
+        // one red and read twice).
+        session = CaptureSession(known, if (known.isEmpty()) 0 else intent.getIntExtra(EXTRA_STEP, 0))
         evalDir = getExternalFilesDir("eval")?.takeIf { File(it, ".on").exists() }
         buildUi()
         onBackPressedDispatcher.addCallback(this, object : OnBackPressedCallback(true) {
@@ -679,7 +683,7 @@ class CaptureActivity : ComponentActivity() {
         JSONObject()
             .put("pages", pages)
             .put("missing", JSONArray(session.missing.toList()))
-            .put("sideStep", if (session.step == 0) 1 else session.step)
+            .put("sideStep", session.step)
             .put("final", closing)
     }
 
