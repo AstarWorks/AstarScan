@@ -2422,10 +2422,7 @@ function pageIndexById(id: string): number {
       >
     </div>
 
-    <section
-      v-show="!nativeListShown || !!selectedPage"
-      class="viewport"
-    >
+    <section v-show="!nativeListShown || !!selectedPage" class="viewport">
       <p
         v-if="nativeMode && errorText && !nativeListShown && !selectedPage"
         class="native-error native-error--overlay"
