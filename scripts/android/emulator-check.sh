@@ -82,7 +82,15 @@ xy() { python3 "$HERE/ui.py" find "$OUT/ui.xml" "$1" "${2:-}"; }
 # shellcheck disable=SC2086
 tap_now() { local p; p=$(xy "$@") || return 1; log "tap '$1' at $p"; adb shell input tap $p; }
 
-feed() { echo "$1 $2" >"$FEED_CONTROL"; log "feed -> $1 hold $2"; }
+# feed <clip> <hold> — also marks the hold in the device log, so
+# book-measure.py ties every page the screen took to the hold it was taken
+# in by log order (run 21: by clock time, every hold after the first came
+# out blank).
+feed() {
+  echo "$1 $2" >"$FEED_CONTROL"
+  adb shell log -t AstarScanEval "hold $1 $2" 2>/dev/null || true
+  log "feed -> $1 hold $2"
+}
 
 log "webcams seen by the emulator:"
 "${ANDROID_SDK_ROOT:-/usr/local/lib/android/sdk}/emulator/emulator" -webcam-list 2>&1 | tee -a "$OUT/steps.log"

@@ -268,9 +268,30 @@ def _fold(p, from_right):
     return best / w
 
 
-def _corners(a, b, ya, yb):
+def _shadow(p, from_right):
+    """GutterTrim.shadow: the darkest column in [0, SEARCH_TO] of one side
+    when it is clearly darker than the paper (no facing page needed: the
+    frame may end right at the fold), else None."""
+    w = len(p)
+    at = (lambda d: p[w - 1 - d]) if from_right else (lambda d: p[d])
+    mid = sorted(p[int(np.ceil(w * 0.35)):int(w * 0.65) + 1])
+    if not mid:
+        return None
+    paper = mid[len(mid) // 2]
+    best = min(range(0, int(w * SEARCH_TO) + 1), key=lambda d: (at(d), d))
+    return best / w if at(best) <= paper * SHADOW_MAX else None
+
+
+def _corners(a, b, ya, yb, pa=None, pb=None, from_right=False):
     if a is None and b is None:
         return 0.0, 0.0
+    # One band found the fold: the other band's shadow (it may sit at the
+    # frame's very edge) gives the fold's slant (run 21: a curved gutter cut
+    # at the found band's height only left the corner 39 px past the spine).
+    if a is None and pa is not None:
+        a = _shadow(pa, from_right)
+    if b is None and pb is not None:
+        b = _shadow(pb, from_right)
     if a is None:
         return 0.0, b
     if b is None:
@@ -283,8 +304,8 @@ def gutter_cut(lum):
     h = lum.shape[0]
     per = [_band_profile(lum, int(h * a), int(h * b)) for a, b in BANDS]
     y0, y1 = sum(BANDS[0]) / 2, sum(BANDS[1]) / 2
-    lt, lb = _corners(_fold(per[0], False), _fold(per[1], False), y0, y1)
-    rt, rb = _corners(_fold(per[0], True), _fold(per[1], True), y0, y1)
+    lt, lb = _corners(_fold(per[0], False), _fold(per[1], False), y0, y1, per[0], per[1], False)
+    rt, rb = _corners(_fold(per[0], True), _fold(per[1], True), y0, y1, per[0], per[1], True)
     return lt, lb, rt, rb
 
 

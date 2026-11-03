@@ -236,7 +236,7 @@ def parse_quad(s):
 
 def read_events(path):
     """Captures and pages from events.log, each with the clip it belongs to."""
-    caps, pages, clip = {}, {}, None
+    caps, pages, clip, hold = {}, {}, None, None
     try:
         f = open(path, encoding="utf-8", errors="replace")
     except FileNotFoundError:
@@ -245,14 +245,19 @@ def read_events(path):
         for line in f:
             m = re.search(r"AstarScanEval\s*:\s*clip (\S+)", line)
             if m:
-                clip = m.group(1)
+                clip, hold = m.group(1), None
+                continue
+            # emulator-check.sh feed(): the hold the camera is turned to.
+            m = re.search(r"AstarScanEval\s*:\s*hold (\S+) (\d+)", line)
+            if m:
+                clip, hold = m.group(1), int(m.group(2))
                 continue
             m = re.search(r"AstarScanCapture\s*:\s*capture (\S+) t=(\d+) photo=(\d+)x(\d+) source=(\S+) spread=(\S+) found=(\S+) kept=(\S+)", line)
             if m and clip:
                 caps[m.group(1)] = {"name": m.group(1), "clip": clip, "t": int(m.group(2)) / 1000.0,
                                     "photo": (int(m.group(3)), int(m.group(4))), "source": m.group(5),
                                     "spread": m.group(6) == "true", "found": parse_quad(m.group(7)),
-                                    "kept": parse_quad(m.group(8))}
+                                    "kept": parse_quad(m.group(8)), "hold_mark": hold}
                 continue
             m = re.search(r"AstarScanCapture\s*:\s*page (\S+) kind=(\S+) nums=\[([\d, ]*)\]", line)
             if m:
@@ -344,12 +349,24 @@ def measure(c, out, gts, feedlog, offset, size, video):
         return {"error": "no ground truth"}
     host_t = c["t"] + offset
     shown = [r for r in feedlog if r[1] == c["clip"] and host_t - 1.5 <= r[0] <= host_t + 0.3]
+    mark = c.get("hold_mark")
+    if mark is not None:
+        # The hold comes from the log order (emulator-check.sh feed()); the
+        # feed frames from that hold nearest in time (the clocks may drift).
+        res["hold"] = mark
+        same = [r for r in shown if r[3] == mark]
+        if not same:
+            near = sorted((r for r in feedlog if r[1] == c["clip"] and r[3] == mark), key=lambda r: abs(r[0] - host_t))
+            same = near[:15]
+        shown = same
     if not shown:
-        return {"error": "no feed frame at that time"}
-    holds = {}
-    for r in shown:
-        holds[r[3]] = holds.get(r[3], 0) + 1
-    res["hold"] = max(holds, key=holds.get)
+        res["error"] = "no feed frame at that time"
+        return res
+    if mark is None:
+        holds = {}
+        for r in shown:
+            holds[r[3]] = holds.get(r[3], 0) + 1
+        res["hold"] = max(holds, key=holds.get)
     photo = cv2.imread(os.path.join(out, "eval", c["name"].replace(".jpg", "-frame.jpg")))
     if photo is None:
         res["error"] = "no camera picture"
@@ -482,6 +499,10 @@ def main():
         shown = {p for c in cc if c.get("kind") not in (None, "duplicate") for p in (truth[c["measure"]["hold"]] if "hold" in c["measure"] and c["measure"]["hold"] < len(truth) else [])}
         book = set(g["pages"])
         false_red = [gp["range"] for gp in gaps if gp["range"] and not any(p in book and p not in shown and p in g["target_pages"] for p in range(gp["range"][0], gp["range"][1] + 1))]
+        kept_caps = [c for c in cc if c.get("kind") != "duplicate"]
+        per_hold = {}
+        for c in kept_caps:
+            per_hold[c["measure"].get("hold")] = per_hold.get(c["measure"].get("hold"), 0) + 1
         red_n = sum(1 for n in notices if n["clip"] == name and n["kind"] == "gap")
         yel_n = sum(1 for n in notices if n["clip"] == name and n["kind"] == "yellow")
         c_out = {
@@ -492,25 +513,33 @@ def main():
             "wrong": stats["wrong_list"], "list_rows": len(rows), "list_red": [gp["range"] for gp in gaps],
             "list_false_red": false_red, "list_grey": sum(1 for r in rows if r["state"] in ("unread", "failed")),
             "leftover_not_received": leftover, "notices_red": red_n, "notices_yellow": yel_n,
+            "pages_taken": len(kept_caps), "pages_extra": len(kept_caps) - len([h for h in per_hold if h is not None]),
+            "pages_dropped_as_taken": sum(1 for c in cc if c.get("kind") == "duplicate"),
         }
         clips_out.append(c_out)
-    md.append("| clip | pages in plan | 撮れた | 赤 | 灰（番号なし） | 黄 | 撮影済み | 何も出ない | corner err mean / max (clip px) | numbers right / wrong / unread | list: rows, red rows (false), grey | 「受け取れていません」 left | notices.tsv red / yellow |")
-    md.append("| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |")
+    md.append("| clip | pages in plan | 撮れた | 赤 | 灰（番号なし） | 黄 | 撮影済み | 何も出ない | pages taken (same hold again) | corner err mean / max (clip px) | numbers right / wrong / unread | list: rows, red rows (false), grey | 「受け取れていません」 left | notices.tsv red / yellow |")
+    md.append("| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |")
     tot = {"none": 0, "wrong": 0}
     for c in clips_out:
         s = c["said"]
         md.append(f"| {c['clip']} | {c['steps']} | {s.get('taken', 0) + s.get('filled', 0) + s.get('shot', 0)} | {s.get('gap', 0) + s.get('gap-notice', 0)} | "
                   f"{s.get('unread', 0)} | {s.get('yellow', 0)} | {s.get('duplicate', 0)} | {s.get('none', 0)} | "
+                  f"{c['pages_taken']} ({c['pages_extra']}) | "
                   f"{c['corner_mean_px']} / {c['corner_max_px']} | {c['numbers_right']} / {c['numbers_wrong']} / {c['numbers_unread']} | "
                   f"{c['list_rows']}, {c['list_red'] or '-'} ({c['list_false_red'] or 0}), {c['list_grey']} | {c['leftover_not_received']} | "
                   f"{c['notices_red']} / {c['notices_yellow']} |")
         tot["none"] += s.get("none", 0)
         tot["unread_said"] = tot.get("unread_said", 0) + s.get("unread", 0)
         tot["wrong"] += c["numbers_wrong"]
+        tot["right"] = tot.get("right", 0) + c["numbers_right"]
+        tot["extra"] = tot.get("extra", 0) + c["pages_extra"]
+        tot["rows"] = tot.get("rows", 0) + c["list_rows"]
     md.append("")
     skip = [r for r in checks if r["clip"] == "single-land-white" and r["hold"] in ("4", "3")]
     skip_txt = "; ".join(f"hold {r['hold']}: {SAID.get(r['result'], r['result'])} {r['text']}" for r in skip) or "not run"
-    md.append(f"Total: {sum(c['steps'] for c in clips_out)} pages in the plan, {tot['none']} with nothing shown, {tot['wrong']} numbers wrong. "
+    md.append(f"Total: {sum(c['steps'] for c in clips_out)} pages in the plan, {tot['none']} with nothing shown, "
+              f"{tot.get('extra', 0)} pages taken again in the same hold, {tot.get('rows', 0)} list rows, "
+              f"{tot.get('right', 0)} numbers right, {tot['wrong']} numbers wrong. "
               f"Skipped page (single-land-white p37): {skip_txt}.")
     md.append("")
     # How long reading a page number takes (it runs while the user turns on).
@@ -523,10 +552,21 @@ def main():
     md.append(f"| one page's number (first read, + second read when needed) | {ms_stats([c['number_ms'] for c in caps if 'number_ms' in c])} |")
     md.append(f"| first read only | {ms_stats([c['read_ms'] for c in caps if 'read_ms' in c])} |")
     md.append(f"| waiting behind earlier pages | {ms_stats([c['queued_ms'] for c in caps if 'queued_ms' in c])} |")
-    for ps in ("band", "folio", "warmup"):
+    label = {"band": "band (while taking pages)", "folio": "folio (while taking pages)", "warmup": "warmup (screen opening)",
+             "solo": "band picture alone (camera stopped, on close)"}
+    for ps in ("band", "folio", "warmup", "solo"):
         calls = [o for o in ocr if o["pass"] == ps]
         bad = sum(1 for o in calls if not o["ok"])
-        md.append(f"| one ML Kit call, {ps} | {ms_stats([o['ms'] for o in calls])}{f', {bad} failed' if bad else ''} |")
+        md.append(f"| one ML Kit call, {label[ps]} | {ms_stats([o['ms'] for o in calls])}{f', {bad} failed' if bad else ''} |")
+    waits = []
+    try:
+        for line in open(os.path.join(a.out, "events.log"), encoding="utf-8", errors="replace"):
+            m = re.search(r"AstarScanMlkit\s*:\s*waited (\d+)ms for the previous call", line)
+            if m:
+                waits.append(int(m.group(1)))
+    except OSError:
+        pass
+    md.append(f"| a call waiting for the previous one (timed out, still in ML Kit) | {ms_stats(waits)} |")
     timeouts = 0
     try:
         timeouts = sum(1 for line in open(os.path.join(a.out, "events.log"), encoding="utf-8", errors="replace") if "text recognition timed out" in line)

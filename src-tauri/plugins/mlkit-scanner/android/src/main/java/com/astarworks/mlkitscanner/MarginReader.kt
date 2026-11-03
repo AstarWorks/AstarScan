@@ -8,6 +8,7 @@ import android.graphics.Rect
 import android.os.SystemClock
 import android.util.Log
 import com.google.android.gms.tasks.OnCompleteListener
+import com.google.android.gms.tasks.Task
 import com.google.android.gms.tasks.Tasks
 import com.google.mlkit.vision.common.InputImage
 import com.google.mlkit.vision.text.Text
@@ -44,11 +45,16 @@ object MarginReader {
      * every call is logged ("ocr …") when it ends.
      */
     private const val RECOGNIZE_TIMEOUT_MS = 20_000L
-    private const val TAG = "AstarScanMlkit"
-    /** How long a new call waits for one still running before it is sent anyway. */
+    /**
+     * A call that timed out still runs inside ML Kit; the next call waits
+     * up to this long for it first. Run 21 started a new call after every
+     * 20 s timeout, ML Kit queued them, and single calls then took 70–180 s.
+     */
     private const val PREVIOUS_WAIT_MS = 60_000L
-    private val gate = Any()
-    @Volatile private var last: com.google.android.gms.tasks.Task<Text>? = null
+    private const val TAG = "AstarScanMlkit"
+    /** The last call handed to ML Kit (one at a time, see PREVIOUS_WAIT_MS). */
+    private var inFlight: Task<Text>? = null
+    private val callLock = Any()
 
     private val recognizer by lazy {
         TextRecognition.getClient(JapaneseTextRecognizerOptions.Builder().build())
@@ -81,18 +87,34 @@ object MarginReader {
      * and per piece of print (up to 10 a page) took 60–80 s a page on the
      * CI emulator; one call costs about the same as each of those.
      */
-    fun bandLines(page: Bitmap, marginFrac: Double, minWidth: Int): List<PageNumbers.Line> {
+    fun bandLines(page: Bitmap, marginFrac: Double, minWidth: Int): List<PageNumbers.Line> =
+        recognizeTiles(page, bandTiles(page, marginFrac, minWidth), "band")
+
+    private fun bandTiles(page: Bitmap, marginFrac: Double, minWidth: Int): List<Tile> {
         val w = page.width
         val h = page.height
         val band = (h * marginFrac.coerceIn(0.02, 0.5)).toInt().coerceAtLeast(1)
         // To minWidth either way: a wider band only costs recognition time
-        // (the camera saw the page at well under 1600 px).
+        // (the camera saw the page at well under 1000 px).
         val up = (minWidth.toFloat() / w).coerceIn(0.25f, 4f)
-        val tiles = listOf(
+        return listOf(
             Tile(Rect(0, 0, w, band), up),
             Tile(Rect(0, h - band, w, h), up),
         )
-        return recognizeTiles(page, tiles, "band")
+    }
+
+    /** The picture `bandLines` hands to ML Kit (for [timeAlone]). */
+    fun bandPicture(page: Bitmap, marginFrac: Double, minWidth: Int): Bitmap = compose(page, bandTiles(page, marginFrac, minWidth))
+
+    /**
+     * One ML Kit call on `pic` (consumed), logged as "ocr solo …": the
+     * capture screen runs it when it closes, with the camera stopped and
+     * no page being read, so the log shows what one call costs on this
+     * device alone next to the calls made while pages were being taken.
+     */
+    fun timeAlone(pic: Bitmap, note: String) {
+        Log.i(TAG, "solo call ($note)")
+        recognize(pic, "solo 1")
     }
 
     /**
@@ -157,18 +179,7 @@ object MarginReader {
      * centre normalised to the page.
      */
     private fun recognizeTiles(page: Bitmap, tiles: List<Tile>, pass: String): List<PageNumbers.Line> {
-        var y = 0
-        var cw = 1
-        for (t in tiles) {
-            t.top = y
-            y += t.outH + GAP_PX
-            cw = maxOf(cw, t.outW)
-        }
-        val ch = (y - GAP_PX).coerceAtLeast(1)
-        val pic = Bitmap.createBitmap(cw, ch, Bitmap.Config.ARGB_8888)
-        val canvas = Canvas(pic)
-        canvas.drawColor(Color.WHITE)
-        for (t in tiles) canvas.drawBitmap(page, t.src, Rect(0, t.top, t.outW, t.top + t.outH), paint)
+        val pic = compose(page, tiles)
         val text = recognize(pic, "$pass ${tiles.size}") ?: return emptyList()
         val out = ArrayList<PageNumbers.Line>()
         for (block in text.textBlocks) {
@@ -191,30 +202,46 @@ object MarginReader {
         return out
     }
 
+    /** The tiles one under the other, white between them (sets each tile's `top`). */
+    private fun compose(page: Bitmap, tiles: List<Tile>): Bitmap {
+        var y = 0
+        var cw = 1
+        for (t in tiles) {
+            t.top = y
+            y += t.outH + GAP_PX
+            cw = maxOf(cw, t.outW)
+        }
+        val ch = (y - GAP_PX).coerceAtLeast(1)
+        val pic = Bitmap.createBitmap(cw, ch, Bitmap.Config.ARGB_8888)
+        val canvas = Canvas(pic)
+        canvas.drawColor(Color.WHITE)
+        for (t in tiles) canvas.drawBitmap(page, t.src, Rect(0, t.top, t.outW, t.top + t.outH), paint)
+        return pic
+    }
+
     /**
      * One ML Kit call on `input`, which is ML Kit's from here on: recycled
      * when its task ends, never before (run 20: recycling it on a timeout
      * left ML Kit reading recycled bitmaps). Logs the call's real time.
      * Null when it fails or does not end within RECOGNIZE_TIMEOUT_MS.
      */
-    private fun recognize(input: Bitmap, what: String): Text? {
+    private fun recognize(input: Bitmap, what: String): Text? = synchronized(callLock) {
+        val prev = inFlight
+        if (prev != null && !prev.isComplete) {
+            val tw = SystemClock.elapsedRealtime()
+            try {
+                Tasks.await(prev, PREVIOUS_WAIT_MS, TimeUnit.MILLISECONDS)
+            } catch (e: InterruptedException) {
+                Thread.currentThread().interrupt()
+            } catch (_: Exception) {
+            }
+            Log.i(TAG, "waited ${SystemClock.elapsedRealtime() - tw}ms for the previous call before $what")
+        }
         val w = input.width
         val h = input.height
-        // One call at a time: a call that ran past the wait below is waited
-        // for before the next is sent (run 21: calls sent behind unfinished
-        // ones queued up inside ML Kit, 55–130 s each).
-        val task = synchronized(gate) {
-            val prev = last
-            if (prev != null && !prev.isComplete) {
-                try {
-                    Tasks.await(prev, PREVIOUS_WAIT_MS, TimeUnit.MILLISECONDS)
-                } catch (e: Exception) {
-                    Log.w(TAG, "previous text recognition still running (${e.javaClass.simpleName})")
-                }
-            }
-            recognizer.process(InputImage.fromBitmap(input, 0)).also { last = it }
-        }
         val t0 = SystemClock.elapsedRealtime()
+        val task = recognizer.process(InputImage.fromBitmap(input, 0))
+        inFlight = task
         task.addOnCompleteListener(
             Executor { it.run() },
             OnCompleteListener<Text> { t ->
@@ -223,7 +250,7 @@ object MarginReader {
                 input.recycle()
             },
         )
-        return try {
+        try {
             Tasks.await(task, RECOGNIZE_TIMEOUT_MS, TimeUnit.MILLISECONDS)
         } catch (e: TimeoutException) {
             Log.w(TAG, "text recognition timed out ($what ${w}x$h)")

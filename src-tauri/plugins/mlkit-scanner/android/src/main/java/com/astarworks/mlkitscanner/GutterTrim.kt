@@ -90,11 +90,24 @@ object GutterTrim {
         val per = BANDS.map { b -> bandProfile(lum, w, h, (h * b[0]).toInt(), (h * b[1]).toInt()) }
         val y0 = (BANDS[0][0] + BANDS[0][1]) / 2
         val y1 = (BANDS[1][0] + BANDS[1][1]) / 2
-        val left = per.map { fold(it, false) }
-        val right = per.map { fold(it, true) }
-        val (lt, lb) = corners(left[0], left[1], y0, y1)
-        val (rt, rb) = corners(right[0], right[1], y0, y1)
+        val (lt, lb) = side(per, false, y0, y1)
+        val (rt, rb) = side(per, true, y0, y1)
         return Cut(lt, lb, rt, rb)
+    }
+
+    /**
+     * One side's cut. When only one band finds the fold, the other band's
+     * shadow — which may sit right at the frame's edge, with no facing page
+     * beyond it — gives the fold's slant: run 21 cut a curved gutter at the
+     * found band's height only, leaving single-land-white's top-left corner
+     * 39 px past the spine (corner-compare.py: 17 → 26 of 40 frames within 2 %).
+     */
+    private fun side(per: List<DoubleArray>, fromRight: Boolean, y0: Double, y1: Double): Pair<Double, Double> {
+        var a = fold(per[0], fromRight)
+        var b = fold(per[1], fromRight)
+        if (a == null && b != null) a = shadow(per[0], fromRight)
+        if (b == null && a != null) b = shadow(per[1], fromRight)
+        return corners(a, b, y0, y1)
     }
 
     /**
@@ -167,6 +180,23 @@ object GutterTrim {
         val wide = (0 until best).count { at(it) >= floor }
         if (wide < w * BEYOND_WIDTH) return null
         return best.toDouble() / w
+    }
+
+    /**
+     * The darkest column in [0, SEARCH_TO] of one side, as a share of the
+     * width, when it is clearly darker than the page's paper (SHADOW_MAX);
+     * unlike [fold] it needs no facing page beyond it. Null otherwise.
+     */
+    private fun shadow(p: DoubleArray, fromRight: Boolean): Double? {
+        val w = p.size
+        fun at(d: Int) = p[if (fromRight) w - 1 - d else d]
+        val mid = (0 until w).filter { it >= w * 0.35 && it <= w * 0.65 }.map { p[it] }.sorted()
+        if (mid.isEmpty()) return null
+        val paper = mid[mid.size / 2]
+        val b = (w * SEARCH_TO).toInt()
+        var best = 0
+        for (d in 0..b) if (at(d) < at(best)) best = d
+        return if (at(best) <= paper * SHADOW_MAX) best.toDouble() / w else null
     }
 
     /** Rewrite `file` with the quad inside the cut warped to a rectangle (JPEG 92). */

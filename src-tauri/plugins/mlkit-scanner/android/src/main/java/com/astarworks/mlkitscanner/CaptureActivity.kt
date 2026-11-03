@@ -49,11 +49,9 @@ import java.util.concurrent.Executors
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicInteger
-import kotlin.math.abs
 import kotlin.math.max
 import kotlin.math.min
 import kotlin.math.roundToInt
-import kotlin.math.sqrt
 
 /**
  * The capture screen: the camera with what the app sees drawn over it.
@@ -65,7 +63,8 @@ import kotlin.math.sqrt
  *    (ML Kit, MarginReader, on its own thread) and, when known, the banner
  *    becomes "✓ 35 ページ 撮れた — めくってください" (if no newer page was
  *    taken since; a missing page found later is always shown in red). The
- *    same page is not taken again until it has been turned.
+ *    same page is not taken again until the camera shows another page
+ *    (PageMatch: the print no longer matches the page taken).
  * 3. When it cannot: yellow "紙全体を画面に入れてください" when no frame is
  *    found or it keeps moving for YELLOW_MS; red "36 ページが抜けています。
  *    戻って撮ってください" when the number jumps (going back and taking it
@@ -117,10 +116,12 @@ class CaptureActivity : ComponentActivity() {
     private var lastGoodAt = 0L
     private var armed = true
     private var turnSeen = false
-    /** Row profiles (see profile()): the page taken last, the newest frame, the frame stillness counts from. */
-    private var takenProfile: Array<FloatArray>? = null
-    private var lastProfile: Array<FloatArray>? = null
-    private var anchorProfile: Array<FloatArray>? = null
+    /** The page last taken, as PageMatch sees it (and where in the picture it was). */
+    private var refFeatures: PageMatch.Features? = null
+    private var refRegion: FloatArray? = null
+    /** After re-arming: the picture stillness counts from; the page is taken only while the print still matches it. */
+    private var candFeatures: PageMatch.Features? = null
+    private var lastMatchAt = 0L
     private var lastCaptureAt = 0L
     private var lastSigLog = 0L
     private var frameInfoLogged = false
@@ -129,6 +130,10 @@ class CaptureActivity : ComponentActivity() {
     @Volatile private var offSince = 0L
     private val busy = AtomicBoolean(false)
     private val finishing = AtomicBoolean(false)
+
+    /** The newest page's band picture, for the solo ML Kit call on close (eval mode only). */
+    private var soloSample: Bitmap? = null
+    private var cameraProvider: ProcessCameraProvider? = null
 
     // Main-thread state.
     private var bannerKind = ""
@@ -184,6 +189,10 @@ class CaptureActivity : ComponentActivity() {
         work.shutdown()
         stillExec.shutdown()
         readExec.shutdown()
+        synchronized(this) {
+            soloSample?.recycle()
+            soloSample = null
+        }
     }
 
     // ------------------------------------------------------------------ UI
@@ -308,6 +317,7 @@ class CaptureActivity : ComponentActivity() {
                         .build(),
                 )
                 .build()
+            cameraProvider = provider
             try {
                 provider.unbindAll()
                 provider.bindToLifecycle(this, CameraSelector.DEFAULT_BACK_CAMERA, preview, analysis, capture)
@@ -340,14 +350,14 @@ class CaptureActivity : ComponentActivity() {
     private fun analyze(image: ImageProxy) {
         try {
             val now = SystemClock.elapsedRealtime()
-            // No frame finding while a page is being cut, nor while the
-            // number of the page just taken is read ("✓ 撮れた" is up, the
-            // user is turning): DocAligner and ML Kit share the CPU, and on a
-            // slow phone (the CI emulator, run 21: one ML Kit call ~3–7 s
-            // alone, ~20 s next to DocAligner) the frame finder starves it.
-            // A phone reads a number in well under a second, so this pause
-            // is short there.
-            val reading = !armed && pendingReads.get() > 0
+            // No frame finding while a page is being cut, nor (for up to
+            // READ_PAUSE_MS) while the number of the page just taken is read
+            // ("✓ 撮れた" is up, the user is turning), and less of it while
+            // older numbers are read: DocAligner and ML Kit share the CPU,
+            // and on a slow phone (the CI emulator, run 21: one ML Kit call
+            // ~3–7 s alone, ~20 s next to DocAligner) the frame finder
+            // starves it. A phone reads a number in well under a second.
+            val reading = !armed && pendingReads.get() > 0 && now - lastCaptureAt < READ_PAUSE_MS
             val every = if (pendingReads.get() > 0) READING_ANALYSIS_MS else ANALYSIS_MS
             if (busy.get() || reading || now - lastAnalyzed < every || finishing.get()) return
             lastAnalyzed = now
@@ -382,7 +392,7 @@ class CaptureActivity : ComponentActivity() {
                     TAG,
                     "status detect=${detectMs}ms peaks=${res?.peaks?.joinToString(",") { "%.2f".format(it) } ?: "-"} " +
                         "plausible=$plausible off=$off frame=${found ?: "-"} stableFor=${if (q != null && anchor != null) now - stableSince else -1} " +
-                        "armed=$armed turnSeen=$turnSeen busy=${busy.get()} reading=${pendingReads.get()} banner=$bannerKind",
+                        "armed=$armed turnSeen=$turnSeen busy=${busy.get()} reading=${pendingReads.get()} banner=$bannerKind cores=${Runtime.getRuntime().availableProcessors()}",
                 )
             }
             val fw = frame.width
@@ -405,7 +415,6 @@ class CaptureActivity : ComponentActivity() {
             nullStreak++
             if (nullStreak >= NULL_RESET) {
                 anchor = null
-                anchorProfile = null
                 recent.clear()
             }
             if (!armed && now - lastCaptureAt > 300) turnSeen = true
@@ -415,42 +424,82 @@ class CaptureActivity : ComponentActivity() {
             while (recent.size > SMOOTH_N) recent.removeFirst()
             val m = median(recent)
             val a = anchor
-            // Still = the corners AND what is printed inside them: during a
-            // page turn the outer corners of a spread stay put (run 21 took
-            // pages with the leaf standing up).
-            val prof = profile(frame, q)
-            val ap = anchorProfile
-            val contentMoved = ap != null && profileDist(ap, prof) > SAME_PAGE
-            if (a == null || contentMoved || m.maxMove(a) > STABLE_TOL * m.diagonal) {
+            if (a == null || m.maxMove(a) > STABLE_TOL * m.diagonal) {
                 if (a != null && !armed && now - lastCaptureAt > 300) turnSeen = true
                 anchor = m
-                anchorProfile = prof
                 stableSince = now
             }
-            lastProfile = prof
             if (now - stableSince >= GOOD_MS) lastGoodAt = now
         }
         val stableFor = if (q != null && anchor != null) now - stableSince else 0L
-        // After a page is taken: wait until another page is held still
-        // (content far from the page taken, and still for STABLE_MS).
-        if (!armed && !busy.get() && q != null && stableFor >= STABLE_MS) {
-            val taken = takenProfile
-            val cur = lastProfile
-            val diff = if (taken != null && cur != null) profileDist(taken, cur) else 1.0
-            if (now - lastSigLog > 1000) {
-                lastSigLog = now
-                Log.i(TAG, "rearm check diff=%.3f turnSeen=$turnSeen".format(diff))
-            }
-            if (diff > NEW_PAGE) {
+        // After a page is taken: not again until the camera shows another
+        // page — its print no longer matches the page taken (PageMatch). A
+        // page with too little print to match (blank) needs a visible turn.
+        if (!armed && !busy.get() && q != null && stableFor >= STABLE_MS && now - lastMatchAt >= MATCH_EVERY_MS) {
+            lastMatchAt = now
+            val ref = refFeatures
+            val t0 = SystemClock.elapsedRealtime()
+            if (ref != null && ref.size >= PageMatch.MIN_FEATURES) {
+                val g = PageMatch.gray(frame)
+                val cur = PageMatch.features(g, refRegion)
+                val n = PageMatch.inliers(ref, cur)
+                val ms = SystemClock.elapsedRealtime() - t0
+                val other = n < PageMatch.OTHER_PAGE
+                if (other || now - lastSigLog > 2000) {
+                    lastSigLog = now
+                    Log.i(TAG, "rearm check match=$n of ${ref.size}/${cur.size} (${ms}ms) ${if (other) "another page" else "same page"} turnSeen=$turnSeen")
+                }
+                if (other) {
+                    armed = true
+                    candFeatures = cur
+                    Log.i(TAG, "armed (match=$n)")
+                }
+            } else if (turnSeen) {
                 armed = true
-                Log.i(TAG, "armed (diff=%.3f turnSeen=$turnSeen)".format(diff))
+                Log.i(TAG, "armed (turn seen; page had ${ref?.size ?: 0} points to match)")
+            }
+            // The new page is taken only after STABLE_MS more of stillness:
+            // the frame that showed "another page" may be mid-turn.
+            if (armed) {
+                stableSince = now
+                return
             }
         }
         if (armed && !busy.get() && q != null && stableFor >= STABLE_MS) {
+            // Still = the corners AND the print: during a turn the outer
+            // corners of a spread stay put (run 21 took pages with the leaf
+            // standing up). The print must match the picture the stillness
+            // counts from; otherwise it counts again from this one.
+            val cand = candFeatures
+            if (cand != null && cand.size >= PageMatch.MIN_FEATURES) {
+                val cur = try {
+                    PageMatch.features(PageMatch.gray(frame), refRegion)
+                } catch (e: Exception) {
+                    null
+                }
+                val n = if (cur != null) PageMatch.inliers(cand, cur) else 0
+                if (cur != null && n < PageMatch.OTHER_PAGE) {
+                    Log.i(TAG, "still check match=$n: the print is still changing")
+                    candFeatures = cur
+                    stableSince = now
+                    return
+                }
+            }
+            candFeatures = null
             armed = false
             turnSeen = false
             lastCaptureAt = now
-            takenProfile = lastProfile
+            lastMatchAt = now
+            try {
+                val g = PageMatch.gray(frame)
+                val region = PageMatch.region(q, g)
+                refRegion = region
+                refFeatures = PageMatch.features(g, region)
+                Log.i(TAG, "reference ${refFeatures?.size} points")
+            } catch (e: Exception) {
+                Log.w(TAG, "page points failed", e)
+                refFeatures = null
+            }
             busy.set(true)
             val copy = frame.copy(Bitmap.Config.ARGB_8888, false)
             val at = System.currentTimeMillis()
@@ -478,65 +527,6 @@ class CaptureActivity : ComponentActivity() {
             return if (s.size % 2 == 1) s[k] else (s[k - 1] + s[k]) / 2
         }
         return Quad(FloatArray(4) { i -> med(l.map { it.x[i] }) }, FloatArray(4) { i -> med(l.map { it.y[i] }) })
-    }
-
-    /**
-     * What is printed on the page, cheaply: per half page (a spread) or for
-     * the page, the darkness of each row (text lines, gaps, figures), zero
-     * mean. Offline on run 21's pictures this told turned pages from the
-     * same page far better than a 32×32 look (which a thumb or the hand
-     * shake changed as much as a turn).
-     */
-    private fun profile(frame: Bitmap, q: Quad): Array<FloatArray> {
-        val small = PageFrame.warp(frame, q, PROFILE_SIDE)
-        val w = small.width
-        val h = small.height
-        val px = IntArray(w * h)
-        small.getPixels(px, 0, w, 0, 0, w, h)
-        small.recycle()
-        val lum = PageFrame.luminance(px)
-        val parts = if (w > h) listOf(0.08 to 0.46, 0.54 to 0.92) else listOf(0.12 to 0.88)
-        return Array(parts.size) { k ->
-            val x0 = (w * parts[k].first).toInt()
-            val x1 = max(x0 + 1, (w * parts[k].second).toInt())
-            val r = FloatArray(h) { y ->
-                var sum = 0
-                for (x in x0 until x1) sum += lum[y * w + x]
-                -sum.toFloat() / (x1 - x0)
-            }
-            val mean = r.average().toFloat()
-            for (i in r.indices) r[i] -= mean
-            r
-        }
-    }
-
-    /** 1 − best correlation of the row profiles over small shifts (worst half page); 0 same, ~1 unrelated. */
-    private fun profileDist(p: Array<FloatArray>, q: Array<FloatArray>): Double {
-        if (p.size != q.size) return 1.0
-        var worst = 0.0
-        for (k in p.indices) {
-            val a = p[k]
-            val b = q[k]
-            val n = min(a.size, b.size)
-            val sh = max(2, n / 25)
-            val cut = n / 10
-            var best = -1.0
-            for (d in -sh..sh) {
-                var ab = 0.0
-                var aa = 0.0
-                var bb = 0.0
-                for (i in cut until n - cut) {
-                    val j = i + d
-                    if (j < 0 || j >= n) continue
-                    ab += a[i] * b[j]
-                    aa += a[i] * a[i]
-                    bb += b[j] * b[j]
-                }
-                if (aa > 0 && bb > 0) best = max(best, ab / sqrt(aa * bb))
-            }
-            worst = max(worst, 1 - best)
-        }
-        return worst
     }
 
     // ------------------------------------------------------------- capture
@@ -742,7 +732,17 @@ class CaptureActivity : ComponentActivity() {
     }
 
     private fun readNumber(page: Bitmap, name: String): PageNumbers.Pick {
-        val band = MarginReader.bandLines(page, PageNumbers.MARGIN_FRAC, 1600)
+        val band = MarginReader.bandLines(page, PageNumbers.MARGIN_FRAC, BAND_WIDTH)
+        if (evalDir != null && !name.contains('#')) {
+            try {
+                val pic = MarginReader.bandPicture(page, PageNumbers.MARGIN_FRAC, BAND_WIDTH)
+                synchronized(this) {
+                    soloSample?.recycle()
+                    soloSample = pic
+                }
+            } catch (_: Exception) {
+            }
+        }
         Log.i(AstarScanMlkit, "margins $name ${page.width}x${page.height} pass=band ${MarginReader.json(band)}")
         val b = PageNumbers.pick(band)
         if (b.nums.isNotEmpty()) return b
@@ -830,6 +830,14 @@ class CaptureActivity : ComponentActivity() {
         val reading = pendingReads.get()
         Log.i(TAG, "finishing (numbers being read: $reading)")
         if (reading > 0) setBanner("busy", "番号を読み取り中…")
+        // Eval mode: the camera stops first, so the solo ML Kit call below
+        // runs with nothing else on the CPU.
+        if (evalDir != null) {
+            try {
+                cameraProvider?.unbindAll()
+            } catch (_: Exception) {
+            }
+        }
         work.execute {
             // A page being taken is finished first (the work thread is
             // serial); numbers still being read get FINISH_READ_WAIT_MS.
@@ -837,6 +845,14 @@ class CaptureActivity : ComponentActivity() {
                 readExec.submit {}.get(FINISH_READ_WAIT_MS, TimeUnit.MILLISECONDS)
             } catch (e: Exception) {
                 Log.w(TAG, "closing with ${pendingReads.get()} numbers not read yet")
+            }
+            val sample = synchronized(this) { soloSample.also { soloSample = null } }
+            if (sample != null) {
+                try {
+                    MarginReader.timeAlone(sample, "camera stopped, numbers still being read: ${pendingReads.get()}")
+                } catch (e: Exception) {
+                    Log.w(TAG, "solo call failed", e)
+                }
             }
             val out = synchronized(session) {
                 session.giveUpReading()
@@ -922,7 +938,13 @@ class CaptureActivity : ComponentActivity() {
         /** At most ~7 analysed frames a second (CLAUDE.md: 5–10 FPS is enough). */
         private const val ANALYSIS_MS = 140L
         /** While page numbers are being read (ML Kit needs the CPU too). */
-        private const val READING_ANALYSIS_MS = 300L
+        private const val READING_ANALYSIS_MS = 600L
+        /** The frame finder pauses at most this long after a page is taken while its number is read. */
+        private const val READ_PAUSE_MS = 15_000L
+        /** After a page is taken, the "another page?" match runs at most this often. */
+        private const val MATCH_EVERY_MS = 400L
+        /** The margin bands go to ML Kit at this width (run 21: 1600 px, 20–180 s a call). */
+        private const val BAND_WIDTH = 1000
         /** Done waits this long for numbers still being read. */
         private const val FINISH_READ_WAIT_MS = 15_000L
         /** Frames whose corners are combined (median) for the stillness check. */
@@ -943,12 +965,6 @@ class CaptureActivity : ComponentActivity() {
         private const val YELLOW_MS = 3000L
         /** A page's banner stays at least this long before yellow may replace it. */
         private const val BANNER_MS = 2500L
-        /** Row profiles closer than this: the same page (still, see profile()). */
-        private const val SAME_PAGE = 0.25
-        /** Row profiles further than this from the page taken: another page (re-arm). */
-        private const val NEW_PAGE = 0.3
-        /** Long side of the picture the row profile is taken on. */
-        private const val PROFILE_SIDE = 360
         private const val STILL_TIMEOUT_MS = 4000L
         private const val PAGE_MAX_SIDE = 2400
     }
