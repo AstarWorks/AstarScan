@@ -661,6 +661,7 @@ class CaptureActivity : ComponentActivity() {
             } catch (e: Exception) {
                 Log.w(TAG, "saving the page list failed", e)
             }
+            Unit
         }
     }
 
