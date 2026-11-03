@@ -170,9 +170,11 @@ events_since() { tail -n +$(($1 + 1)) "$EVENTS"; }
 events_lines() { wc -l <"$EVENTS"; }
 
 # open_capture <clip> — tap スキャン and wait for the capture screen's camera.
+OPEN_MARK=0
 open_capture() {
   local i mark
   mark=$(events_lines)
+  OPEN_MARK=$mark
   dump
   tap_now '^スキャン$' "$PKG" || tap_now '^追加スキャン$' "$PKG" || { log "$1: no scan button"; return 1; }
   for i in $(seq 30); do
@@ -192,6 +194,10 @@ open_capture() {
 take_page() {
   local clip=$1 step=$2 hold=$3 mark t0 line result=none text= waited dup= name= numwait= t1
   mark=$(events_lines)
+  # The first page may be taken while the screen is still being opened
+  # (run 24: single-port-wood p3 taken before this hold was watched, so
+  # "nothing shown"): from the screen's opening on.
+  [ "$step" = 0 ] && mark=$OPEN_MARK
   t0=$SECONDS
   while [ $((SECONDS - t0)) -lt "$WAIT_S" ]; do
     # A page taken in THIS hold: its "capture" line, then its "✓ 撮れた"

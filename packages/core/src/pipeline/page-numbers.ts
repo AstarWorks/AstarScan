@@ -265,10 +265,11 @@ export function checkPageSequence(
       singleStep === 2 ||
       (singleStep === null && last !== null && (lo - last) % 2 === 0)
     const step = oneSide && single ? 2 : 1
-    // In 'auto' mode a gap no wider than the captures without a number
-    // between is most likely those pages (the capture screen says the same).
+    // With a step given (the Android capture list), a gap no wider than the
+    // captures without a number between is most likely those pages (the
+    // capture screen says the same; run 24 listed 7 as missing for 5, ?, ?, 11).
     const count = last === null ? 0 : Math.floor((lo - 1 - last) / step)
-    const covered = opts.singleStep === 'auto' && count <= unread
+    const covered = opts.singleStep !== undefined && count <= unread
     if (last !== null && lo > last + step && !covered) {
       missing.push({
         from: last + step,

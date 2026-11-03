@@ -209,8 +209,12 @@ object GutterTrim {
     private const val REACH_MIN = 0.015
     /** …and when the upper and lower bands agree within this share. */
     private const val REACH_AGREE = 0.015
-    /** A corner moves up or down at most this share of the height. */
-    private const val REACH_V_MAX = 0.04
+    /**
+     * A corner moves up or down at most this share of the height (run 24:
+     * 0.04 let a thumb over the bottom edge pull single-port-wood p15's
+     * bottom-right corner 64 clip px up; the spine dip is ~0.01).
+     */
+    private const val REACH_V_MAX = 0.02
 
     /**
      * Where one side of the page really ends, in the frame's own unit

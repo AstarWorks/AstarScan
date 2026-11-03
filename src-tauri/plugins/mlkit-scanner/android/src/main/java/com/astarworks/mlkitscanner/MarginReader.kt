@@ -3,6 +3,8 @@ package com.astarworks.mlkitscanner
 import android.graphics.Bitmap
 import android.graphics.Canvas
 import android.graphics.Color
+import android.graphics.ColorMatrix
+import android.graphics.ColorMatrixColorFilter
 import android.graphics.Paint
 import android.graphics.Rect
 import android.os.SystemClock
@@ -188,9 +190,9 @@ object MarginReader {
                 tiles.add(Tile(Rect((w * fr[0]).toInt(), y0, (w * fr[1]).toInt(), h), upS, "folio"))
             }
         } else {
-            // (2.5×: the digits ~22 px, the picture small enough to share
-            // one ML Kit call with the bands.)
-            val upC = (FOLIO_TEXT_PX / textPx).toFloat().coerceIn(1f, 2.5f)
+            // (Up to 4×: at 2.5× run 24 read single-land-white's "— 33 —"
+            // on 2 pages of 10.)
+            val upC = (FOLIO_TEXT_PX / textPx).toFloat().coerceIn(1f, 4f)
             for (top in listOf(true, false)) {
                 val ry0 = if (top) 0 else h - strip
                 tiles.add(Tile(Rect((w * 0.33).toInt(), ry0, (w * 0.67).toInt(), ry0 + strip), upC, "folio"))
@@ -266,8 +268,48 @@ object MarginReader {
         val pic = Bitmap.createBitmap(cw, ch, Bitmap.Config.ARGB_8888)
         val canvas = Canvas(pic)
         canvas.drawColor(Color.WHITE)
-        for (t in tiles) canvas.drawBitmap(page, t.src, Rect(0, t.top, t.outW, t.top + t.outH), paint)
+        for (t in tiles) {
+            canvas.drawBitmap(page, t.src, Rect(0, t.top, t.outW, t.top + t.outH), if (t.pass == "folio") levels(page, t.src) else paint)
+        }
         return pic
+    }
+
+    /**
+     * A paint that stretches the levels of `src` in `page`: its paper (90th
+     * percentile of brightness) to white, its darkest ink (1st percentile)
+     * to black. Small digits in the CI emulator's camera picture are faint
+     * grey on grey (run 13 did the same for the folio pieces).
+     */
+    private fun levels(page: Bitmap, src: Rect): Paint {
+        val w = src.width()
+        val h = src.height()
+        if (w < 2 || h < 2) return paint
+        val px = IntArray(w * h)
+        page.getPixels(px, 0, w, src.left, src.top, w, h)
+        val hist = IntArray(256)
+        for (c in px) hist[((c shr 16 and 0xff) * 299 + (c shr 8 and 0xff) * 587 + (c and 0xff) * 114) / 1000]++
+        fun pct(f: Double): Int {
+            var acc = 0
+            for (i in 0..255) {
+                acc += hist[i]
+                if (acc >= px.size * f) return i
+            }
+            return 255
+        }
+        val ink = pct(0.01)
+        val white = pct(0.90)
+        if (white - ink < 24) return paint
+        val k = 255f / (white - ink)
+        val off = -ink * k
+        val m = ColorMatrix(
+            floatArrayOf(
+                k, 0f, 0f, 0f, off,
+                0f, k, 0f, 0f, off,
+                0f, 0f, k, 0f, off,
+                0f, 0f, 0f, 1f, 0f,
+            ),
+        )
+        return Paint(Paint.FILTER_BITMAP_FLAG).apply { colorFilter = ColorMatrixColorFilter(m) }
     }
 
     /**
