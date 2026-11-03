@@ -45,6 +45,10 @@ object MarginReader {
      */
     private const val RECOGNIZE_TIMEOUT_MS = 20_000L
     private const val TAG = "AstarScanMlkit"
+    /** How long a new call waits for one still running before it is sent anyway. */
+    private const val PREVIOUS_WAIT_MS = 60_000L
+    private val gate = Any()
+    @Volatile private var last: com.google.android.gms.tasks.Task<Text>? = null
 
     private val recognizer by lazy {
         TextRecognition.getClient(JapaneseTextRecognizerOptions.Builder().build())
@@ -196,8 +200,21 @@ object MarginReader {
     private fun recognize(input: Bitmap, what: String): Text? {
         val w = input.width
         val h = input.height
+        // One call at a time: a call that ran past the wait below is waited
+        // for before the next is sent (run 21: calls sent behind unfinished
+        // ones queued up inside ML Kit, 55–130 s each).
+        val task = synchronized(gate) {
+            val prev = last
+            if (prev != null && !prev.isComplete) {
+                try {
+                    Tasks.await(prev, PREVIOUS_WAIT_MS, TimeUnit.MILLISECONDS)
+                } catch (e: Exception) {
+                    Log.w(TAG, "previous text recognition still running (${e.javaClass.simpleName})")
+                }
+            }
+            recognizer.process(InputImage.fromBitmap(input, 0)).also { last = it }
+        }
         val t0 = SystemClock.elapsedRealtime()
-        val task = recognizer.process(InputImage.fromBitmap(input, 0))
         task.addOnCompleteListener(
             Executor { it.run() },
             OnCompleteListener<Text> { t ->

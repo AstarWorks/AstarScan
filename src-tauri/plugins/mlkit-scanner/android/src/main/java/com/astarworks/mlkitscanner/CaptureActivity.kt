@@ -53,6 +53,7 @@ import kotlin.math.abs
 import kotlin.math.max
 import kotlin.math.min
 import kotlin.math.roundToInt
+import kotlin.math.sqrt
 
 /**
  * The capture screen: the camera with what the app sees drawn over it.
@@ -116,7 +117,10 @@ class CaptureActivity : ComponentActivity() {
     private var lastGoodAt = 0L
     private var armed = true
     private var turnSeen = false
-    private var lastSig: FloatArray? = null
+    /** Row profiles (see profile()): the page taken last, the newest frame, the frame stillness counts from. */
+    private var takenProfile: Array<FloatArray>? = null
+    private var lastProfile: Array<FloatArray>? = null
+    private var anchorProfile: Array<FloatArray>? = null
     private var lastCaptureAt = 0L
     private var lastSigLog = 0L
     private var frameInfoLogged = false
@@ -336,12 +340,16 @@ class CaptureActivity : ComponentActivity() {
     private fun analyze(image: ImageProxy) {
         try {
             val now = SystemClock.elapsedRealtime()
-            // No frame finding while a page is being cut (a second or two),
-            // and less of it while numbers are read: on a slow phone (the CI
-            // emulator, runs 19–20: DocAligner ~0.7–2 s a frame) it starves
-            // ML Kit.
+            // No frame finding while a page is being cut, nor while the
+            // number of the page just taken is read ("✓ 撮れた" is up, the
+            // user is turning): DocAligner and ML Kit share the CPU, and on a
+            // slow phone (the CI emulator, run 21: one ML Kit call ~3–7 s
+            // alone, ~20 s next to DocAligner) the frame finder starves it.
+            // A phone reads a number in well under a second, so this pause
+            // is short there.
+            val reading = !armed && pendingReads.get() > 0
             val every = if (pendingReads.get() > 0) READING_ANALYSIS_MS else ANALYSIS_MS
-            if (busy.get() || now - lastAnalyzed < every || finishing.get()) return
+            if (busy.get() || reading || now - lastAnalyzed < every || finishing.get()) return
             lastAnalyzed = now
             val det = detector ?: return
             val rot = image.imageInfo.rotationDegrees
@@ -397,6 +405,7 @@ class CaptureActivity : ComponentActivity() {
             nullStreak++
             if (nullStreak >= NULL_RESET) {
                 anchor = null
+                anchorProfile = null
                 recent.clear()
             }
             if (!armed && now - lastCaptureAt > 300) turnSeen = true
@@ -406,24 +415,33 @@ class CaptureActivity : ComponentActivity() {
             while (recent.size > SMOOTH_N) recent.removeFirst()
             val m = median(recent)
             val a = anchor
-            if (a == null || m.maxMove(a) > STABLE_TOL * m.diagonal) {
+            // Still = the corners AND what is printed inside them: during a
+            // page turn the outer corners of a spread stay put (run 21 took
+            // pages with the leaf standing up).
+            val prof = profile(frame, q)
+            val ap = anchorProfile
+            val contentMoved = ap != null && profileDist(ap, prof) > SAME_PAGE
+            if (a == null || contentMoved || m.maxMove(a) > STABLE_TOL * m.diagonal) {
                 if (a != null && !armed && now - lastCaptureAt > 300) turnSeen = true
                 anchor = m
+                anchorProfile = prof
                 stableSince = now
             }
+            lastProfile = prof
             if (now - stableSince >= GOOD_MS) lastGoodAt = now
         }
         val stableFor = if (q != null && anchor != null) now - stableSince else 0L
-        // After a page is taken: wait until the picture is another page.
+        // After a page is taken: wait until another page is held still
+        // (content far from the page taken, and still for STABLE_MS).
         if (!armed && !busy.get() && q != null && stableFor >= STABLE_MS) {
-            val sig = signature(frame, q)
-            val prev = lastSig
-            val diff = if (prev != null) sigDiff(prev, sig) else 1.0
+            val taken = takenProfile
+            val cur = lastProfile
+            val diff = if (taken != null && cur != null) profileDist(taken, cur) else 1.0
             if (now - lastSigLog > 1000) {
                 lastSigLog = now
                 Log.i(TAG, "rearm check diff=%.3f turnSeen=$turnSeen".format(diff))
             }
-            if (diff > REARM_ALWAYS || (turnSeen && diff > REARM_AFTER_TURN)) {
+            if (diff > NEW_PAGE) {
                 armed = true
                 Log.i(TAG, "armed (diff=%.3f turnSeen=$turnSeen)".format(diff))
             }
@@ -432,7 +450,7 @@ class CaptureActivity : ComponentActivity() {
             armed = false
             turnSeen = false
             lastCaptureAt = now
-            lastSig = signature(frame, q)
+            takenProfile = lastProfile
             busy.set(true)
             val copy = frame.copy(Bitmap.Config.ARGB_8888, false)
             val at = System.currentTimeMillis()
@@ -462,33 +480,63 @@ class CaptureActivity : ComponentActivity() {
         return Quad(FloatArray(4) { i -> med(l.map { it.x[i] }) }, FloatArray(4) { i -> med(l.map { it.y[i] }) })
     }
 
-    /** The page's look at 24×32 (local contrast), to tell a turned page from the same one. */
-    private fun signature(frame: Bitmap, q: Quad): FloatArray {
-        val small = PageFrame.warp(frame, q, 32)
+    /**
+     * What is printed on the page, cheaply: per half page (a spread) or for
+     * the page, the darkness of each row (text lines, gaps, figures), zero
+     * mean. Offline on run 21's pictures this told turned pages from the
+     * same page far better than a 32×32 look (which a thumb or the hand
+     * shake changed as much as a turn).
+     */
+    private fun profile(frame: Bitmap, q: Quad): Array<FloatArray> {
+        val small = PageFrame.warp(frame, q, PROFILE_SIDE)
         val w = small.width
         val h = small.height
         val px = IntArray(w * h)
         small.getPixels(px, 0, w, 0, 0, w, h)
         small.recycle()
         val lum = PageFrame.luminance(px)
-        val mean = lum.average()
-        val out = FloatArray(32 * 32)
-        for (i in out.indices) {
-            val x = (i % 32) * w / 32
-            val y = (i / 32) * h / 32
-            out[i] = (lum[min(h - 1, y) * w + min(w - 1, x)] - mean).toFloat()
+        val parts = if (w > h) listOf(0.08 to 0.46, 0.54 to 0.92) else listOf(0.12 to 0.88)
+        return Array(parts.size) { k ->
+            val x0 = (w * parts[k].first).toInt()
+            val x1 = max(x0 + 1, (w * parts[k].second).toInt())
+            val r = FloatArray(h) { y ->
+                var sum = 0
+                for (x in x0 until x1) sum += lum[y * w + x]
+                -sum.toFloat() / (x1 - x0)
+            }
+            val mean = r.average().toFloat()
+            for (i in r.indices) r[i] -= mean
+            r
         }
-        return out
     }
 
-    private fun sigDiff(a: FloatArray, b: FloatArray): Double {
-        var d = 0.0
-        var s = 0.0
-        for (i in a.indices) {
-            d += abs(a[i] - b[i])
-            s += abs(a[i]) + abs(b[i])
+    /** 1 − best correlation of the row profiles over small shifts (worst half page); 0 same, ~1 unrelated. */
+    private fun profileDist(p: Array<FloatArray>, q: Array<FloatArray>): Double {
+        if (p.size != q.size) return 1.0
+        var worst = 0.0
+        for (k in p.indices) {
+            val a = p[k]
+            val b = q[k]
+            val n = min(a.size, b.size)
+            val sh = max(2, n / 25)
+            val cut = n / 10
+            var best = -1.0
+            for (d in -sh..sh) {
+                var ab = 0.0
+                var aa = 0.0
+                var bb = 0.0
+                for (i in cut until n - cut) {
+                    val j = i + d
+                    if (j < 0 || j >= n) continue
+                    ab += a[i] * b[j]
+                    aa += a[i] * a[i]
+                    bb += b[j] * b[j]
+                }
+                if (aa > 0 && bb > 0) best = max(best, ab / sqrt(aa * bb))
+            }
+            worst = max(worst, 1 - best)
         }
-        return if (s < 1e-6) 0.0 else 2 * d / s
+        return worst
     }
 
     // ------------------------------------------------------------- capture
@@ -895,9 +943,12 @@ class CaptureActivity : ComponentActivity() {
         private const val YELLOW_MS = 3000L
         /** A page's banner stays at least this long before yellow may replace it. */
         private const val BANNER_MS = 2500L
-        /** Re-arm when the page looks this different (any time / after a turn was seen). */
-        private const val REARM_ALWAYS = 0.45
-        private const val REARM_AFTER_TURN = 0.15
+        /** Row profiles closer than this: the same page (still, see profile()). */
+        private const val SAME_PAGE = 0.25
+        /** Row profiles further than this from the page taken: another page (re-arm). */
+        private const val NEW_PAGE = 0.3
+        /** Long side of the picture the row profile is taken on. */
+        private const val PROFILE_SIDE = 360
         private const val STILL_TIMEOUT_MS = 4000L
         private const val PAGE_MAX_SIDE = 2400
     }
