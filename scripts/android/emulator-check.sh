@@ -155,6 +155,11 @@ adb logcat -c
 # with a marker per clip, kept apart from the big logcat (book-measure.py).
 adb logcat -v threadtime -s AstarScanMlkit:I AstarScanEval:I >"$OUT/pageno.log" 2>&1 &
 PAGENO_PID=$!
+# Crashes of Play services' scanner process for the whole run (run 15: the
+# final `logcat -d` held only the last 20 min of the ring buffer, so 3 of
+# its 8 lost sessions had no crash record). DEBUG = native tombstones.
+adb logcat -v threadtime -b main,system,crash -s DEBUG:F AndroidRuntime:E ActivityManager:I ActivityTaskManager:W GmsDocScanDelAct:E AstarScanMlkit:I >"$OUT/scanner-deaths.log" 2>&1 &
+DEATHS_PID=$!
 adb shell monkey -p "$PKG" -c android.intent.category.LAUNCHER 1 >/dev/null
 sleep 10
 shot app-launch
@@ -480,10 +485,13 @@ clip_list() {
   local clip=$1
   # Wait for the page-number OCR, then keep the list at a few scroll
   # positions (book-measure.py merges them).
+  # The app first takes the last session's pages in (取り込み中, on its
+  # start screen: run 15 shot 3 of spread-port-white's 7 list screens
+  # there), then reads their numbers.
   local t_end=$((SECONDS + 420))
   while [ $SECONDS -lt $t_end ]; do
     dump
-    grep -qE '読み取り中|読み取り準備中' "$OUT/ui.xml" || break
+    grep -qE '取り込み中|読み取り中|読み取り準備中' "$OUT/ui.xml" || break
     sleep 10
   done
   shot "$clip-list"
@@ -537,6 +545,7 @@ shot pdf-saved
 adb shell ls -l /sdcard/Download/AstarScan/ 2>&1 | tee -a "$OUT/steps.log"
 
 adb logcat -d >"$OUT/logcat.txt" 2>&1
-kill "$PAGENO_PID" 2>/dev/null || true
+kill "$PAGENO_PID" "$DEATHS_PID" 2>/dev/null || true
+log "scanner process deaths: $(grep -c 'gms.ui (pid [0-9]*) has died' "$OUT/scanner-deaths.log"); native crashes: $(grep -c 'F DEBUG *: pid:.*gms.ui' "$OUT/scanner-deaths.log"); Java crashes: $(grep -c 'FATAL EXCEPTION' "$OUT/scanner-deaths.log")"
 log "done"
 exit 0
