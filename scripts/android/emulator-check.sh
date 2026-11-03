@@ -153,12 +153,24 @@ fi
 adb logcat -c
 # ML Kit's page-number reads (one "margins" line per page, ScannerPlugin.kt)
 # with a marker per clip, kept apart from the big logcat (book-measure.py).
-adb logcat -v threadtime -s AstarScanMlkit:I AstarScanEval:I >"$OUT/pageno.log" 2>&1 &
+# follow_log <file> <logcat args…> — `adb logcat` streams stop when adb
+# drops the device for a moment (run 16: both stopped at 06:52, 1 h before
+# the end); start again from the newest line, so nothing is read twice.
+follow_log() {
+  local f=$1 first=1
+  shift
+  while :; do
+    if [ $first = 1 ]; then adb logcat -v threadtime "$@" >>"$f" 2>&1; else adb logcat -v threadtime -T 1 "$@" >>"$f" 2>&1; fi
+    first=0
+    sleep 2
+  done
+}
+follow_log "$OUT/pageno.log" -s AstarScanMlkit:I AstarScanEval:I &
 PAGENO_PID=$!
 # Crashes of Play services' scanner process for the whole run (run 15: the
 # final `logcat -d` held only the last 20 min of the ring buffer, so 3 of
 # its 8 lost sessions had no crash record). DEBUG = native tombstones.
-adb logcat -v threadtime -b main,system,crash -s DEBUG:F AndroidRuntime:E ActivityManager:I ActivityTaskManager:W GmsDocScanDelAct:E AstarScanMlkit:I >"$OUT/scanner-deaths.log" 2>&1 &
+follow_log "$OUT/scanner-deaths.log" -b main,system,crash -s DEBUG:F AndroidRuntime:E ActivityManager:I ActivityTaskManager:W GmsDocScanDelAct:E AstarScanMlkit:I &
 DEATHS_PID=$!
 adb shell monkey -p "$PKG" -c android.intent.category.LAUNCHER 1 >/dev/null
 sleep 10
@@ -423,6 +435,21 @@ scan_session() {
           sleep 2
           continue
         fi
+        # Play services updating the scanner module in front of it: wait
+        # while it downloads; when it fails ("Something went wrong", run
+        # 16: the check stood there for the whole 10 min budget), cancel it
+        # so the app gets the scan back closed and opens the scanner again.
+        if [ "$k" = other-gms ]; then
+          if has '^Something went wrong' "$GMS"; then
+            shot "$clip-module-update-failed"
+            log "$clip: Play services could not update the scanner module; cancelling to open the scanner again"
+            tap_now '^Cancel$' "$GMS" || adb shell input keyevent KEYCODE_BACK
+            sleep 3
+          else
+            sleep 5
+          fi
+          continue
+        fi
         # ML Kit's live camera (usually not dumpable while the preview runs).
         crop_closed=0
         if [ $stop = 1 ]; then
@@ -546,6 +573,7 @@ adb shell ls -l /sdcard/Download/AstarScan/ 2>&1 | tee -a "$OUT/steps.log"
 
 adb logcat -d >"$OUT/logcat.txt" 2>&1
 kill "$PAGENO_PID" "$DEATHS_PID" 2>/dev/null || true
+pkill -f 'adb logcat -v threadtime' 2>/dev/null || true
 log "scanner process deaths: $(grep -c 'gms.ui (pid [0-9]*) has died' "$OUT/scanner-deaths.log"); native crashes: $(grep -c 'F DEBUG *: pid:.*gms.ui' "$OUT/scanner-deaths.log"); Java crashes: $(grep -c 'FATAL EXCEPTION' "$OUT/scanner-deaths.log")"
 log "done"
 exit 0
