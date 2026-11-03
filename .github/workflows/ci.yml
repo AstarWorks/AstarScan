@@ -324,8 +324,9 @@ jobs:
       # 720x960 window, page-number digits 4-10 px): the back camera is
       # mounted at 90° and the emulator hands the app that window upright.
       # Run 10 tried 1920x1440: the emulator then offers the back camera
-      # only at 1920x1440 and the preview stays black, so 1280x960 stays.
-      FEED_SIZE: 1280x960
+      # only at 1920x1440 and the ML Kit scanner preview stayed black. The
+      # own capture screen (CameraX) picks from what is offered: tried again.
+      FEED_SIZE: 1920x1440
       FEED_LOG: /tmp/feed.log
 
     steps:
