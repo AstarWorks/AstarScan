@@ -552,6 +552,14 @@ class CaptureActivity : ComponentActivity() {
                 if (r != null && r.minPeak >= CaptureDetector.MIN_PEAK && PageFrame.plausible(r.quad, photo.width, photo.height)) {
                     q = r.quad
                     source = "still"
+                } else if (photo.width == frame.width && photo.height == frame.height) {
+                    // Not sure on the still: the page is cut from the
+                    // analysed frame its frame was found on (run 26: that
+                    // frame laid over the still, taken a moment later by a
+                    // shaking hand, missed spread-land-white-thick's corners
+                    // by 50–90 clip px).
+                    photo.recycle()
+                    photo = frame
                 }
             }
             val tDetect = SystemClock.elapsedRealtime()
