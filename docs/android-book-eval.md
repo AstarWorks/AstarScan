@@ -536,11 +536,6 @@ Run 17 findings (run 41601986645 — the push of eab1152):
   29.0; ML Kit's own frames — no spread page is cut, and none of this
   clip's was kept), spread-land-wood 14.8 / 36.6 (not scored in run 16;
   run 15 max 34).
-- Module check: logcat has `scanner module missing; requesting install`
-  at the first scan (09:06:30) and `scanner module installed` 10 s later,
-  then the scanner opened — the ModuleInstallClient path did run, only
-  Play services' "Something went wrong" screen (the check's Cancel) did
-  not come up.
 
 Runs 10–13 summary (the 4 runs of this round):
 
