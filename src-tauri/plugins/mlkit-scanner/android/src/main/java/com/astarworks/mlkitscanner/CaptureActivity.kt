@@ -48,7 +48,6 @@ import java.util.concurrent.CountDownLatch
 import java.util.concurrent.Executors
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicBoolean
-import java.util.concurrent.atomic.AtomicReference
 import kotlin.math.abs
 import kotlin.math.max
 import kotlin.math.min
@@ -112,9 +111,6 @@ class CaptureActivity : ComponentActivity() {
     private val busy = AtomicBoolean(false)
     private val finishing = AtomicBoolean(false)
 
-    /** The newest analysed frame (upright) and the frame found on it, for the number's second read. */
-    private class Frame(val bitmap: Bitmap, val quad: Quad?, val at: Long)
-    private val latest = AtomicReference<Frame?>(null)
 
     // Main-thread state.
     private var bannerKind = ""
@@ -136,6 +132,7 @@ class CaptureActivity : ComponentActivity() {
             try {
                 detector = CaptureDetector(this)
                 Log.i(TAG, "detector ready")
+                Log.i(TAG, "text recognizer warm-up ${MarginReader.warmUp()}ms")
             } catch (e: Exception) {
                 Log.e(TAG, "detector failed", e)
                 runOnUiThread { finishWithError("DETECTOR_FAILED", e.message ?: "model") }
@@ -316,12 +313,11 @@ class CaptureActivity : ComponentActivity() {
     private fun analyze(image: ImageProxy) {
         try {
             val now = SystemClock.elapsedRealtime()
-            // While a page is being taken the frame is looked at less often:
-            // on a slow phone (and the CI emulator, run 19) DocAligner at full
-            // rate starved the number reading, and "撮影中…" stayed up for
-            // minutes. The newest frame is still kept for the second read.
-            val every = if (busy.get()) BUSY_ANALYSIS_MS else ANALYSIS_MS
-            if (now - lastAnalyzed < every || finishing.get()) return
+            // No frame finding while a page is being taken: on a slow phone
+            // (the CI emulator, runs 19–20: DocAligner ~0.7 s a frame) it
+            // starved the number reading, and "撮影中…" stayed up for a minute
+            // or more. The second read uses the frame that triggered the page.
+            if (busy.get() || now - lastAnalyzed < ANALYSIS_MS || finishing.get()) return
             lastAnalyzed = now
             val det = detector ?: return
             val rot = image.imageInfo.rotationDegrees
@@ -346,8 +342,6 @@ class CaptureActivity : ComponentActivity() {
             val off = found != null && PageFrame.outside(found, frame.width, frame.height)
             val q = if (off) null else found
             if (!off) offSince = 0L else if (offSince == 0L) offSince = now
-            // Older frames are left to the GC: the work thread may still be copying one.
-            latest.set(Frame(frame, q, now))
             step(now, q, frame)
             val stable = q != null && now - stableSince >= STABLE_MS
             if (now - lastStatusLog >= STATUS_LOG_MS) {
@@ -486,10 +480,13 @@ class CaptureActivity : ComponentActivity() {
             // t = wall clock (ms) of the analysed frame that triggered the page.
             Log.i(TAG, "capture $name t=$at photo=${photo.width}x${photo.height} source=$source spread=${kept.isSpread} found=$q kept=$kept cut=$cut")
             val tPage = SystemClock.elapsedRealtime()
+            MarginReader.deadline = tPage + READ_BUDGET_MS
             val pick = readNumber(page, name)
             val tRead = SystemClock.elapsedRealtime()
             val spread = kept.isSpread
-            val nums = confirm(pick, spread, name)
+            // The second read: the analysis frame that triggered the page (another camera frame than the still).
+            val nums = confirm(pick, spread, name) { if (photo !== frame) secondRead(frame, frameQuad, name) else null }
+            MarginReader.deadline = 0L
             val tConfirm = SystemClock.elapsedRealtime()
             Log.i(
                 TAG,
@@ -561,7 +558,7 @@ class CaptureActivity : ComponentActivity() {
      * - a number lower than the last page (and not missing), or more than
      *   MAX_JUMP ahead → "番号なし".
      */
-    private fun confirm(pick: PageNumbers.Pick, spread: Boolean, name: String): List<Int> {
+    private fun confirm(pick: PageNumbers.Pick, spread: Boolean, name: String, secondRead: () -> PageNumbers.Pick?): List<Int> {
         val nums = pick.nums
         val rel = session.relation(nums, spread)
         if (rel == "duplicate") return nums
@@ -570,7 +567,7 @@ class CaptureActivity : ComponentActivity() {
             Log.i(TAG, "number $nums for $name is $rel; not kept")
             return emptyList()
         }
-        val again = secondRead(name)
+        val again = secondRead()
         if (again == null) {
             Log.i(TAG, "number $nums for $name: no second frame; ${if (rel == "first" && pick.strong) "kept" else "not kept"}")
             return if ((rel == "first" || rel == "expected") && pick.strong) nums else emptyList()
@@ -593,35 +590,14 @@ class CaptureActivity : ComponentActivity() {
         return emptyList()
     }
 
-    /** The number read on a camera frame newer than the capture (same page, still held). */
-    private fun secondRead(name: String): PageNumbers.Pick? {
-        val since = SystemClock.elapsedRealtime()
-        var f: Frame? = null
-        for (i in 0 until 10) {
-            val c = latest.get()
-            if (c != null && c.quad != null && c.at > since - 50) {
-                f = c
-                break
-            }
-            Thread.sleep(100)
-        }
-        val fr = f ?: return null
-        val q = fr.quad ?: return null
-        val bmp = try {
-            fr.bitmap.copy(Bitmap.Config.ARGB_8888, false)
-        } catch (e: Exception) {
-            return null
-        } ?: return null
+    /** The number read on another camera frame of the same page (the analysis frame that triggered it). */
+    private fun secondRead(bmp: Bitmap, q: Quad, name: String): PageNumbers.Pick? {
+        val (kept, _) = PageFrame.keep(bmp, q)
+        val page = PageFrame.warp(bmp, kept, PAGE_MAX_SIDE)
         try {
-            val (kept, _) = PageFrame.keep(bmp, q)
-            val page = PageFrame.warp(bmp, kept, PAGE_MAX_SIDE)
-            try {
-                return readNumber(page, "$name#2")
-            } finally {
-                page.recycle()
-            }
+            return readNumber(page, "$name#2")
         } finally {
-            bmp.recycle()
+            page.recycle()
         }
     }
 
@@ -755,8 +731,8 @@ class CaptureActivity : ComponentActivity() {
 
         /** At most ~7 analysed frames a second (CLAUDE.md: 5–10 FPS is enough). */
         private const val ANALYSIS_MS = 140L
-        /** While a page is being taken (still, number reading). */
-        private const val BUSY_ANALYSIS_MS = 700L
+        /** Reading the number(s) of one page stops after this (ms, both reads). */
+        private const val READ_BUDGET_MS = 12000L
         /** The paper runs off the camera picture this long → yellow notice. */
         private const val OFF_YELLOW_MS = 1000L
         /** One "status" log line (what the frame finder sees) this often. */

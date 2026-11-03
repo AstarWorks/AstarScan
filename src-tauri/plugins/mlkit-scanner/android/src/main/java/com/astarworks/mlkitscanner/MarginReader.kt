@@ -1,6 +1,7 @@
 package com.astarworks.mlkitscanner
 
 import android.graphics.Bitmap
+import android.os.SystemClock
 import android.util.Log
 import com.google.android.gms.tasks.Tasks
 import com.google.mlkit.vision.common.InputImage
@@ -28,9 +29,35 @@ object MarginReader {
     private const val FOLIO_TEXT_PX = 48
     private const val MAX_FOLIO_SEGMENTS = 4
     private const val RECOGNIZE_TIMEOUT_S = 8L
+    private const val WARMUP_TIMEOUT_S = 60L
 
     private val recognizer by lazy {
         TextRecognition.getClient(JapaneseTextRecognizerOptions.Builder().build())
+    }
+
+    /**
+     * Elapsed-realtime ms after which no more text is recognised (0: no
+     * limit). The capture screen sets it per page so that reading a number
+     * never holds "撮影中…" for long (run 20: 32–82 s per page on the CI
+     * emulator). A recognition that times out also ends the reading: ML Kit
+     * runs them one after another, so the next would wait behind it.
+     */
+    @Volatile
+    var deadline = 0L
+
+    /** Loads the recognizer's model (seconds on a slow phone) before the first page needs it. Returns the ms it took. */
+    fun warmUp(): Long {
+        val t0 = SystemClock.elapsedRealtime()
+        val b = Bitmap.createBitmap(64, 32, Bitmap.Config.ARGB_8888)
+        b.eraseColor(android.graphics.Color.WHITE)
+        try {
+            Tasks.await(recognizer.process(InputImage.fromBitmap(b, 0)), WARMUP_TIMEOUT_S, TimeUnit.SECONDS)
+        } catch (e: Exception) {
+            Log.w("AstarScanMlkit", "text recognizer warm-up: ${e.javaClass.simpleName} ${e.message}")
+        } finally {
+            b.recycle()
+        }
+        return SystemClock.elapsedRealtime() - t0
     }
 
     fun read(page: Bitmap, marginFrac: Double = PageNumbers.MARGIN_FRAC, minWidth: Int = 1600, folio: Boolean = true): List<PageNumbers.Line> {
@@ -45,7 +72,9 @@ object MarginReader {
         val h = page.height
         val band = (h * marginFrac.coerceIn(0.02, 0.5)).toInt().coerceAtLeast(1)
         val out = ArrayList<PageNumbers.Line>()
-        val up = (minWidth.toFloat() / w).coerceIn(1f, 4f)
+        // To minWidth either way: a wider band only costs recognition time
+        // (the camera saw the page at well under 1600 px).
+        val up = (minWidth.toFloat() / w).coerceIn(0.25f, 4f)
         for (top in listOf(true, false)) {
             val y0 = if (top) 0 else h - band
             recognizeRegion(page, 0, y0, w, band, up, "band", out)
@@ -98,11 +127,13 @@ object MarginReader {
     private fun recognizeRegion(
         page: Bitmap, x0: Int, y0: Int, rw: Int, rh: Int, up: Float, pass: String, out: MutableList<PageNumbers.Line>,
     ) {
+        val d = deadline
+        if (d > 0 && SystemClock.elapsedRealtime() > d) return
         val w = page.width
         val h = page.height
         val strip = Bitmap.createBitmap(page, x0, y0, rw, rh)
-        val input = if (up > 1f) {
-            Bitmap.createScaledBitmap(strip, (rw * up).toInt(), (rh * up).toInt(), true)
+        val input = if (up != 1f) {
+            Bitmap.createScaledBitmap(strip, (rw * up).toInt().coerceAtLeast(1), (rh * up).toInt().coerceAtLeast(1), true)
                 .also { if (it !== strip) strip.recycle() }
         } else {
             strip
@@ -114,6 +145,7 @@ object MarginReader {
                 Tasks.await(recognizer.process(InputImage.fromBitmap(input, 0)), RECOGNIZE_TIMEOUT_S, TimeUnit.SECONDS)
             } catch (e: TimeoutException) {
                 Log.w("AstarScanMlkit", "text recognition timed out ($pass ${input.width}x${input.height})")
+                if (deadline > 0) deadline = 1
                 return
             }
             for (block in text.textBlocks) {
