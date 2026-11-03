@@ -21,6 +21,18 @@ for the target pages of that hold. A target page counts as shown when a
 row stands for it (撮れた, 重複, 番号なし, …) or a red 欠番 range
 covers it; otherwise it is a silent miss ("無表示").
 
+Gutter trim: the app cuts a page whose frame ran past the book's gutter
+(GutterTrim.kt; one "gutter <file> left=t,b right=t,b" line per page in
+pageno.log). The cut is applied to ML Kit's handles through the
+homography page rectangle -> handles, so "after trim" is the frame the
+app keeps. The n-th kept capture of a clip is its n-th gutter line.
+
+Scanner failures: when the check meets Play services' module screen
+"Something went wrong" it taps Cancel and records whether the app then
+showed its red notice (notices.tsv). Target pages of that session that
+never reached the list count as "red notice" — not as silent misses —
+only when the app did show the notice.
+
 Page numbers: a row's number is right when it equals the truth (one of
 the two numbers of a spread also counts); a 抜け row is false when no
 page in its range is really missing (all captured, or not in the book). The ML
@@ -267,6 +279,7 @@ def measure_capture(out, clips, row, gts, size):
             best = entry
         if name == "spread" or found_clip is None:
             found_clip = (sq, to_clip)
+        res.setdefault("cands", {})[name] = (sq, to_clip)
     res["best"] = best
     # Which target pages lie inside the found frame (tolerance 2% of the
     # page height, in screenshot px).
@@ -285,6 +298,76 @@ def measure_capture(out, clips, row, gts, size):
     res["pages_in_frame"] = covered
     res["target_pages"] = [p["page"] for p in frame["pages"] if p.get("target")]
     return res
+
+
+def order_quad(hs):
+    """Handles in tl, tr, br, bl order (angle around their centre, y down)."""
+    c = np.mean(hs, axis=0)
+    return sorted(hs, key=lambda h: np.arctan2(h[1] - c[1], h[0] - c[0]))
+
+
+def trimmed_handles(hs, cut):
+    """ML Kit's handles moved by the app's gutter cut (shares of the page
+    width: left top / bottom, right top / bottom), through the homography
+    unit page -> handles."""
+    q = np.float32(order_quad(hs))
+    Hm = cv2.getPerspectiveTransform(np.float32([[0, 0], [1, 0], [1, 1], [0, 1]]), q)
+    lt, lb, rt, rb = cut
+    pts = np.float32([[lt, 0], [1 - rt, 0], [1 - rb, 1], [lb, 1]]).reshape(-1, 1, 2)
+    return [tuple(map(float, p)) for p in cv2.perspectiveTransform(pts, Hm).reshape(-1, 2)]
+
+
+def gutter_cuts(path):
+    """{clip: [(left top, left bottom, right top, right bottom) per page, in order]} from pageno.log."""
+    out, clip = {}, None
+    try:
+        with open(path, encoding="utf-8", errors="replace") as f:
+            for line in f:
+                m = re.search(r"AstarScanEval\s*:\s*clip (\S+)", line)
+                if m:
+                    clip = m.group(1)
+                    out.setdefault(clip, [])
+                    continue
+                m = re.search(r"AstarScanMlkit\s*:\s*gutter \S+ (?:left=([\d.]+),([\d.]+) right=([\d.]+),([\d.]+)|null)", line)
+                if m and clip:
+                    out[clip].append(tuple(float(v) for v in m.groups()) if m.group(1) else (0.0, 0.0, 0.0, 0.0))
+    except FileNotFoundError:
+        pass
+    return out
+
+
+def apply_cuts(results, caps, cuts):
+    """Add "after_trim" (best target, per-corner err) to every kept capture."""
+    by_clip = {}
+    for r, row in zip(results, caps):
+        if (row.get("kept") or "1") == "1":
+            by_clip.setdefault(r["clip"], []).append(r)
+    for clip, rs in by_clip.items():
+        for r, cut in zip(rs, cuts.get(clip, [])):
+            r["cut"] = list(cut)
+            if not r.get("cands") or len(r.get("handles", [])) != 4:
+                continue
+            th = trimmed_handles(r["handles"], cut)
+            best = None
+            for name, (sq, to_clip) in r["cands"].items():
+                d = [e * to_clip for e in quad_err(th, sq)]
+                e = {"target": name, "err_px": [round(x, 1) for x in d], "mean_px": round(sum(d) / 4, 1),
+                     "max_px": round(max(d), 1)}
+                if best is None or e["mean_px"] < best["mean_px"]:
+                    best = e
+            r["after_trim"] = best
+
+
+def read_notices(path):
+    """notices.tsv (emulator-check.sh): clip, session holds, shot, shown (1/0), notice text."""
+    out = []
+    try:
+        with open(path, encoding="utf-8") as f:
+            for row in csv.DictReader(f, delimiter="\t"):
+                out.append(row)
+    except FileNotFoundError:
+        pass
+    return out
 
 
 def parse_list(xml_paths):
@@ -403,6 +486,16 @@ def probe_lines(out_dir):
     return n
 
 
+def trim_cell(r):
+    if "cut" not in r:
+        return "not kept" if "after_trim" not in r else ""
+    c = r["cut"]
+    if not any(v > 0 for v in c):
+        return "none"
+    t = r.get("after_trim") or {}
+    return f"{c[0]:.3f},{c[1]:.3f} / {c[2]:.3f},{c[3]:.3f} → {t.get('err_px', '')}"
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("out")
@@ -419,11 +512,16 @@ def main():
         gts[g["clip"]] = g
 
     probe_lines(a.out)
-    results = [measure_capture(a.out, a.clips, r, gts, size) for r in caps if r["clip"] in gts]
+    caps = [r for r in caps if r["clip"] in gts]
+    results = [measure_capture(a.out, a.clips, r, gts, size) for r in caps]
     # pageno.log is a filtered logcat stream kept during the run; it died
     # half way in run 8, so the full logcat dump is used when it has more.
     reads = max((mlkit_reads(os.path.join(a.out, f)) for f in ("pageno.log", "logcat.txt")),
                 key=lambda r: sum(len(v) for v in r.values()))
+    cuts = max((gutter_cuts(os.path.join(a.out, f)) for f in ("pageno.log", "logcat.txt")),
+               key=lambda r: sum(len(v) for v in r.values()))
+    apply_cuts(results, caps, cuts)
+    notices = read_notices(os.path.join(a.out, "notices.tsv"))
     ml_out = open(os.path.join(a.out, "mlkit-lines.jsonl"), "w", encoding="utf-8")
     clips_out = []
     for name in [c for c in dict.fromkeys(r["clip"] for r in caps)] + [g for g in gts if g not in {r["clip"] for r in caps}]:
@@ -466,6 +564,14 @@ def main():
                 red_missing.update(range(gp["range"][0], gp["range"][1] + 1))
         targets = sorted({p for hp in hold_pages for p in hp})
         silent = [p for p in targets if p not in shown and p not in red_missing]
+        # Pages of a session the scanner could not take, where the app said
+        # so in red: not silent.
+        noticed_holds = set()
+        for nt in notices:
+            if nt.get("clip") == name and nt.get("shown") == "1":
+                noticed_holds.update(int(h) for h in (nt.get("holds") or "").split() if h.isdigit())
+        notice_pages = sorted({p for h in noticed_holds if h < len(hold_pages) for p in hold_pages[h]} & set(silent))
+        silent = [p for p in silent if p not in notice_pages]
         # A 抜け row is false when none of its pages is really missing (every
         # page in it was captured, or is not in the book); one that also
         # spans a captured page is counted apart ("mixed"), unless the app
@@ -484,9 +590,16 @@ def main():
                 mixed_gaps.append(gp["range"])
         caps_c = [r for r in results if r["clip"] == name]
         errs = [r["best"]["mean_px"] for r in caps_c if r.get("best")]
+        kept_c = [r for r in caps_c if r.get("after_trim")]
         clips_out.append({
             "clip": name, "mode": g["mode"], "target_pages": targets, "captures": len(caps_c),
-            "rows": rows, "gaps": gaps, "silent_missing": silent, "misread": misread, "false_gaps": false_gaps, "mixed_gaps": mixed_gaps,
+            "rows": rows, "gaps": gaps, "silent_missing": silent, "notice_pages": notice_pages,
+            "notices": [n for n in notices if n.get("clip") == name],
+            "kept_mean_px": round(float(np.mean([r["best"]["mean_px"] for r in kept_c])), 1) if kept_c else None,
+            "kept_max_px": round(float(max(r["best"]["max_px"] for r in kept_c)), 1) if kept_c else None,
+            "trim_mean_px": round(float(np.mean([r["after_trim"]["mean_px"] for r in kept_c])), 1) if kept_c else None,
+            "trim_max_px": round(float(max(r["after_trim"]["max_px"] for r in kept_c)), 1) if kept_c else None,
+            "trimmed": sum(1 for r in kept_c if any(v > 0 for v in r.get("cut", []))), "misread": misread, "false_gaps": false_gaps, "mixed_gaps": mixed_gaps,
             "right_numbers": sum(1 for r in rows if number_right(r["nums"], r.get("truth"))),
             "red_missing": sorted(red_missing),
             "ok_rows": sum(1 for r in rows if r["state"] == "ok"),
@@ -499,18 +612,21 @@ def main():
         })
 
     with open(os.path.join(a.out, "measure.json"), "w") as f:
-        json.dump({"captures": results, "clips": clips_out}, f, ensure_ascii=False, indent=1, default=float)
+        json.dump({"captures": [{k: v for k, v in r.items() if k != "cands"} for r in results], "clips": clips_out}, f, ensure_ascii=False, indent=1, default=float)
 
     ml_out.close()
-    md = ["| clip | target pages | captures | pages inside ML Kit frames | frame matched (spread/left/right) | corner err mean / max (clip px) | list rows ok / 重複 / 番号読めず | numbers right / wrong | red 欠番 | false 抜け | silent misses (無表示) |",
-          "| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |"]
+    md = ["| clip | target pages | captures | pages inside ML Kit frames | frame matched (spread/left/right) | corner err mean / max (clip px) | kept pages: ML Kit → after gutter trim, mean / max (pages trimmed) | list rows ok / 重複 / 番号読めず | numbers right / wrong | red 欠番 | false 抜け | scanner failed: red notice shown / not (pages) | silent misses (無表示) |",
+          "| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |"]
     tot = {"t": 0, "inf": 0, "silent": 0, "caps": 0, "right": 0, "wrong": 0, "false": 0}
     for c in clips_out:
         ft = c["frame_targets"]
         md.append(f"| {c['clip']} | {len(c['target_pages'])} | {c['captures']} | {len(c['pages_in_frames'])} | "
                   f"{ft['spread']}/{ft['left']}/{ft['right']} | {c['corner_mean_px']} / {c['corner_max_px']} | "
+                  f"{c['kept_mean_px']} / {c['kept_max_px']} → {c['trim_mean_px']} / {c['trim_max_px']} ({c['trimmed']}) | "
                   f"{c['ok_rows']} / {c['dup_rows']} / {c['unread_rows']} | {c['right_numbers']} / {len(c['misread'])} | "
-                  f"{c['red_missing'] or '-'} | {c['false_gaps'] or 0} | {c['silent_missing'] or 0} |")
+                  f"{c['red_missing'] or '-'} | {c['false_gaps'] or 0} | "
+                  f"{sum(1 for n in c['notices'] if n.get('shown') == '1')} / {sum(1 for n in c['notices'] if n.get('shown') != '1')} ({c['notice_pages'] or 0}) | "
+                  f"{c['silent_missing'] or 0} |")
         tot["right"] += c["right_numbers"]
         tot["wrong"] += len(c["misread"])
         tot["false"] += len(c["false_gaps"])
@@ -518,20 +634,22 @@ def main():
         tot["t"] += len(c["target_pages"])
         tot["inf"] += len(c["pages_in_frames"])
         tot["silent"] += len(c["silent_missing"])
+        tot["notice"] = tot.get("notice", 0) + len(c["notice_pages"])
         tot["caps"] += c["captures"]
     md.append("")
     md.append(f"Total: {tot['t']} target pages, {tot['caps']} captures, {tot['inf']} pages inside ML Kit's frames, "
-              f"{tot['silent']} silent misses; page numbers {tot['right']} right / {tot['wrong']} wrong of "
+              f"{tot['silent']} silent misses, {tot.get('notice', 0)} pages behind a red scanner notice; page numbers {tot['right']} right / {tot['wrong']} wrong of "
               f"{sum(len(c['rows']) for c in clips_out)} rows; {tot['false']} false 抜け rows (no page in them missing), "
               f"{tot['mixed']} 抜け rows that also span a captured page "
               f"({[r for c in clips_out for r in c['mixed_gaps']]}).")
     md.append("")
-    md.append("| capture | hold | frame | handles | registration | best target | err per corner (clip px) | pages in frame |")
-    md.append("| --- | --- | --- | --- | --- | --- | --- | --- |")
+    md.append("| capture | hold | frame | handles | registration | best target | err per corner (clip px) | gutter cut (L top,bottom / R top,bottom) → err after trim | pages in frame |")
+    md.append("| --- | --- | --- | --- | --- | --- | --- | --- | --- |")
     for r in results:
         b = r.get("best") or {}
         md.append(f"| {r['clip']} c{r['capture']} | {r['hold']} | {r.get('frame', '')} | {len(r.get('handles', []))} | "
                   f"{r.get('registration', r.get('error', ''))} | {b.get('target', r.get('error', ''))} | {b.get('err_px', '')} | "
+                  f"{trim_cell(r)} | "
                   f"{r.get('pages_in_frame', '')} / {r.get('target_pages', '')} |")
     text = "\n".join(md) + "\n"
     with open(os.path.join(a.out, "measure.md"), "w") as f:

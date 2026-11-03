@@ -8,8 +8,6 @@ import android.graphics.BitmapFactory
 import android.net.Uri
 import android.os.Build
 import android.os.Environment
-import android.os.Handler
-import android.os.Looper
 import android.provider.MediaStore
 import android.util.Base64
 import android.util.Log
@@ -24,6 +22,13 @@ import app.tauri.plugin.Invoke
 import app.tauri.plugin.JSArray
 import app.tauri.plugin.JSObject
 import app.tauri.plugin.Plugin
+import com.google.android.gms.common.api.ApiException
+import com.google.android.gms.common.api.OptionalModuleApi
+import com.google.android.gms.common.moduleinstall.InstallStatusListener
+import com.google.android.gms.common.moduleinstall.ModuleInstall
+import com.google.android.gms.common.moduleinstall.ModuleInstallRequest
+import com.google.android.gms.common.moduleinstall.ModuleInstallStatusUpdate
+import com.google.mlkit.vision.documentscanner.GmsDocumentScanner
 import com.google.mlkit.vision.documentscanner.GmsDocumentScannerOptions
 import com.google.mlkit.vision.documentscanner.GmsDocumentScanning
 import com.google.mlkit.vision.documentscanner.GmsDocumentScanningResult
@@ -97,28 +102,101 @@ class UploadArgs {
 @TauriPlugin
 class ScannerPlugin(private val activity: Activity) : Plugin(activity) {
     private val io = Executors.newSingleThreadExecutor()
-    private val handler = Handler(Looper.getMainLooper())
 
     @Command
     fun scan(invoke: Invoke) {
         val args = invoke.parseArgs(ScanArgs::class.java)
-        startScan(invoke, args.pageLimit.coerceAtLeast(0), 0)
+        startScan(invoke, args.pageLimit.coerceAtLeast(0))
     }
 
     /**
-     * On first use Play services downloads the scanner module in the
-     * background and `getStartScanIntent` fails with "Feature not
-     * available" until it lands, so retry for up to ~3 minutes.
+     * The scanner's UI and models are an optional Play services module. It
+     * is checked (and, when missing, requested) with ML Kit's own
+     * ModuleInstallClient before the scanner opens, so a module that cannot
+     * be installed comes back to the app as an error with its reason
+     * instead of Play services' "Something went wrong" screen. No waiting or
+     * retrying of our own: Play services reports when the install is done or
+     * has failed.
      */
-    private fun startScan(invoke: Invoke, pageLimit: Int, attempt: Int) {
+    private fun startScan(invoke: Invoke, pageLimit: Int) {
         val builder = GmsDocumentScannerOptions.Builder()
             .setScannerMode(GmsDocumentScannerOptions.SCANNER_MODE_FULL)
             .setGalleryImportAllowed(true)
             .setResultFormats(GmsDocumentScannerOptions.RESULT_FORMAT_JPEG)
         if (pageLimit > 0) builder.setPageLimit(pageLimit)
-        val options = builder.build()
-        GmsDocumentScanning.getClient(options)
-            .getStartScanIntent(activity)
+        val scanner = GmsDocumentScanning.getClient(builder.build())
+        val api = scanner as? OptionalModuleApi
+        if (api == null) {
+            Log.w(TAG, "scanner client is not an OptionalModuleApi; opening without a module check")
+            launchScanner(invoke, scanner)
+            return
+        }
+        val modules = ModuleInstall.getClient(activity)
+        modules.areModulesAvailable(api)
+            .addOnSuccessListener { r ->
+                if (r.areModulesAvailable()) {
+                    launchScanner(invoke, scanner)
+                } else {
+                    Log.i(TAG, "scanner module missing; requesting install")
+                    installThenLaunch(invoke, scanner, api)
+                }
+            }
+            .addOnFailureListener { e ->
+                // The check itself failed (old Play services): let the
+                // scanner try; its failure comes back as a closed scan.
+                Log.w(TAG, "scanner module check failed: ${e.message}")
+                launchScanner(invoke, scanner)
+            }
+    }
+
+    private fun installThenLaunch(invoke: Invoke, scanner: GmsDocumentScanner, api: OptionalModuleApi) {
+        val modules = ModuleInstall.getClient(activity)
+        var done = false
+        lateinit var listener: InstallStatusListener
+        listener = InstallStatusListener { u ->
+            if (done) return@InstallStatusListener
+            when (u.installState) {
+                ModuleInstallStatusUpdate.InstallState.STATE_COMPLETED -> {
+                    done = true
+                    modules.unregisterListener(listener)
+                    Log.i(TAG, "scanner module installed")
+                    launchScanner(invoke, scanner)
+                }
+                ModuleInstallStatusUpdate.InstallState.STATE_FAILED,
+                ModuleInstallStatusUpdate.InstallState.STATE_CANCELED -> {
+                    done = true
+                    modules.unregisterListener(listener)
+                    val failed = u.installState == ModuleInstallStatusUpdate.InstallState.STATE_FAILED
+                    Log.e(TAG, "scanner module install ${if (failed) "failed" else "canceled"} (error ${u.errorCode})")
+                    invoke.reject(
+                        "scanner module install ${if (failed) "failed" else "canceled"} (error ${u.errorCode})",
+                        if (failed) "MODULE_INSTALL_FAILED" else "MODULE_INSTALL_CANCELED",
+                    )
+                }
+                else -> Log.i(TAG, "scanner module install state ${u.installState}")
+            }
+        }
+        val request = ModuleInstallRequest.newBuilder().addApi(api).setListener(listener).build()
+        modules.installModules(request)
+            .addOnSuccessListener { r ->
+                if (r.areModulesAlreadyInstalled() && !done) {
+                    done = true
+                    modules.unregisterListener(listener)
+                    launchScanner(invoke, scanner)
+                }
+            }
+            .addOnFailureListener { e ->
+                if (done) return@addOnFailureListener
+                done = true
+                modules.unregisterListener(listener)
+                val code = (e as? ApiException)?.statusCode
+                Log.e(TAG, "scanner module install request failed (status $code)", e)
+                invoke.reject("scanner module install failed (status $code): ${e.message}", "MODULE_INSTALL_FAILED")
+            }
+    }
+
+    private fun launchScanner(invoke: Invoke, scanner: GmsDocumentScanner) {
+        scanner.getStartScanIntent(activity)
             .addOnSuccessListener { sender ->
                 startIntentSenderForResult(
                     invoke,
@@ -127,13 +205,8 @@ class ScannerPlugin(private val activity: Activity) : Plugin(activity) {
                 )
             }
             .addOnFailureListener { e ->
-                if (attempt < MAX_ATTEMPTS) {
-                    Log.w(TAG, "scanner not ready (attempt ${attempt + 1}): ${e.message}")
-                    handler.postDelayed({ startScan(invoke, pageLimit, attempt + 1) }, RETRY_MS)
-                } else {
-                    Log.e(TAG, "scanner unavailable", e)
-                    invoke.reject(e.message ?: "scanner unavailable", "SCANNER_UNAVAILABLE")
-                }
+                Log.e(TAG, "scanner unavailable", e)
+                invoke.reject(e.message ?: "scanner unavailable", "SCANNER_UNAVAILABLE")
             }
     }
 
@@ -144,7 +217,9 @@ class ScannerPlugin(private val activity: Activity) : Plugin(activity) {
             // scanner returns no pages either way (logged so the emulator
             // check can tell a closed scan from a saved one).
             Log.i(TAG, "scan closed without pages (result ${result.resultCode})")
-            invoke.resolve(JSObject().put("canceled", true).put("pages", JSArray()))
+            invoke.resolve(
+                JSObject().put("canceled", true).put("pages", JSArray()).put("resultCode", result.resultCode),
+            )
             return
         }
         val scan = GmsDocumentScanningResult.fromActivityResultIntent(result.data)
@@ -159,6 +234,16 @@ class ScannerPlugin(private val activity: Activity) : Plugin(activity) {
                     activity.contentResolver.openInputStream(src)!!.use { input ->
                         dest.outputStream().use { input.copyTo(it) }
                     }
+                    // The one place every scanned page passes: pull a frame
+                    // that ran past the book's gutter back to it.
+                    val cut = try {
+                        GutterTrim.trim(dest)
+                    } catch (e: Exception) {
+                        Log.w(TAG, "gutter trim failed for ${dest.name}", e)
+                        null
+                    }
+                    // One line per page for the emulator check (book-measure.py).
+                    Log.i(TAG, "gutter ${dest.name} $cut")
                     val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }
                     BitmapFactory.decodeFile(dest.path, bounds)
                     pages.put(
@@ -656,7 +741,5 @@ class ScannerPlugin(private val activity: Activity) : Plugin(activity) {
         private const val MAX_OCR_SIDE = 4096
         private const val FOLIO_TEXT_PX = 48
         private const val MAX_FOLIO_SEGMENTS = 4
-        private const val MAX_ATTEMPTS = 36
-        private const val RETRY_MS = 5000L
     }
 }

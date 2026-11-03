@@ -27,6 +27,9 @@ dependencies {
     // Scanner UI, edge detection and auto-capture run inside Google Play
     // services; the app only holds the thin client (no model in the APK).
     implementation("com.google.android.gms:play-services-mlkit-document-scanner:16.0.0")
+    // ModuleInstallClient: check / request the scanner's Play services
+    // module before opening it (ScannerPlugin.startScan).
+    implementation("com.google.android.gms:play-services-base:18.5.0")
     // Page numbers: ML Kit Text Recognition v2, Japanese model (reads Latin
     // too), bundled so it works offline from the first scan.
     implementation("com.google.mlkit:text-recognition-japanese:16.0.1")
