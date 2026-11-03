@@ -523,6 +523,24 @@ Run 17 findings (run 41601986645 — the push of eab1152):
   page's strip. single-port-wood's tl at the spine curl (35–43 px) is not
   measured (no page kept).
 - p37: not reached (single-land-white stopped after p41 in the crashes).
+- Offline check of the same detector (Python port of `GutterTrim.find`,
+  run on each capture's adjust screenshot warped by ML Kit's handles) on
+  run 16's 60 frames: it cuts exactly the 5 past-the-gutter captures of
+  single-land-white (c0, c5 ×2, c6, c7; left 0.089–0.145 at the top,
+  0.037–0.110 at the bottom) and none of the other 55 (20 spreads — all
+  landscape, skipped; 27 single-port-wood; 8 single-land-white frames on
+  the page). single-port-wood's tl error (28–42 px) is the spine curl with
+  no bright facing page beyond it, so it is left as ML Kit framed it.
+- Spreads per clip against run 16: spread-port-white mean 13.2 / max 25.7
+  (16: 12.0 / 26.6), spread-land-white-thick 13.6 / 39.0 (16: 13.9 /
+  29.0; ML Kit's own frames — no spread page is cut, and none of this
+  clip's was kept), spread-land-wood 14.8 / 36.6 (not scored in run 16;
+  run 15 max 34).
+- Module check: logcat has `scanner module missing; requesting install`
+  at the first scan (09:06:30) and `scanner module installed` 10 s later,
+  then the scanner opened — the ModuleInstallClient path did run, only
+  Play services' "Something went wrong" screen (the check's Cancel) did
+  not come up.
 
 Runs 10–13 summary (the 4 runs of this round):
 
