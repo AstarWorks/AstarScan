@@ -19,6 +19,10 @@ import java.util.TreeSet
  * step 1) or one side only — every right page, the camera never on the
  * left one (step 2: 31, 33, 35 is not a gap). The step is learnt from the
  * first two single pages that follow each other (+1 or +2).
+ *
+ * The screen keeps a page the moment it is taken (`addPending`, "reading")
+ * and reads its number afterwards, while the user turns on (`resolve`, in
+ * the order the pages were taken). Not thread-safe: callers lock it.
  */
 class CaptureSession(known: Collection<Int> = emptyList(), step: Int = 0) {
     class Page(
@@ -27,6 +31,7 @@ class CaptureSession(known: Collection<Int> = emptyList(), step: Int = 0) {
         val height: Int,
         val nums: List<Int>,
         val spread: Boolean,
+        /** "ok", "unread", or "reading" (taken, number not read yet). */
         val numberState: String,
     )
 
@@ -77,18 +82,48 @@ class CaptureSession(known: Collection<Int> = emptyList(), step: Int = 0) {
         return "jump"
     }
 
-    fun add(name: String, width: Int, height: Int, nums: List<Int>, spread: Boolean): Outcome {
+    /** A page just taken, its number still to be read: kept at the end, "reading". */
+    fun addPending(name: String, width: Int, height: Int, spread: Boolean) {
+        pages.add(Page(name, width, height, emptyList(), spread, "reading"))
+    }
+
+    /** Pages taken whose number is still being read. */
+    val reading: Int get() = pages.count { it.numberState == "reading" }
+
+    /**
+     * The number(s) read on a page added with `addPending`: the same rules
+     * as `add`, the page staying where it was taken (a missing page moves to
+     * its place; a page already taken leaves the list). Null when the page
+     * is not (or no longer) waiting for its number.
+     */
+    fun resolve(name: String, nums: List<Int>): Outcome? {
+        val i = pages.indexOfFirst { it.name == name && it.numberState == "reading" }
+        if (i < 0) return null
+        val p = pages.removeAt(i)
+        return add(p.name, p.width, p.height, nums, p.spread, i)
+    }
+
+    /** Pages still "reading" when the screen closes: kept without a number. */
+    fun giveUpReading() {
+        for (i in pages.indices) {
+            val p = pages[i]
+            if (p.numberState == "reading") pages[i] = Page(p.name, p.width, p.height, emptyList(), p.spread, "unread")
+        }
+    }
+
+    fun add(name: String, width: Int, height: Int, nums: List<Int>, spread: Boolean, at: Int = pages.size): Outcome {
+        val pos = at.coerceIn(0, pages.size)
         if (nums.isEmpty()) {
-            pages.add(Page(name, width, height, nums, spread, "unread"))
+            pages.add(pos, Page(name, width, height, nums, spread, "unread"))
             lastSingle = null
             return Outcome.Unread
         }
         val sorted = nums.sorted()
         if (sorted.any { it in taken }) return Outcome.Duplicate(sorted)
         if (sorted.all { it in missing }) {
-            val at = pages.indexOfFirst { p -> p.nums.isNotEmpty() && p.nums.min() > sorted.first() }
+            val at2 = pages.indexOfFirst { p -> p.nums.isNotEmpty() && p.nums.min() > sorted.first() }
             val page = Page(name, width, height, sorted, spread, "ok")
-            if (at < 0) pages.add(page) else pages.add(at, page)
+            if (at2 < 0) pages.add(pos, page) else pages.add(at2, page)
             missing.removeAll(sorted.toSet())
             taken.addAll(sorted)
             return Outcome.Filled(sorted)
@@ -113,7 +148,7 @@ class CaptureSession(known: Collection<Int> = emptyList(), step: Int = 0) {
                 n += s
             }
         }
-        pages.add(Page(name, width, height, sorted, spread, "ok"))
+        pages.add(pos, Page(name, width, height, sorted, spread, "ok"))
         taken.addAll(sorted)
         if (gap.isEmpty()) return Outcome.Taken(sorted)
         missing.addAll(gap)

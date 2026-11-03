@@ -214,7 +214,7 @@ def number_right(nums, truth):
 
 
 
-SAID = {"taken": "撮れた", "filled": "撮れた（抜けを埋めた）", "gap": "赤（抜け）", "gap-notice": "赤（抜け・撮れず）",
+SAID = {"shot": "撮れた（番号は出ず）", "taken": "撮れた", "filled": "撮れた（抜けを埋めた）", "gap": "赤（抜け）", "gap-notice": "赤（抜け・撮れず）",
         "unread": "灰（番号なし）", "duplicate": "撮影済み", "yellow": "黄", "none": "何も出ない"}
 
 
@@ -256,13 +256,46 @@ def read_events(path):
                 continue
             m = re.search(r"AstarScanCapture\s*:\s*page (\S+) kind=(\S+) nums=\[([\d, ]*)\]", line)
             if m:
-                pages[m.group(1)] = {"kind": m.group(2), "nums": [int(x) for x in m.group(3).replace(" ", "").split(",") if x]}
+                pages.setdefault(m.group(1), {}).update(
+                    {"kind": m.group(2), "nums": [int(x) for x in m.group(3).replace(" ", "").split(",") if x]})
+                continue
+            m = re.search(r"AstarScanCapture\s*:\s*timing (\S+) queued=(\d+)ms read=(\d+)ms confirm=(\d+)ms total=(\d+)ms", line)
+            if m:
+                pages.setdefault(m.group(1), {}).update(
+                    {"queued_ms": int(m.group(2)), "read_ms": int(m.group(3)), "confirm_ms": int(m.group(4)), "number_ms": int(m.group(5))})
+                continue
+            m = re.search(r"AstarScanCapture\s*:\s*timing-shot (\S+) .*total=(\d+)ms", line)
+            if m:
+                pages.setdefault(m.group(1), {})["shot_ms"] = int(m.group(2))
     out = []
     for name, c in caps.items():
-        c.update(pages.get(name, {"kind": None, "nums": []}))
+        c.update({"kind": None, "nums": []})
+        c.update(pages.get(name, {}))
         out.append(c)
     out.sort(key=lambda c: c["t"])
     return out, pages
+
+
+def read_ocr_calls(path):
+    """Every ML Kit call the app made ("ocr <pass> [tiles] WxH Nms ok|failed")."""
+    out = []
+    try:
+        f = open(path, encoding="utf-8", errors="replace")
+    except FileNotFoundError:
+        return out
+    with f:
+        for line in f:
+            m = re.search(r"AstarScanMlkit\s*:\s*ocr (\S+)(?: \d+)? (\d+)x(\d+) (\d+)ms (\S+)", line)
+            if m:
+                out.append({"pass": m.group(1), "w": int(m.group(2)), "h": int(m.group(3)), "ms": int(m.group(4)), "ok": m.group(5) == "ok"})
+    return out
+
+
+def ms_stats(v):
+    if not v:
+        return "—"
+    v = sorted(v)
+    return f"{v[len(v) // 2]} / {v[-1]} ms (n={len(v)})"
 
 
 def read_feed(path):
@@ -405,8 +438,8 @@ def main():
         c["measure"] = measure(c, a.out, gts, feedlog, offset, size, video)
 
     md, clips_out = [], []
-    per_page = ["| clip | step | hold | printed | screen said | corner err (clip px, tl tr br bl) | number kept | number | shot |",
-                "| --- | --- | --- | --- | --- | --- | --- | --- | --- |"]
+    per_page = ["| clip | step | hold | printed | screen said | corner err (clip px, tl tr br bl) | number kept | number | 撮れた until (ms) | number read (ms) | shot |",
+                "| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |"]
     for name in dict.fromkeys(r["clip"] for r in checks):
         g = gts.get(name)
         if not g:
@@ -421,7 +454,7 @@ def main():
             pages_h = truth[h] if h < len(truth) else []
             mine = [c for c in cc if c["measure"].get("hold") == h and c.get("kind") not in (None, "duplicate")]
             c = mine[0] if mine else None
-            err, num, verdict = "", "", ""
+            err, num, verdict, shot_ms, read_ms = "", "", "", "", ""
             if c:
                 kept = c["measure"].get("kept")
                 if kept:
@@ -431,6 +464,8 @@ def main():
                 else:
                     err = c["measure"].get("error", "")
                 num = "・".join(map(str, c["nums"])) or "—"
+                shot_ms = str(c.get("shot_ms", ""))
+                read_ms = str(c.get("number_ms", "")) if "number_ms" in c else "（出ず）"
                 if not c["nums"]:
                     verdict = "番号なし"
                     stats["unread"] += 1
@@ -442,7 +477,7 @@ def main():
                     stats["wrong"] += 1
                     stats["wrong_list"].append({"hold": h, "read": c["nums"], "truth": pages_h})
             per_page.append(f"| {name} | {r['step']} | {h} | {'・'.join(map(str, pages_h))} | {SAID.get(r['result'], r['result'])} {r['text']} | "
-                            f"{err} | {num} | {verdict} | {r['shot']} |")
+                            f"{err} | {num} | {verdict} | {shot_ms} | {read_ms} | {r['shot']} |")
         rows, gaps, leftover = list_check(a.out, name, gts)
         shown = {p for c in cc if c.get("kind") not in (None, "duplicate") for p in (truth[c["measure"]["hold"]] if "hold" in c["measure"] and c["measure"]["hold"] < len(truth) else [])}
         book = set(g["pages"])
@@ -464,12 +499,13 @@ def main():
     tot = {"none": 0, "wrong": 0}
     for c in clips_out:
         s = c["said"]
-        md.append(f"| {c['clip']} | {c['steps']} | {s.get('taken', 0) + s.get('filled', 0)} | {s.get('gap', 0) + s.get('gap-notice', 0)} | "
+        md.append(f"| {c['clip']} | {c['steps']} | {s.get('taken', 0) + s.get('filled', 0) + s.get('shot', 0)} | {s.get('gap', 0) + s.get('gap-notice', 0)} | "
                   f"{s.get('unread', 0)} | {s.get('yellow', 0)} | {s.get('duplicate', 0)} | {s.get('none', 0)} | "
                   f"{c['corner_mean_px']} / {c['corner_max_px']} | {c['numbers_right']} / {c['numbers_wrong']} / {c['numbers_unread']} | "
                   f"{c['list_rows']}, {c['list_red'] or '-'} ({c['list_false_red'] or 0}), {c['list_grey']} | {c['leftover_not_received']} | "
                   f"{c['notices_red']} / {c['notices_yellow']} |")
         tot["none"] += s.get("none", 0)
+        tot["unread_said"] = tot.get("unread_said", 0) + s.get("unread", 0)
         tot["wrong"] += c["numbers_wrong"]
     md.append("")
     skip = [r for r in checks if r["clip"] == "single-land-white" and r["hold"] in ("4", "3")]
@@ -477,12 +513,33 @@ def main():
     md.append(f"Total: {sum(c['steps'] for c in clips_out)} pages in the plan, {tot['none']} with nothing shown, {tot['wrong']} numbers wrong. "
               f"Skipped page (single-land-white p37): {skip_txt}.")
     md.append("")
+    # How long reading a page number takes (it runs while the user turns on).
+    ocr = read_ocr_calls(os.path.join(a.out, "events.log"))
+    md.append("Number reading time (median / max):")
+    md.append("")
+    md.append("| what | time |")
+    md.append("| --- | --- |")
+    md.append(f"| page held still → 「✓ 撮れた」 (still picture, frame, cut) | {ms_stats([c['shot_ms'] for c in caps if 'shot_ms' in c])} |")
+    md.append(f"| one page's number (first read, + second read when needed) | {ms_stats([c['number_ms'] for c in caps if 'number_ms' in c])} |")
+    md.append(f"| first read only | {ms_stats([c['read_ms'] for c in caps if 'read_ms' in c])} |")
+    md.append(f"| waiting behind earlier pages | {ms_stats([c['queued_ms'] for c in caps if 'queued_ms' in c])} |")
+    for ps in ("band", "folio", "warmup"):
+        calls = [o for o in ocr if o["pass"] == ps]
+        bad = sum(1 for o in calls if not o["ok"])
+        md.append(f"| one ML Kit call, {ps} | {ms_stats([o['ms'] for o in calls])}{f', {bad} failed' if bad else ''} |")
+    timeouts = 0
+    try:
+        timeouts = sum(1 for line in open(os.path.join(a.out, "events.log"), encoding="utf-8", errors="replace") if "text recognition timed out" in line)
+    except OSError:
+        pass
+    md.append(f"| calls that timed out (20 s) | {timeouts} |")
+    md.append("")
     md += per_page
     text = "\n".join(md) + "\n"
     with open(os.path.join(a.out, "measure.md"), "w") as f:
         f.write(text)
     with open(os.path.join(a.out, "measure.json"), "w") as f:
-        json.dump({"clips": clips_out, "captures": caps}, f, ensure_ascii=False, indent=1, default=float)
+        json.dump({"clips": clips_out, "captures": caps, "ocr_calls": read_ocr_calls(os.path.join(a.out, "events.log"))}, f, ensure_ascii=False, indent=1, default=float)
     print(text)
     return 0
 

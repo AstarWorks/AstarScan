@@ -1,12 +1,20 @@
 package com.astarworks.mlkitscanner
 
 import android.graphics.Bitmap
+import android.graphics.Canvas
+import android.graphics.Color
+import android.graphics.Paint
+import android.graphics.Rect
 import android.os.SystemClock
 import android.util.Log
+import com.google.android.gms.tasks.OnCompleteListener
 import com.google.android.gms.tasks.Tasks
 import com.google.mlkit.vision.common.InputImage
+import com.google.mlkit.vision.text.Text
 import com.google.mlkit.vision.text.TextRecognition
 import com.google.mlkit.vision.text.japanese.JapaneseTextRecognizerOptions
+import java.util.concurrent.ExecutionException
+import java.util.concurrent.Executor
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.TimeoutException
 
@@ -17,7 +25,7 @@ import java.util.concurrent.TimeoutException
  * screen on every page it takes, and by the `readMargins` command for pages
  * restored from an earlier session.
  *
- * Two passes, as before (emulator runs 8–18):
+ * Two passes, as before (emulator runs 8–18), ONE ML Kit call each:
  * - "band": the top and bottom margin bands, each enlarged to `minWidth`;
  * - "folio": short, isolated pieces of print in those bands (a page number
  *   such as "— 31 —" stands alone, far from other text), each cut out
@@ -28,37 +36,20 @@ import java.util.concurrent.TimeoutException
 object MarginReader {
     private const val FOLIO_TEXT_PX = 48
     private const val MAX_FOLIO_SEGMENTS = 4
-    private const val RECOGNIZE_TIMEOUT_S = 8L
-    private const val WARMUP_TIMEOUT_S = 60L
+    /** White rows between the pieces put into one picture. */
+    private const val GAP_PX = 24
+    /**
+     * How long a caller waits for one recognition. Generous: the bitmap
+     * stays ML Kit's until its task ends either way, and the real time of
+     * every call is logged ("ocr …") when it ends.
+     */
+    private const val RECOGNIZE_TIMEOUT_MS = 20_000L
+    private const val TAG = "AstarScanMlkit"
 
     private val recognizer by lazy {
         TextRecognition.getClient(JapaneseTextRecognizerOptions.Builder().build())
     }
-
-    /**
-     * Elapsed-realtime ms after which no more text is recognised (0: no
-     * limit). The capture screen sets it per page so that reading a number
-     * never holds "撮影中…" for long (run 20: 32–82 s per page on the CI
-     * emulator). A recognition that times out also ends the reading: ML Kit
-     * runs them one after another, so the next would wait behind it.
-     */
-    @Volatile
-    var deadline = 0L
-
-    /** Loads the recognizer's model (seconds on a slow phone) before the first page needs it. Returns the ms it took. */
-    fun warmUp(): Long {
-        val t0 = SystemClock.elapsedRealtime()
-        val b = Bitmap.createBitmap(64, 32, Bitmap.Config.ARGB_8888)
-        b.eraseColor(android.graphics.Color.WHITE)
-        try {
-            Tasks.await(recognizer.process(InputImage.fromBitmap(b, 0)), WARMUP_TIMEOUT_S, TimeUnit.SECONDS)
-        } catch (e: Exception) {
-            Log.w("AstarScanMlkit", "text recognizer warm-up: ${e.javaClass.simpleName} ${e.message}")
-        } finally {
-            b.recycle()
-        }
-        return SystemClock.elapsedRealtime() - t0
-    }
+    private val paint = Paint(Paint.FILTER_BITMAP_FLAG)
 
     fun read(page: Bitmap, marginFrac: Double = PageNumbers.MARGIN_FRAC, minWidth: Int = 1600, folio: Boolean = true): List<PageNumbers.Line> {
         val out = ArrayList<PageNumbers.Line>()
@@ -67,26 +58,50 @@ object MarginReader {
         return out
     }
 
+    /**
+     * Load the model and run it once on a tiny picture, so the first page
+     * does not wait for that (logged as "ocr warmup").
+     */
+    fun warmUp() {
+        val b = Bitmap.createBitmap(320, 96, Bitmap.Config.ARGB_8888)
+        Canvas(b).apply {
+            drawColor(Color.WHITE)
+            drawText("12", 120f, 70f, Paint(Paint.ANTI_ALIAS_FLAG).apply { textSize = 56f; color = Color.BLACK })
+        }
+        recognize(b, "warmup")
+    }
+
+    /**
+     * The top and bottom margin bands, each enlarged to `minWidth`, read in
+     * ONE recognition (stacked into one picture). Run 20: one call per band
+     * and per piece of print (up to 10 a page) took 60–80 s a page on the
+     * CI emulator; one call costs about the same as each of those.
+     */
     fun bandLines(page: Bitmap, marginFrac: Double, minWidth: Int): List<PageNumbers.Line> {
         val w = page.width
         val h = page.height
         val band = (h * marginFrac.coerceIn(0.02, 0.5)).toInt().coerceAtLeast(1)
-        val out = ArrayList<PageNumbers.Line>()
         // To minWidth either way: a wider band only costs recognition time
         // (the camera saw the page at well under 1600 px).
         val up = (minWidth.toFloat() / w).coerceIn(0.25f, 4f)
-        for (top in listOf(true, false)) {
-            val y0 = if (top) 0 else h - band
-            recognizeRegion(page, 0, y0, w, band, up, "band", out)
-        }
-        return out
+        val tiles = listOf(
+            Tile(Rect(0, 0, w, band), up),
+            Tile(Rect(0, h - band, w, h), up),
+        )
+        return recognizeTiles(page, tiles, "band")
     }
 
+    /**
+     * Short, isolated pieces of print in the margin bands (a page number
+     * such as "— 31 —" stands alone), each cut out and enlarged so its text
+     * is ~FOLIO_TEXT_PX tall, all read in ONE recognition (one under the
+     * other in one picture).
+     */
     fun folioLines(page: Bitmap, marginFrac: Double): List<PageNumbers.Line> {
         val w = page.width
         val h = page.height
         val band = (h * marginFrac.coerceIn(0.02, 0.5)).toInt().coerceAtLeast(1)
-        val out = ArrayList<PageNumbers.Line>()
+        val tiles = ArrayList<Tile>()
         for (top in listOf(true, false)) {
             val y0 = if (top) 0 else h - band
             for (seg in printSegments(page, y0, band).take(MAX_FOLIO_SEGMENTS)) {
@@ -100,10 +115,11 @@ object MarginReader {
                 val ry1 = (seg[3] + padY).coerceAtMost(h)
                 if (x1 - x0 < 4 || ry1 - ry0 < 4 || sw < 2) continue
                 val up = (FOLIO_TEXT_PX.toFloat() / sh).coerceIn(1f, 8f)
-                recognizeRegion(page, x0, ry0, x1 - x0, ry1 - ry0, up, "folio", out)
+                tiles.add(Tile(Rect(x0, ry0, x1, ry1), up))
             }
         }
-        return out
+        if (tiles.isEmpty()) return emptyList()
+        return recognizeTiles(page, tiles, "folio")
     }
 
     /** Lines as JSON for the log lines the emulator check reads (book-measure.py). */
@@ -124,46 +140,83 @@ object MarginReader {
         return b.append('"').toString()
     }
 
-    private fun recognizeRegion(
-        page: Bitmap, x0: Int, y0: Int, rw: Int, rh: Int, up: Float, pass: String, out: MutableList<PageNumbers.Line>,
-    ) {
-        val d = deadline
-        if (d > 0 && SystemClock.elapsedRealtime() > d) return
-        val w = page.width
-        val h = page.height
-        val strip = Bitmap.createBitmap(page, x0, y0, rw, rh)
-        val input = if (up != 1f) {
-            Bitmap.createScaledBitmap(strip, (rw * up).toInt().coerceAtLeast(1), (rh * up).toInt().coerceAtLeast(1), true)
-                .also { if (it !== strip) strip.recycle() }
-        } else {
-            strip
+    /** A region of the page and how much it is enlarged in the picture read. */
+    private class Tile(val src: Rect, val up: Float) {
+        val outW: Int get() = (src.width() * up).toInt().coerceAtLeast(1)
+        val outH: Int get() = (src.height() * up).toInt().coerceAtLeast(1)
+        var top = 0
+    }
+
+    /**
+     * The tiles one under the other (white between them) in one picture,
+     * read once; each line goes back to the tile its centre falls in, its
+     * centre normalised to the page.
+     */
+    private fun recognizeTiles(page: Bitmap, tiles: List<Tile>, pass: String): List<PageNumbers.Line> {
+        var y = 0
+        var cw = 1
+        for (t in tiles) {
+            t.top = y
+            y += t.outH + GAP_PX
+            cw = maxOf(cw, t.outW)
         }
-        try {
-            // Bounded: a recognition that never returns must not hold the
-            // capture screen on "撮影中…" (run 19).
-            val text = try {
-                Tasks.await(recognizer.process(InputImage.fromBitmap(input, 0)), RECOGNIZE_TIMEOUT_S, TimeUnit.SECONDS)
-            } catch (e: TimeoutException) {
-                Log.w("AstarScanMlkit", "text recognition timed out ($pass ${input.width}x${input.height})")
-                if (deadline > 0) deadline = 1
-                return
+        val ch = (y - GAP_PX).coerceAtLeast(1)
+        val pic = Bitmap.createBitmap(cw, ch, Bitmap.Config.ARGB_8888)
+        val canvas = Canvas(pic)
+        canvas.drawColor(Color.WHITE)
+        for (t in tiles) canvas.drawBitmap(page, t.src, Rect(0, t.top, t.outW, t.top + t.outH), paint)
+        val text = recognize(pic, "$pass ${tiles.size}") ?: return emptyList()
+        val out = ArrayList<PageNumbers.Line>()
+        for (block in text.textBlocks) {
+            for (line in block.lines) {
+                val box = line.boundingBox ?: continue
+                val bx = box.exactCenterX()
+                val by = box.exactCenterY()
+                val t = tiles.firstOrNull { by >= it.top - GAP_PX / 2f && by < it.top + it.outH + GAP_PX / 2f } ?: continue
+                out.add(
+                    PageNumbers.Line(
+                        text = line.text,
+                        cx = ((t.src.left + bx / t.up) / page.width).toDouble(),
+                        cy = ((t.src.top + (by - t.top) / t.up) / page.height).toDouble(),
+                        pass = pass,
+                        conf = line.confidence.toDouble(),
+                    ),
+                )
             }
-            for (block in text.textBlocks) {
-                for (line in block.lines) {
-                    val box = line.boundingBox ?: continue
-                    out.add(
-                        PageNumbers.Line(
-                            text = line.text,
-                            cx = ((x0 + box.exactCenterX() / up) / w).toDouble(),
-                            cy = ((y0 + box.exactCenterY() / up) / h).toDouble(),
-                            pass = pass,
-                            conf = line.confidence.toDouble(),
-                        ),
-                    )
-                }
-            }
-        } finally {
-            if (input !== page) input.recycle()
+        }
+        return out
+    }
+
+    /**
+     * One ML Kit call on `input`, which is ML Kit's from here on: recycled
+     * when its task ends, never before (run 20: recycling it on a timeout
+     * left ML Kit reading recycled bitmaps). Logs the call's real time.
+     * Null when it fails or does not end within RECOGNIZE_TIMEOUT_MS.
+     */
+    private fun recognize(input: Bitmap, what: String): Text? {
+        val w = input.width
+        val h = input.height
+        val t0 = SystemClock.elapsedRealtime()
+        val task = recognizer.process(InputImage.fromBitmap(input, 0))
+        task.addOnCompleteListener(
+            Executor { it.run() },
+            OnCompleteListener<Text> { t ->
+                val ms = SystemClock.elapsedRealtime() - t0
+                Log.i(TAG, "ocr $what ${w}x$h ${ms}ms ${if (t.isSuccessful) "ok" else "failed ${t.exception?.message}"}")
+                input.recycle()
+            },
+        )
+        return try {
+            Tasks.await(task, RECOGNIZE_TIMEOUT_MS, TimeUnit.MILLISECONDS)
+        } catch (e: TimeoutException) {
+            Log.w(TAG, "text recognition timed out ($what ${w}x$h)")
+            null
+        } catch (e: ExecutionException) {
+            Log.w(TAG, "text recognition failed ($what ${w}x$h): ${e.cause?.message}")
+            null
+        } catch (e: InterruptedException) {
+            Thread.currentThread().interrupt()
+            null
         }
     }
 

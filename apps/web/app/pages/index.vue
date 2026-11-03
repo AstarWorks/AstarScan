@@ -90,6 +90,8 @@ import {
   nativeSavePdf,
   nativeScan,
   nativeSendToAstar,
+  nativeTakePending,
+  type NativeScanResult,
 } from '~/services/native-scanner'
 import { readPageNumbersNative } from '~/services/page-number-reader'
 import {
@@ -869,6 +871,7 @@ onMounted(async () => {
       queuePageNumbers(captured.value)
     }
   }
+  if (nativeMode) await takePendingNativePages()
 
   // WebGPU probe. Failing requestAdapter() (Firefox / Safari < 26 / older
   // Chrome on non-supported GPUs) disables LLM features without breaking
@@ -2037,6 +2040,50 @@ function mergeByNumber(list: Page[], added: readonly Page[]): Page[] {
   return out
 }
 
+/** Pages handed over by the capture screen (or saved by it) into the list. */
+async function importNativeResult(res: NativeScanResult): Promise<void> {
+  if (res.sideStep === 2 || res.sideStep === 1) {
+    nativeSideStep.value = res.sideStep
+  }
+  if (res.pages.length === 0) return
+  statusText.value = '取り込み中…'
+  const now = Date.now()
+  const pages: Page[] = []
+  for (const [i, s] of res.pages.entries()) {
+    const page: Page = {
+      id: `n${now}-${i + 1}`,
+      dataUrl: await nativeReadPage(s.uri, NATIVE_PREVIEW_LONG_SIDE),
+      width: s.width,
+      height: s.height,
+      capturedAt: now,
+      nativeUri: s.uri,
+      thumb: s.thumb,
+    }
+    // The number the capture screen read and showed is the one the list uses.
+    setPageNoRead(page.id, { status: 'done', nums: [...s.nums] })
+    pages.push(page)
+  }
+  captured.value = mergeByNumber(captured.value, pages)
+  void saveSession(captured.value.map(pageToStored))
+}
+
+/**
+ * App start: pages a capture screen saved but could not hand over (the app
+ * was closed or killed meanwhile) join the list.
+ */
+async function takePendingNativePages(): Promise<void> {
+  try {
+    const res = await nativeTakePending()
+    if (res.pages.length === 0) return
+    await importNativeResult(res)
+    phase.value = 'done'
+  } catch (err) {
+    console.warn('[native] saved capture pages not taken:', err)
+  } finally {
+    statusText.value = ''
+  }
+}
+
 async function startNativeScan(): Promise<void> {
   phase.value = 'loading'
   errorText.value = ''
@@ -2047,28 +2094,7 @@ async function startNativeScan(): Promise<void> {
       return r?.status === 'done' ? r.nums : []
     })
     const res = await nativeScan(known, nativeSideStep.value)
-    if (res.sideStep === 2 || res.sideStep === 1) {
-      nativeSideStep.value = res.sideStep
-    }
-    statusText.value = '取り込み中…'
-    const now = Date.now()
-    const pages: Page[] = []
-    for (const [i, s] of res.pages.entries()) {
-      const page: Page = {
-        id: `n${now}-${i + 1}`,
-        dataUrl: await nativeReadPage(s.uri, NATIVE_PREVIEW_LONG_SIDE),
-        width: s.width,
-        height: s.height,
-        capturedAt: now,
-        nativeUri: s.uri,
-        thumb: s.thumb,
-      }
-      // The number the capture screen read and showed is the one the list uses.
-      setPageNoRead(page.id, { status: 'done', nums: [...s.nums] })
-      pages.push(page)
-    }
-    captured.value = mergeByNumber(captured.value, pages)
-    void saveSession(captured.value.map(pageToStored))
+    await importNativeResult(res)
     phase.value = captured.value.length > 0 ? 'done' : 'idle'
     statusText.value = ''
   } catch (err) {

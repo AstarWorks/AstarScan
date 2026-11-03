@@ -101,45 +101,96 @@ class ScannerPlugin(private val activity: Activity) : Plugin(activity) {
             if (code != null) {
                 invoke.reject(data.getStringExtra(CaptureActivity.EXTRA_MESSAGE) ?: code, code)
             } else {
-                // The screen went away without its result (killed): nothing to hand over.
-                Log.i(TAG, "capture closed without a result (${result.resultCode})")
-                invoke.resolve(JSObject().put("canceled", true).put("pages", JSArray()).put("missing", JSArray()))
+                // The screen went away without its result (killed): the pages
+                // it saved one by one are still in scans/capture-*.json.
+                Log.i(TAG, "capture closed without a result (${result.resultCode}); taking the pages it saved")
+                io.execute {
+                    try {
+                        invoke.resolve(takeSaved(null))
+                    } catch (e: Exception) {
+                        Log.e(TAG, "taking saved pages failed", e)
+                        invoke.resolve(JSObject().put("canceled", true).put("pages", JSArray()).put("missing", JSArray()))
+                    }
+                }
             }
             return
         }
         io.execute {
             try {
-                val json = JSONObject(File(path).readText())
-                val src = json.getJSONArray("pages")
-                val pages = JSArray()
-                for (i in 0 until src.length()) {
-                    val p = src.getJSONObject(i)
-                    val f = File(p.getString("file"))
-                    if (!f.exists()) continue
-                    pages.put(
-                        JSObject()
-                            .put("uri", Uri.fromFile(f).toString())
-                            .put("width", p.getInt("width"))
-                            .put("height", p.getInt("height"))
-                            .put("nums", ints(p.getJSONArray("nums")))
-                            .put("spread", p.getBoolean("spread"))
-                            .put("numberState", p.getString("numberState"))
-                            .put("thumb", jpegDataUrl(f, 360, 70)),
-                    )
-                }
-                File(path).delete()
-                invoke.resolve(
-                    JSObject()
-                        .put("canceled", false)
-                        .put("pages", pages)
-                        .put("missing", ints(json.getJSONArray("missing")))
-                        .put("sideStep", json.optInt("sideStep", 1)),
-                )
+                invoke.resolve(takeSaved(File(path)))
             } catch (e: Exception) {
                 Log.e(TAG, "reading the capture result failed", e)
                 invoke.reject(e.message ?: "result failed", "COPY_FAILED")
             }
         }
+    }
+
+    /**
+     * Pages a capture screen saved but never handed over (the app was
+     * closed or killed before its result arrived): the list takes them when
+     * it starts.
+     */
+    @Command
+    fun takePending(invoke: Invoke) {
+        io.execute {
+            try {
+                invoke.resolve(takeSaved(null))
+            } catch (e: Exception) {
+                Log.e(TAG, "taking saved pages failed", e)
+                invoke.reject(e.message ?: "failed", "PENDING_FAILED")
+            }
+        }
+    }
+
+    /**
+     * The pages in a capture screen's file (`only`), or in every one left in
+     * scans/ (null), as `scan` returns them; the files are deleted.
+     * CaptureActivity rewrites its file after every page, so a page taken
+     * is never lost with the process.
+     */
+    private fun takeSaved(only: File?): JSObject {
+        val dir = File(activity.filesDir, "scans")
+        val files = if (only != null) listOf(only) else
+            (dir.listFiles { f -> f.name.startsWith("capture-") && f.name.endsWith(".json") }?.sortedBy { it.name } ?: emptyList())
+        val pages = JSArray()
+        val missing = JSArray()
+        var step = 1
+        for (file in files) {
+            val json = try {
+                JSONObject(file.readText())
+            } catch (e: Exception) {
+                Log.w(TAG, "capture file ${file.name} unreadable", e)
+                file.delete()
+                continue
+            }
+            val src = json.getJSONArray("pages")
+            for (i in 0 until src.length()) {
+                val p = src.getJSONObject(i)
+                val f = File(p.getString("file"))
+                if (!f.exists()) continue
+                val state = p.getString("numberState").let { if (it == "reading") "unread" else it }
+                pages.put(
+                    JSObject()
+                        .put("uri", Uri.fromFile(f).toString())
+                        .put("width", p.getInt("width"))
+                        .put("height", p.getInt("height"))
+                        .put("nums", if (state == "ok") ints(p.getJSONArray("nums")) else JSArray())
+                        .put("spread", p.getBoolean("spread"))
+                        .put("numberState", state)
+                        .put("thumb", jpegDataUrl(f, 360, 70)),
+                )
+            }
+            val m = json.optJSONArray("missing")
+            if (m != null) for (i in 0 until m.length()) missing.put(m.getInt(i))
+            step = json.optInt("sideStep", step)
+            file.delete()
+            Log.i(TAG, "capture file ${file.name}: ${src.length()} pages${if (json.optBoolean("final")) "" else " (not closed)"}")
+        }
+        return JSObject()
+            .put("canceled", only == null && pages.length() == 0)
+            .put("pages", pages)
+            .put("missing", missing)
+            .put("sideStep", step)
     }
 
     @Command

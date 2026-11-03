@@ -40,9 +40,11 @@ FEED_STATUS=${FEED_STATUS:-/tmp/feed.status}
 FEED_LOG=${FEED_LOG:-/tmp/feed.log}
 # Seconds a page may stay in front of the camera without a word from the app.
 WAIT_S=${WAIT_S:-45}
+# After "✓ 撮れた": how long to wait for the page's number result.
+NUM_WAIT_S=${NUM_WAIT_S:-30}
 mkdir -p "$OUT"
 n=0
-printf 'clip\tstep\thold\tresult\ttext\tshot\twaited\n' >"$OUT/checks.tsv"
+printf 'clip\tstep\thold\tresult\ttext\tshot\twaited\tnumwait\n' >"$OUT/checks.tsv"
 printf 'clip\thold\tkind\ttext\n' >"$OUT/notices.tsv"
 EVENTS=$OUT/events.log
 : >"$EVENTS"
@@ -176,13 +178,15 @@ open_capture() {
 }
 
 # take_page <clip> <step> <hold> — hold the page until the screen says it
-# took it, or WAIT_S seconds pass. One checks.tsv row.
+# took it ("shot", or a number result), or WAIT_S seconds pass; then, for a
+# page taken, wait up to NUM_WAIT_S for its number result (read while the
+# user turns on) and record that. One checks.tsv row.
 take_page() {
-  local clip=$1 step=$2 hold=$3 mark t0 line result=none text= waited dup=
+  local clip=$1 step=$2 hold=$3 mark t0 line result=none text= waited dup= name= numwait= t1
   mark=$(events_lines)
   t0=$SECONDS
   while [ $((SECONDS - t0)) -lt "$WAIT_S" ]; do
-    line=$(events_since "$mark" | grep -m1 -E 'AstarScanCapture.*: banner (taken|unread|filled|gap) ')
+    line=$(events_since "$mark" | grep -m1 -E 'AstarScanCapture.*: banner (shot|taken|unread|filled|gap) ')
     if [ -n "$line" ]; then
       result=$(sed -E 's/.*: banner ([a-z]+) .*/\1/' <<<"$line")
       text=$(sed -E 's/.*: banner [a-z]+ //' <<<"$line")
@@ -193,6 +197,29 @@ take_page() {
     sleep 0.5
   done
   waited=$((SECONDS - t0))
+  if [ "$result" != none ]; then
+    # The page this banner is about, and its number result.
+    name=$(events_since "$mark" | grep -m1 -E 'AstarScanCapture.*: capture [^ ]+ t=' | sed -E 's/.*: capture ([^ ]+) t=.*/\1/')
+    if [ -n "$name" ]; then
+      t1=$SECONDS
+      line=
+      while [ $((SECONDS - t1)) -lt "$NUM_WAIT_S" ]; do
+        line=$(events_since "$mark" | grep -m1 -F "AstarScanCapture: page $name kind=" || true)
+        [ -z "$line" ] && line=$(events_since "$mark" | grep -m1 -E "AstarScanCapture *: page $name kind=" || true)
+        [ -n "$line" ] && break
+        sleep 0.5
+      done
+      numwait=$((SECONDS - t1))
+      if [ -n "$line" ]; then
+        result=$(sed -E 's/.*: page [^ ]+ kind=([a-z]+) .*/\1/' <<<"$line")
+        # What the banner said for it (none when a newer page was already up).
+        line=$(events_since "$mark" | grep -E 'AstarScanCapture.*: banner (taken|unread|filled|gap|duplicate) ' | tail -n1)
+        [ -n "$line" ] && text=$(sed -E 's/.*: banner [a-z]+ //' <<<"$line")
+      else
+        text="$text (番号は ${NUM_WAIT_S}s で出ず)"
+      fi
+    fi
+  fi
   if [ "$result" = none ]; then
     if [ -n "$dup" ]; then
       result=duplicate
@@ -214,8 +241,8 @@ take_page() {
   # The screen's own log for this page, into the job log too (what the frame
   # finder saw, how long each part of taking the page took).
   events_since "$mark" | grep -E 'AstarScan(Capture|Mlkit)' | grep -v ': margins ' | cut -c19- | cut -c1-300 | sed 's/^/    /'
-  log "$clip step $step hold $hold: $result ${text:+($text)} after ${waited}s"
-  printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\n' "$clip" "$step" "$hold" "$result" "$text" "$SHOT" "$waited" >>"$OUT/checks.tsv"
+  log "$clip step $step hold $hold: $result ${text:+($text)} after ${waited}s${numwait:+, number after ${numwait}s more}"
+  printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' "$clip" "$step" "$hold" "$result" "$text" "$SHOT" "$waited" "$numwait" >>"$OUT/checks.tsv"
   RESULT=$result
 }
 
@@ -240,14 +267,32 @@ scan_clip() {
 }
 
 # close_capture — Back on the capture screen hands its pages to the app.
+# Back once, then wait for the screen's "done" (it may first finish the
+# numbers still being read): run 20 pressed Back every 4 s while the screen
+# was still reading, and a late Back closed the app itself (pid exited 0,
+# list lost).
 close_capture() {
-  local i
-  for i in 1 2 3 4 5 6 7 8 9 10; do
+  local i t0 mark
+  for i in 1 2 3; do
     dump
     case $(kind) in
       app-list | app-list-empty | app-start) return 0 ;;
-      *) adb shell input keyevent KEYCODE_BACK; sleep 4 ;;
     esac
+    mark=$(events_lines)
+    adb shell input keyevent KEYCODE_BACK
+    t0=$SECONDS
+    while [ $((SECONDS - t0)) -lt 60 ]; do
+      events_since "$mark" | grep -qE 'AstarScanCapture.*: (done|closing) ' && break
+      sleep 1
+    done
+    events_since "$mark" | grep -E 'AstarScanCapture.*: (finishing|closing with|done) ' | cut -c19- | sed 's/^/    /'
+    for _ in $(seq 15); do
+      sleep 2
+      dump
+      case $(kind) in
+        app-list | app-list-empty | app-start) return 0 ;;
+      esac
+    done
   done
   log "$1: still not back on the list"
   return 1

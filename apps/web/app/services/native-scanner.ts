@@ -70,6 +70,15 @@ export function nativeScan(
   return call<NativeScanResult>('scan', { known, sideStep })
 }
 
+/**
+ * Pages a capture screen saved but never handed over (the app was closed
+ * or killed while it was open, or before its result arrived). The screen
+ * saves its page list after every page; this takes (and clears) it.
+ */
+export function nativeTakePending(): Promise<NativeScanResult> {
+  return call<NativeScanResult>('take_pending')
+}
+
 /** A scanned page downscaled to `maxSide` px, as a JPEG data URL. */
 export async function nativeReadPage(
   uri: string,

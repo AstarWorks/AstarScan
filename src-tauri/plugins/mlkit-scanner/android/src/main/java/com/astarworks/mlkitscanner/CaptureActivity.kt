@@ -48,6 +48,7 @@ import java.util.concurrent.CountDownLatch
 import java.util.concurrent.Executors
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicBoolean
+import java.util.concurrent.atomic.AtomicInteger
 import kotlin.math.abs
 import kotlin.math.max
 import kotlin.math.min
@@ -58,10 +59,12 @@ import kotlin.math.roundToInt
  *
  * 1. A green frame around the paper found (DocAligner, CaptureDetector).
  * 2. When the frame has stood still for STABLE_MS the page is taken by
- *    itself, its printed number is read (ML Kit, MarginReader), and the top
- *    of the screen says "✓ 35 ページ 撮れた — めくってください" with a short
- *    vibration: the sign to turn the page. The same page is not taken
- *    again until the page has been turned (the picture changed).
+ *    itself: "✓ 撮れた — めくってください" and a short vibration at once,
+ *    the sign to turn the page. Its printed number is read meanwhile
+ *    (ML Kit, MarginReader, on its own thread) and, when known, the banner
+ *    becomes "✓ 35 ページ 撮れた — めくってください" (if no newer page was
+ *    taken since; a missing page found later is always shown in red). The
+ *    same page is not taken again until it has been turned.
  * 3. When it cannot: yellow "紙全体を画面に入れてください" when no frame is
  *    found or it keeps moving for YELLOW_MS; red "36 ページが抜けています。
  *    戻って撮ってください" when the number jumps (going back and taking it
@@ -69,7 +72,9 @@ import kotlin.math.roundToInt
  *
  * Done (button at the bottom, or Back) hands every page taken to the app
  * (ScannerPlugin.captureResult) as JPEG files in filesDir/scans; Back never
- * throws pages away.
+ * throws pages away. The page list is also written to
+ * filesDir/scans/capture-<stamp>.json after every page, so the pages taken
+ * survive the process (ScannerPlugin.takePending picks them up).
  *
  * Every banner and every page is logged (tag AstarScanCapture) for the
  * emulator check (scripts/android/emulator-check.sh, book-measure.py);
@@ -86,6 +91,13 @@ class CaptureActivity : ComponentActivity() {
     private val analysisExec = Executors.newSingleThreadExecutor()
     private val work = Executors.newSingleThreadExecutor()
     private val stillExec = Executors.newSingleThreadExecutor()
+    /** Page numbers are read here, one page after the other, while the user turns on. */
+    private val readExec = Executors.newSingleThreadExecutor()
+    private val pendingReads = AtomicInteger(0)
+    /** The newest page taken: only its number result replaces the banner. */
+    @Volatile private var newestShot: String? = null
+    /** Set when the result is written: later reads change nothing. */
+    private val closed = AtomicBoolean(false)
     private var detector: CaptureDetector? = null
     private var imageCapture: ImageCapture? = null
     private lateinit var session: CaptureSession
@@ -97,6 +109,9 @@ class CaptureActivity : ComponentActivity() {
     // Analysis-thread state.
     private var lastAnalyzed = 0L
     private var anchor: Quad? = null
+    /** The last SMOOTH_N frames found; stillness is judged on their median (corners jitter 20–30 px, run 20). */
+    private val recent = ArrayDeque<Quad>()
+    private var nullStreak = 0
     private var stableSince = 0L
     private var lastGoodAt = 0L
     private var armed = true
@@ -110,7 +125,6 @@ class CaptureActivity : ComponentActivity() {
     @Volatile private var offSince = 0L
     private val busy = AtomicBoolean(false)
     private val finishing = AtomicBoolean(false)
-
 
     // Main-thread state.
     private var bannerKind = ""
@@ -128,11 +142,19 @@ class CaptureActivity : ComponentActivity() {
         })
         setBanner("idle", "ページ全体を画面に入れて止めてください")
         updateInfo()
+        readExec.execute {
+            val t0 = SystemClock.elapsedRealtime()
+            try {
+                MarginReader.warmUp()
+                Log.i(TAG, "text recognition ready in ${SystemClock.elapsedRealtime() - t0}ms")
+            } catch (e: Exception) {
+                Log.w(TAG, "text recognition warm-up failed", e)
+            }
+        }
         work.execute {
             try {
                 detector = CaptureDetector(this)
                 Log.i(TAG, "detector ready")
-                Log.i(TAG, "text recognizer warm-up ${MarginReader.warmUp()}ms")
             } catch (e: Exception) {
                 Log.e(TAG, "detector failed", e)
                 runOnUiThread { finishWithError("DETECTOR_FAILED", e.message ?: "model") }
@@ -157,6 +179,7 @@ class CaptureActivity : ComponentActivity() {
         work.execute { detector?.close() }
         work.shutdown()
         stillExec.shutdown()
+        readExec.shutdown()
     }
 
     // ------------------------------------------------------------------ UI
@@ -216,10 +239,10 @@ class CaptureActivity : ComponentActivity() {
         setColor(color)
     }
 
-    /** kind: idle, busy, taken, unread, gap, filled, duplicate, yellow. */
+    /** kind: idle, busy, shot (taken, number still being read), taken, unread, gap, filled, duplicate, yellow. */
     private fun setBanner(kind: String, text: String) {
         val color = when (kind) {
-            "taken", "filled" -> 0xEE1B8E3E.toInt()
+            "taken", "filled", "shot" -> 0xEE1B8E3E.toInt()
             "gap" -> 0xEED32F2F.toInt()
             "yellow" -> 0xEEF9C80E.toInt()
             "unread", "duplicate" -> 0xEE616161.toInt()
@@ -234,9 +257,9 @@ class CaptureActivity : ComponentActivity() {
     }
 
     private fun updateInfo() {
-        val n = session.pages.size
-        val miss = session.missing.toList()
-        info.text = if (miss.isEmpty()) "$n 枚" else "$n 枚 · 抜け ${CaptureSession.label(miss)}"
+        val (n, miss, reading) = synchronized(session) { Triple(session.pages.size, session.missing.toList(), session.reading) }
+        val base = if (miss.isEmpty()) "$n 枚" else "$n 枚 · 抜け ${CaptureSession.label(miss)}"
+        info.text = if (reading > 0) "$base · 番号読み取り中 $reading" else base
         doneButton.text = if (n > 0) "完了（$n）" else "完了"
     }
 
@@ -313,11 +336,12 @@ class CaptureActivity : ComponentActivity() {
     private fun analyze(image: ImageProxy) {
         try {
             val now = SystemClock.elapsedRealtime()
-            // No frame finding while a page is being taken: on a slow phone
-            // (the CI emulator, runs 19–20: DocAligner ~0.7 s a frame) it
-            // starved the number reading, and "撮影中…" stayed up for a minute
-            // or more. The second read uses the frame that triggered the page.
-            if (busy.get() || now - lastAnalyzed < ANALYSIS_MS || finishing.get()) return
+            // No frame finding while a page is being cut (a second or two),
+            // and less of it while numbers are read: on a slow phone (the CI
+            // emulator, runs 19–20: DocAligner ~0.7–2 s a frame) it starves
+            // ML Kit.
+            val every = if (pendingReads.get() > 0) READING_ANALYSIS_MS else ANALYSIS_MS
+            if (busy.get() || now - lastAnalyzed < every || finishing.get()) return
             lastAnalyzed = now
             val det = detector ?: return
             val rot = image.imageInfo.rotationDegrees
@@ -343,17 +367,21 @@ class CaptureActivity : ComponentActivity() {
             val q = if (off) null else found
             if (!off) offSince = 0L else if (offSince == 0L) offSince = now
             step(now, q, frame)
-            val stable = q != null && now - stableSince >= STABLE_MS
+            val stable = q != null && anchor != null && now - stableSince >= STABLE_MS
             if (now - lastStatusLog >= STATUS_LOG_MS) {
                 lastStatusLog = now
                 Log.i(
                     TAG,
                     "status detect=${detectMs}ms peaks=${res?.peaks?.joinToString(",") { "%.2f".format(it) } ?: "-"} " +
-                        "plausible=$plausible off=$off frame=${found ?: "-"} stableFor=${if (q != null) now - stableSince else -1} " +
-                        "armed=$armed turnSeen=$turnSeen busy=${busy.get()} banner=$bannerKind",
+                        "plausible=$plausible off=$off frame=${found ?: "-"} stableFor=${if (q != null && anchor != null) now - stableSince else -1} " +
+                        "armed=$armed turnSeen=$turnSeen busy=${busy.get()} reading=${pendingReads.get()} banner=$bannerKind",
                 )
             }
-            runOnUiThread { overlay.show(found, frame.width, frame.height, stable, off) }
+            val fw = frame.width
+            val fh = frame.height
+            // Not kept past this frame (the capture works on its own copy).
+            frame.recycle()
+            runOnUiThread { overlay.show(found, fw, fh, stable, off) }
         } catch (e: Exception) {
             Log.w(TAG, "analysis failed", e)
         } finally {
@@ -364,18 +392,28 @@ class CaptureActivity : ComponentActivity() {
     /** One analysed frame: stability, re-arming after a turn, auto-capture, the yellow notice. */
     private fun step(now: Long, q: Quad?, frame: Bitmap) {
         if (q == null) {
-            anchor = null
+            // One frame without the paper (a blink of the model) keeps the
+            // stillness; NULL_RESET in a row start it again.
+            nullStreak++
+            if (nullStreak >= NULL_RESET) {
+                anchor = null
+                recent.clear()
+            }
             if (!armed && now - lastCaptureAt > 300) turnSeen = true
         } else {
+            nullStreak = 0
+            recent.addLast(q)
+            while (recent.size > SMOOTH_N) recent.removeFirst()
+            val m = median(recent)
             val a = anchor
-            if (a == null || q.maxMove(a) > STABLE_TOL * q.diagonal) {
+            if (a == null || m.maxMove(a) > STABLE_TOL * m.diagonal) {
                 if (a != null && !armed && now - lastCaptureAt > 300) turnSeen = true
-                anchor = q
+                anchor = m
                 stableSince = now
             }
             if (now - stableSince >= GOOD_MS) lastGoodAt = now
         }
-        val stableFor = if (q != null) now - stableSince else 0L
+        val stableFor = if (q != null && anchor != null) now - stableSince else 0L
         // After a page is taken: wait until the picture is another page.
         if (!armed && !busy.get() && q != null && stableFor >= STABLE_MS) {
             val sig = signature(frame, q)
@@ -413,6 +451,17 @@ class CaptureActivity : ComponentActivity() {
         }
     }
 
+    /** Corner by corner median of the frames found. */
+    private fun median(qs: Collection<Quad>): Quad {
+        val l = qs.toList()
+        fun med(v: List<Float>): Float {
+            val s = v.sorted()
+            val k = s.size / 2
+            return if (s.size % 2 == 1) s[k] else (s[k - 1] + s[k]) / 2
+        }
+        return Quad(FloatArray(4) { i -> med(l.map { it.x[i] }) }, FloatArray(4) { i -> med(l.map { it.y[i] }) })
+    }
+
     /** The page's look at 24×32 (local contrast), to tell a turned page from the same one. */
     private fun signature(frame: Bitmap, q: Quad): FloatArray {
         val small = PageFrame.warp(frame, q, 32)
@@ -444,7 +493,7 @@ class CaptureActivity : ComponentActivity() {
 
     // ------------------------------------------------------------- capture
 
-    /** Work thread: take the still, frame and cut the page, read its number, update the session. */
+    /** Work thread: take the still, frame and cut the page, keep it; its number is read on readExec. */
     private fun capture(frame: Bitmap, frameQuad: Quad, at: Long) {
         var photo: Bitmap? = null
         try {
@@ -471,6 +520,18 @@ class CaptureActivity : ComponentActivity() {
             if (probe !== photo) probe.recycle()
             val kept = kept0.scaled(1 / ks, 1 / ks)
             val page = PageFrame.warp(photo, kept, PAGE_MAX_SIDE)
+            // The same page cut from the analysis frame (another camera
+            // picture of the same moment) for the number's second read.
+            val second = if (photo !== frame) {
+                val kf = kept.scaled(frame.width.toFloat() / photo.width, frame.height.toFloat() / photo.height)
+                try {
+                    PageFrame.warp(frame, kf, PAGE_MAX_SIDE)
+                } catch (e: Exception) {
+                    null
+                }
+            } else {
+                null
+            }
             seq++
             val name = "$stamp-$seq.jpg"
             File(scansDir, name).outputStream().use { page.compress(Bitmap.CompressFormat.JPEG, 90, it) }
@@ -479,25 +540,27 @@ class CaptureActivity : ComponentActivity() {
             }
             // t = wall clock (ms) of the analysed frame that triggered the page.
             Log.i(TAG, "capture $name t=$at photo=${photo.width}x${photo.height} source=$source spread=${kept.isSpread} found=$q kept=$kept cut=$cut")
-            val tPage = SystemClock.elapsedRealtime()
-            MarginReader.deadline = tPage + READ_BUDGET_MS
-            val pick = readNumber(page, name)
-            val tRead = SystemClock.elapsedRealtime()
             val spread = kept.isSpread
-            // The second read: the analysis frame that triggered the page (another camera frame than the still).
-            val nums = confirm(pick, spread, name) { if (photo !== frame) secondRead(frame, frameQuad, name) else null }
-            MarginReader.deadline = 0L
-            val tConfirm = SystemClock.elapsedRealtime()
+            synchronized(session) { session.addPending(name, page.width, page.height, spread) }
+            newestShot = name
+            persist()
+            val tShot = SystemClock.elapsedRealtime()
             Log.i(
                 TAG,
-                "timing $name still=${tStill - t0}ms detect=${tDetect - tStill}ms page=${tPage - tDetect}ms " +
-                    "read=${tRead - tPage}ms confirm=${tConfirm - tRead}ms total=${tConfirm - t0}ms",
+                "timing-shot $name still=${tStill - t0}ms detect=${tDetect - tStill}ms page=${tShot - tDetect}ms total=${tShot - t0}ms",
             )
-            val outcome = session.add(name, page.width, page.height, nums, spread)
-            page.recycle()
-            if (outcome is CaptureSession.Outcome.Duplicate) File(scansDir, name).delete()
-            Log.i(TAG, "page $name kind=${kindOf(outcome)} nums=$nums missing=${session.missing} step=${session.step} pages=${session.pages.size}")
-            runOnUiThread { show(outcome) }
+            runOnUiThread {
+                setBanner("shot", "✓ 撮れた — めくってください")
+                vibrate(80)
+                updateInfo()
+            }
+            pendingReads.incrementAndGet()
+            try {
+                readExec.execute { readPage(name, page, second, spread, tShot) }
+            } catch (e: Exception) {
+                pendingReads.decrementAndGet()
+                Log.w(TAG, "number not read for $name", e)
+            }
         } catch (e: Exception) {
             Log.e(TAG, "capture failed", e)
             runOnUiThread { setBanner("yellow", "撮れませんでした。もう一度止めてください") }
@@ -506,6 +569,98 @@ class CaptureActivity : ComponentActivity() {
             if (photo != null && photo !== frame) photo.recycle()
             frame.recycle()
             busy.set(false)
+        }
+    }
+
+    /**
+     * Read thread: the page's printed number, then its place in the
+     * session, the banner (newest page, or red for a missing page) and the
+     * saved list. `page` and `second` are recycled here.
+     */
+    private fun readPage(name: String, page: Bitmap, second: Bitmap?, spread: Boolean, shotAt: Long) {
+        try {
+            if (closed.get()) return
+            val t0 = SystemClock.elapsedRealtime()
+            val pick = readNumber(page, name)
+            val tRead = SystemClock.elapsedRealtime()
+            val nums = confirm(pick, spread, name, second)
+            val tConfirm = SystemClock.elapsedRealtime()
+            Log.i(
+                TAG,
+                "timing $name queued=${t0 - shotAt}ms read=${tRead - t0}ms confirm=${tConfirm - tRead}ms " +
+                    "total=${tConfirm - t0}ms",
+            )
+            val outcome = synchronized(session) {
+                if (closed.get()) null else session.resolve(name, nums)
+            } ?: return
+            if (outcome is CaptureSession.Outcome.Duplicate) File(scansDir, name).delete()
+            persist()
+            val (missing, step, n) = synchronized(session) { Triple(session.missing.toList(), session.step, session.pages.size) }
+            Log.i(TAG, "page $name kind=${kindOf(outcome)} nums=$nums missing=$missing step=$step pages=$n")
+            runOnUiThread { shown(name, outcome) }
+        } catch (e: Exception) {
+            Log.e(TAG, "reading the number of $name failed", e)
+            val outcome = synchronized(session) { if (closed.get()) null else session.resolve(name, emptyList()) }
+            if (outcome != null) {
+                persist()
+                Log.i(TAG, "page $name kind=${kindOf(outcome)} nums=[] (read failed)")
+                runOnUiThread { shown(name, outcome) }
+            }
+        } finally {
+            page.recycle()
+            second?.recycle()
+            pendingReads.decrementAndGet()
+        }
+    }
+
+    /** A number result: on the banner when it is the newest page (a missing page always). */
+    private fun shown(name: String, o: CaptureSession.Outcome) {
+        if (finishing.get()) return
+        if (name == newestShot || o is CaptureSession.Outcome.Gap) {
+            show(o)
+        } else {
+            Log.i(TAG, "result $name ${kindOf(o)} (a newer page is on the banner)")
+            updateInfo()
+        }
+    }
+
+    /** The session as the result file (also written after every page, see the class doc). */
+    private fun sessionJson(closing: Boolean): JSONObject = synchronized(session) {
+        val pages = JSONArray()
+        for (p in session.pages) {
+            pages.put(
+                JSONObject()
+                    .put("file", File(scansDir, p.name).path)
+                    .put("width", p.width)
+                    .put("height", p.height)
+                    .put("nums", JSONArray(p.nums))
+                    .put("spread", p.spread)
+                    .put("numberState", p.numberState),
+            )
+        }
+        JSONObject()
+            .put("pages", pages)
+            .put("missing", JSONArray(session.missing.toList()))
+            .put("sideStep", if (session.step == 0) 1 else session.step)
+            .put("final", closing)
+    }
+
+    private val resultFile by lazy { File(scansDir, "capture-$stamp.json") }
+
+    /** Write the page list now (atomically), so the pages outlive the process. */
+    private fun persist() {
+        synchronized(resultFile) {
+            if (closed.get()) return
+            try {
+                val tmp = File(scansDir, "capture-$stamp.json.tmp")
+                tmp.writeText(sessionJson(false).toString())
+                if (!tmp.renameTo(resultFile)) {
+                    resultFile.writeText(tmp.readText())
+                    tmp.delete()
+                }
+            } catch (e: Exception) {
+                Log.w(TAG, "saving the page list failed", e)
+            }
         }
     }
 
@@ -553,28 +708,28 @@ class CaptureActivity : ComponentActivity() {
      * reaches the list (run 18: p47 read as "4" from the body text):
      * - the next number (or a missing one), read as a whole line → kept;
      * - anything else (a jump, the first page, a weak read) → read again on
-     *   a newer camera frame of the same page; kept only when both reads
-     *   agree, otherwise the page is "番号なし";
+     *   the analysis frame of the same moment (another camera picture);
+     *   kept only when both reads agree, otherwise the page is "番号なし";
      * - a number lower than the last page (and not missing), or more than
      *   MAX_JUMP ahead → "番号なし".
      */
-    private fun confirm(pick: PageNumbers.Pick, spread: Boolean, name: String, secondRead: () -> PageNumbers.Pick?): List<Int> {
+    private fun confirm(pick: PageNumbers.Pick, spread: Boolean, name: String, second: Bitmap?): List<Int> {
         val nums = pick.nums
-        val rel = session.relation(nums, spread)
+        val rel = synchronized(session) { session.relation(nums, spread) }
         if (rel == "duplicate") return nums
         if (rel == "expected" && pick.strong) return nums
         if (rel == "lower" || rel == "far") {
             Log.i(TAG, "number $nums for $name is $rel; not kept")
             return emptyList()
         }
-        val again = secondRead()
+        val again = second?.let { readNumber(it, "$name#2") }
         if (again == null) {
             Log.i(TAG, "number $nums for $name: no second frame; ${if (rel == "first" && pick.strong) "kept" else "not kept"}")
             return if ((rel == "first" || rel == "expected") && pick.strong) nums else emptyList()
         }
         if (nums.isEmpty()) {
             // First read found nothing: the second read may (kept only when it is the next page).
-            val r2 = session.relation(again.nums, spread)
+            val r2 = synchronized(session) { session.relation(again.nums, spread) }
             Log.i(TAG, "number for $name: second read ${again.nums} ($r2)")
             return if (again.strong && (r2 == "expected" || r2 == "duplicate")) again.nums else emptyList()
         }
@@ -584,21 +739,10 @@ class CaptureActivity : ComponentActivity() {
         }
         // Reads disagree: a spread may lose one number on one read.
         if (spread && again.nums.isNotEmpty() && again.nums.all { it in nums }) {
-            return again.nums.takeIf { session.relation(it, spread) == "expected" } ?: emptyList()
+            return again.nums.takeIf { synchronized(session) { session.relation(it, spread) } == "expected" } ?: emptyList()
         }
         Log.i(TAG, "number $nums for $name not confirmed (second read ${again.nums}); not kept")
         return emptyList()
-    }
-
-    /** The number read on another camera frame of the same page (the analysis frame that triggered it). */
-    private fun secondRead(bmp: Bitmap, q: Quad, name: String): PageNumbers.Pick? {
-        val (kept, _) = PageFrame.keep(bmp, q)
-        val page = PageFrame.warp(bmp, kept, PAGE_MAX_SIDE)
-        try {
-            return readNumber(page, "$name#2")
-        } finally {
-            page.recycle()
-        }
     }
 
     private fun kindOf(o: CaptureSession.Outcome): String = when (o) {
@@ -612,16 +756,14 @@ class CaptureActivity : ComponentActivity() {
     private fun show(o: CaptureSession.Outcome) {
         when (o) {
             is CaptureSession.Outcome.Taken -> {
+                // (The vibration came with "✓ 撮れた".)
                 setBanner("taken", "✓ ${CaptureSession.label(o.nums)} ページ 撮れた — めくってください")
-                vibrate(80)
             }
             is CaptureSession.Outcome.Unread -> {
                 setBanner("unread", "✓ 撮れた（番号なし）— めくってください")
-                vibrate(80)
             }
             is CaptureSession.Outcome.Filled -> {
                 setBanner("filled", "✓ ${CaptureSession.label(o.nums)} ページ 撮れた（抜けを埋めました）— 続きへ")
-                vibrate(80)
             }
             is CaptureSession.Outcome.Gap -> {
                 setBanner("gap", "${CaptureSession.label(o.missing)} ページが抜けています。戻って撮ってください")
@@ -637,29 +779,28 @@ class CaptureActivity : ComponentActivity() {
     private fun finishWithPages() {
         if (!finishing.compareAndSet(false, true)) return
         doneButton.isEnabled = false
+        val reading = pendingReads.get()
+        Log.i(TAG, "finishing (numbers being read: $reading)")
+        if (reading > 0) setBanner("busy", "番号を読み取り中…")
         work.execute {
-            // A page being taken is finished first (the work thread is serial).
-            val pages = JSONArray()
-            for (p in session.pages) {
-                pages.put(
-                    JSONObject()
-                        .put("file", File(scansDir, p.name).path)
-                        .put("width", p.width)
-                        .put("height", p.height)
-                        .put("nums", JSONArray(p.nums))
-                        .put("spread", p.spread)
-                        .put("numberState", p.numberState),
-                )
+            // A page being taken is finished first (the work thread is
+            // serial); numbers still being read get FINISH_READ_WAIT_MS.
+            try {
+                readExec.submit {}.get(FINISH_READ_WAIT_MS, TimeUnit.MILLISECONDS)
+            } catch (e: Exception) {
+                Log.w(TAG, "closing with ${pendingReads.get()} numbers not read yet")
             }
-            val out = JSONObject()
-                .put("pages", pages)
-                .put("missing", JSONArray(session.missing.toList()))
-                .put("sideStep", if (session.step == 0) 1 else session.step)
-            val f = File(scansDir, "capture-$stamp.json")
-            f.writeText(out.toString())
-            Log.i(TAG, "done ${session.pages.size} pages, missing ${session.missing}")
+            val out = synchronized(session) {
+                session.giveUpReading()
+                sessionJson(true)
+            }
+            synchronized(resultFile) {
+                closed.set(true)
+                resultFile.writeText(out.toString())
+            }
+            Log.i(TAG, "done ${out.getJSONArray("pages").length()} pages, missing ${out.getJSONArray("missing")}")
             runOnUiThread {
-                setResult(RESULT_OK, Intent().putExtra(EXTRA_RESULT, f.path))
+                setResult(RESULT_OK, Intent().putExtra(EXTRA_RESULT, resultFile.path))
                 finish()
             }
         }
@@ -667,6 +808,7 @@ class CaptureActivity : ComponentActivity() {
 
     private fun finishWithError(code: String, msg: String) {
         if (!finishing.compareAndSet(false, true)) return
+        // Pages taken stay in the saved list (ScannerPlugin.takePending).
         Log.e(TAG, "closing: $code $msg")
         setResult(RESULT_CANCELED, Intent().putExtra(EXTRA_ERROR, code).putExtra(EXTRA_MESSAGE, msg))
         finish()
@@ -731,16 +873,22 @@ class CaptureActivity : ComponentActivity() {
 
         /** At most ~7 analysed frames a second (CLAUDE.md: 5–10 FPS is enough). */
         private const val ANALYSIS_MS = 140L
-        /** Reading the number(s) of one page stops after this (ms, both reads). */
-        private const val READ_BUDGET_MS = 12000L
+        /** While page numbers are being read (ML Kit needs the CPU too). */
+        private const val READING_ANALYSIS_MS = 300L
+        /** Done waits this long for numbers still being read. */
+        private const val FINISH_READ_WAIT_MS = 15_000L
+        /** Frames whose corners are combined (median) for the stillness check. */
+        private const val SMOOTH_N = 3
+        /** This many frames in a row without the paper end the stillness. */
+        private const val NULL_RESET = 2
         /** The paper runs off the camera picture this long → yellow notice. */
         private const val OFF_YELLOW_MS = 1000L
         /** One "status" log line (what the frame finder sees) this often. */
         private const val STATUS_LOG_MS = 2000L
         /** The frame must stand still this long before the page is taken. */
         private const val STABLE_MS = 1000L
-        /** "Still": no corner moves more than this share of the diagonal. */
-        private const val STABLE_TOL = 0.03
+        /** "Still": no corner of the median frame moves more than this share of the diagonal. */
+        private const val STABLE_TOL = 0.04
         /** A frame held this long counts as "found" (resets the yellow timer). */
         private const val GOOD_MS = 500L
         /** No frame held still for this long → yellow notice. */
