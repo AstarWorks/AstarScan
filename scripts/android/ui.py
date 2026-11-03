@@ -6,8 +6,7 @@
     python3 ui.py list <dump.xml>
         Print every node with text / content-desc / resource-id, for logs.
     python3 ui.py kind <dump.xml>
-        Print what screen the dump shows (scanner-adjust-corners,
-        app-list, ...).
+        Print what screen the dump shows (app-capture, app-list, ...).
     python3 ui.py shutter <dump.xml>
         Print "x y" of ML Kit's shutter button (by name, else the lowest
         clickable node at the bottom centre); exit 1 when none.
@@ -63,6 +62,9 @@ def kind(path):
     if DOCSCAN + "gallery_button" in ids or any(i.startswith(DOCSCAN) for i in ids):
         return "scanner-camera"
     if APP in pkgs:
+        # The capture screen (CaptureActivity): its Done button.
+        if re.search(r"^完了(（\d+）)?$", joined, re.M):
+            return "app-capture"
         # The app keeps its list on screen while it waits for the scanner
         # (and takes a session in), so the waiting button decides first.
         if "もう一度スキャンを開く" in joined:

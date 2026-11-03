@@ -10,15 +10,16 @@ import java.io.File
 /**
  * Pull a page frame back to the book's gutter.
  *
- * On a single page of an open book ML Kit's frame sometimes runs past the
+ * On a single page of an open book a page frame sometimes runs past the
  * gutter into the facing page (emulator runs 11–16: single-land-white's
  * left edge 70–113 clip px past the spine, single-port-wood's top-left at
  * the spine curl). The page ML Kit returns is then the page plus a strip of
  * the neighbour page, with the gutter — a dark vertical shadow / fold line
  * across the whole height — inside it near that edge.
  *
- * Every scanned page goes through [trim] once (ScannerPlugin.scanResult),
- * before the list, the PDF and the upload see it. It looks for that shadow
+ * The capture screen runs [find] on every single page it takes, on the
+ * page warped from its frame (PageFrame.keep), before the list, the PDF and
+ * the upload see it; [trim] does the same on a page file. It looks for that shadow
  * in the outer part of each side, separately in an upper and a lower band
  * (the fold need not be parallel to ML Kit's edge), and when found cuts the
  * page at the fold with a perspective warp: the side's top and bottom

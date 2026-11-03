@@ -85,7 +85,6 @@ import type {
 import { checkPageSequence } from '@astarworks/scan-core/pipeline'
 import {
   isNativeScanner,
-  NATIVE_PAGES_PER_SCAN,
   nativeErrorMessage,
   nativeReadPage,
   nativeSavePdf,
@@ -135,7 +134,7 @@ interface Page {
   livePageNo?: number
   /** Start of the miss this page was retaken for. */
   retakeOf?: number
-  /** Android app: full-size ML Kit JPEG (`file://`) behind this page. */
+  /** Android app: full-size page JPEG from the capture screen (`file://`) behind this page. */
   nativeUri?: string
   /** Android app: small JPEG for the list. */
   thumb?: string
@@ -1868,14 +1867,16 @@ function movePageDown(idx: number): void {
 }
 
 // ---------------------------------------------------------------------------
-// Android app: Google ML Kit Document Scanner
+// Android app: the app's own capture screen
 // ---------------------------------------------------------------------------
 //
-// In the Android app the capture button opens ML Kit's scanner (edge
-// detection + auto-capture) instead of the web camera pipeline. Returned
-// pages go to the end-of-scan list; each page's printed number is read with
-// ML Kit Text Recognition (on the device, full-size scan) and the sequence
-// is checked for missing / duplicated pages.
+// In the Android app the capture button opens the native capture screen
+// (CaptureActivity: page frame, auto-capture, the printed number read and
+// shown on the spot — "✓ 35 ページ 撮れた", red when a page is missing)
+// instead of the web camera pipeline. Returned pages go to the end-of-scan
+// list with the numbers the screen kept, and the sequence is checked for
+// missing pages the same way. Pages restored from an earlier session have
+// their numbers read again with ML Kit Text Recognition.
 
 const nativeMode = isNativeScanner()
 
@@ -1914,15 +1915,26 @@ function queuePageNumbers(pages: readonly Page[]): void {
   })
 }
 
-function rangeLabel(from: number, to: number): string {
-  return from === to ? `${from}` : `${from}〜${to}`
+function rangeLabel(from: number, to: number, step = 1): string {
+  if (from === to) return `${from}`
+  if (step === 2 && to - from <= 4) {
+    const out: number[] = []
+    for (let n = from; n <= to; n += 2) out.push(n)
+    return out.join('・')
+  }
+  return `${from}〜${to}`
 }
+
+/** What the capture screen learnt: 2 when single pages go one side only. */
+const nativeSideStep = ref<1 | 2>(1)
 
 const nativeReportRows = computed<ReportViewRow[]>(() => {
   const pages = captured.value
   const reads = pages.map((p) => pageNoReads.value[p.id])
   const seq = checkPageSequence(
     reads.map((r) => (r?.status === 'done' ? r.nums : [])),
+    20,
+    { singleStep: nativeSideStep.value },
   )
   const rows: ReportViewRow[] = []
   pages.forEach((p, i) => {
@@ -1937,7 +1949,7 @@ const nativeReportRows = computed<ReportViewRow[]>(() => {
         duplicateOfNo: null,
         canRetake: false,
         pageId: null,
-        printedNo: rangeLabel(m.from, m.to),
+        printedNo: rangeLabel(m.from, m.to, m.step ?? 1),
         printedState: m.suspect
           ? 'suspect'
           : m.unreadBetween > 0
@@ -1973,59 +1985,7 @@ const reportRows = computed<ReportViewRow[]>(() =>
   nativeMode ? nativeReportRows.value : reportView.value,
 )
 
-/**
- * Red notice when the scanner gives no pages back. ML Kit returns the same
- * "closed" result for Back, for Play services' scanner process dying, and
- * for its module screen ("Something went wrong" → Cancel), so the app
- * cannot tell them apart — but it never goes back to the list silently:
- * the user is told that pages were not received and how to go on.
- */
-const NATIVE_NOTICE_FIRST =
-  'スキャナーを開けませんでした（ページを受け取れませんでした）。下の「スキャン」でもう一度開いてください。'
-const NATIVE_NOTICE_LATER =
-  'スキャナーが閉じられました。閉じる前に撮ったページ（保存前のもの）は受け取れていません。続けるなら「追加スキャン」を押してください。'
-/**
- * The scanner runs in Play services' own process. When that process dies
- * the app usually gets a "closed" result, but now and then nothing at all
- * (run 17: 12 of 37 lost sessions left the app on 「スキャナー起動中…」):
- * once the app has the focus back while the call is still pending, say so.
- */
-const NATIVE_NOTICE_NO_REPLY =
-  'スキャナーが応答していません（ページを受け取れていません）。「もう一度スキャンを開く」を押してください。'
-
-/** Increases with every scanner open, so an old open's watch stops. */
-let nativeScanSeq = 0
-
-/**
- * Watch one pending scanner call: after the scanner has been in front (the
- * app lost the focus) and the app has had the focus back for 5 s with the
- * call still pending, show NATIVE_NOTICE_NO_REPLY. Returns the stop function.
- */
-function watchScannerReply(seq: number): () => void {
-  let away = false
-  let backSince = 0
-  const timer = window.setInterval(() => {
-    if (seq !== nativeScanSeq || phase.value !== 'loading') return
-    const focused =
-      document.visibilityState === 'visible' && document.hasFocus()
-    if (!focused) {
-      away = true
-      backSince = 0
-      return
-    }
-    if (!away) return
-    if (backSince === 0) {
-      backSince = Date.now()
-      return
-    }
-    if (Date.now() - backSince >= 5000 && !errorText.value) {
-      errorText.value = NATIVE_NOTICE_NO_REPLY
-    }
-  }, 1000)
-  return () => window.clearInterval(timer)
-}
-
-/** Native mode: the page list stays on screen while the scanner is open again. */
+/** Native mode: the page list stays on screen while the capture screen is open. */
 const nativeListShown = computed(
   () =>
     nativeMode &&
@@ -2034,16 +1994,13 @@ const nativeListShown = computed(
 )
 
 function nativeFailureText(code: string, msg: string): string {
-  if (code === 'MODULE_INSTALL_FAILED' || code === 'MODULE_INSTALL_CANCELED') {
-    return `スキャナーを開けませんでした: Google Play 開発者サービスがスキャナーの部品を入れられませんでした（${msg}）。通信を確認して、もう一度スキャンしてください。`
+  if (code === 'CAMERA_DENIED') {
+    return 'カメラを使えません: 設定でカメラの使用を許可してから、もう一度スキャンしてください。'
   }
-  if (/feature not available/i.test(msg)) {
-    return 'スキャナーを開けませんでした: スキャナーの部品を Google Play 開発者サービスが取得中です（初回のみ）。少し待ってからもう一度スキャンしてください。'
-  }
-  return `スキャナーを開けませんでした: ${msg}。もう一度スキャンしてください。`
+  return `カメラを開けませんでした: ${msg}。もう一度スキャンしてください。`
 }
 
-/** Plugin rejections carry a code (`MODULE_INSTALL_FAILED`, …) next to the message. */
+/** Plugin rejections carry a code (`CAMERA_DENIED`, …) next to the message. */
 function nativeErrorCode(err: unknown): string {
   if (err && typeof err === 'object' && 'code' in err) {
     return String((err as { code: unknown }).code)
@@ -2051,57 +2008,70 @@ function nativeErrorCode(err: unknown): string {
   return ''
 }
 
+/** Lowest printed number of a page in the list (null: none read). */
+function firstNumberOf(p: Page): number | null {
+  const r = pageNoReads.value[p.id]
+  if (r?.status !== 'done' || r.nums.length === 0) return null
+  return Math.min(...r.nums)
+}
+
+/**
+ * Put pages from a capture into the list in book order: a page that
+ * fills a gap left by an earlier capture goes before the first page with
+ * a higher number; the rest go to the end, in the order the screen gave.
+ */
+function mergeByNumber(list: Page[], added: readonly Page[]): Page[] {
+  const out = [...list]
+  for (const p of added) {
+    const n = firstNumberOf(p)
+    const at =
+      n === null
+        ? -1
+        : out.findIndex((q) => {
+            const m = firstNumberOf(q)
+            return m !== null && m > n
+          })
+    if (at < 0) out.push(p)
+    else out.splice(at, 0, p)
+  }
+  return out
+}
+
 async function startNativeScan(): Promise<void> {
   phase.value = 'loading'
   errorText.value = ''
-  statusText.value = 'スキャナー起動中…（初回は部品の取得で数分かかります）'
-  let sessions = 0
-  const seq = ++nativeScanSeq
+  statusText.value = 'カメラ起動中…'
   try {
-    // Scan in sessions of NATIVE_PAGES_PER_SCAN pages: each full session
-    // is saved into the list and the scanner opens again for the next
-    // pages, so a crash of the scanner loses at most one short session.
-    // A session the user ends (Back / save before the limit) stops it.
-    for (;;) {
-      const stopWatch = watchScannerReply(seq)
-      const res = await nativeScan(NATIVE_PAGES_PER_SCAN).finally(stopWatch)
-      // 「もう一度スキャンを開く」 started a newer open: that one owns the screen.
-      if (seq !== nativeScanSeq) return
-      if (res.canceled || res.pages.length === 0) {
-        errorText.value =
-          sessions === 0 ? NATIVE_NOTICE_FIRST : NATIVE_NOTICE_LATER
-        break
-      }
-      sessions++
-      // Pages came back after all: a no-reply notice no longer holds.
-      if (errorText.value === NATIVE_NOTICE_NO_REPLY) errorText.value = ''
-      statusText.value = '取り込み中…'
-      const now = Date.now()
-      const pages: Page[] = []
-      for (const [i, s] of res.pages.entries()) {
-        pages.push({
-          id: `n${now}-${i + 1}`,
-          dataUrl: await nativeReadPage(s.uri, NATIVE_PREVIEW_LONG_SIDE),
-          width: s.width,
-          height: s.height,
-          capturedAt: now,
-          nativeUri: s.uri,
-          thumb: s.thumb,
-        })
-      }
-      captured.value = [...captured.value, ...pages]
-      void saveSession(captured.value.map(pageToStored))
-      queuePageNumbers(pages)
-      if (res.pages.length < NATIVE_PAGES_PER_SCAN) break
-      statusText.value = `${captured.value.length} ページ保存済み。続きを撮影します…`
+    const known = captured.value.flatMap((p) => {
+      const r = pageNoReads.value[p.id]
+      return r?.status === 'done' ? r.nums : []
+    })
+    const res = await nativeScan(known, nativeSideStep.value)
+    if (res.sideStep === 2 || res.sideStep === 1) {
+      nativeSideStep.value = res.sideStep
     }
-    // The red notice is a banner over the list (or over the start screen
-    // when there is no page yet), never a full-screen state that hides the
-    // pages already taken.
+    statusText.value = '取り込み中…'
+    const now = Date.now()
+    const pages: Page[] = []
+    for (const [i, s] of res.pages.entries()) {
+      const page: Page = {
+        id: `n${now}-${i + 1}`,
+        dataUrl: await nativeReadPage(s.uri, NATIVE_PREVIEW_LONG_SIDE),
+        width: s.width,
+        height: s.height,
+        capturedAt: now,
+        nativeUri: s.uri,
+        thumb: s.thumb,
+      }
+      // The number the capture screen read and showed is the one the list uses.
+      setPageNoRead(page.id, { status: 'done', nums: [...s.nums] })
+      pages.push(page)
+    }
+    captured.value = mergeByNumber(captured.value, pages)
+    void saveSession(captured.value.map(pageToStored))
     phase.value = captured.value.length > 0 ? 'done' : 'idle'
     statusText.value = ''
   } catch (err) {
-    if (seq !== nativeScanSeq) return
     const msg = nativeErrorMessage(err)
     errorText.value = nativeFailureText(nativeErrorCode(err), msg)
     phase.value = captured.value.length > 0 ? 'done' : 'idle'
@@ -2761,18 +2731,6 @@ raw: {{ selectedPage.llmDebug.bestFramePick.raw }}</pre
         </button>
         <button class="btn btn--ghost" type="button" @click="clearAll">
           すべて削除
-        </button>
-      </template>
-
-      <template v-else-if="nativeMode && phase === 'loading'">
-        <!-- The scanner runs in Play services; if that process dies the
-             pending call never returns, so let the user open it again. -->
-        <button
-          class="btn btn--secondary"
-          type="button"
-          @click="startNativeScan"
-        >
-          もう一度スキャンを開く
         </button>
       </template>
 

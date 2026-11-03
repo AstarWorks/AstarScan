@@ -116,6 +116,23 @@ describe('checkPageSequence', () => {
     ])
   })
 
+  it('takes one side only (every right page) without gaps when asked', () => {
+    const r = checkPageSequence([[31], [33], [35], [39], [41]], 20, {
+      singleStep: 2,
+    })
+    expect(r.pages.map((p) => p.state)).toEqual(['ok', 'ok', 'ok', 'ok', 'ok'])
+    expect(r.missing).toEqual([
+      {
+        from: 37,
+        to: 37,
+        beforeIndex: 3,
+        suspect: false,
+        unreadBetween: 0,
+        step: 2,
+      },
+    ])
+  })
+
   it('marks a lower number as out of order', () => {
     const r = checkPageSequence([[5], [3], [6]])
     expect(r.pages.map((p) => p.state)).toEqual(['ok', 'outOfOrder', 'ok'])

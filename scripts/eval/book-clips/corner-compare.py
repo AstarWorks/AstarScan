@@ -341,8 +341,12 @@ def main():
     ap.add_argument("--docaligner")
     ap.add_argument("--json")
     ap.add_argument("--dump")
+    ap.add_argument("--view", choices=("window", "full"), default="window",
+                    help="what the camera feed shows (camera-feed.py VIEW): window = the 3:4 part ML Kit's "
+                         "scanner showed; full = the book fitted into the whole webcam frame (the capture screen)")
     a = ap.parse_args()
     W, H = map(int, a.size.split("x"))
+    feed.VIEW = a.view
     wx, wy, ww, wh = feed.window(W, H)
     dets = {
         "cv-edges": det_cv_edges,

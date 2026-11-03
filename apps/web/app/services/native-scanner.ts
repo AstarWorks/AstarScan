@@ -1,8 +1,9 @@
 /**
- * Android app (Tauri) bridge to Google ML Kit Document Scanner — see
- * `src-tauri/plugins/mlkit-scanner`. ML Kit owns the camera UI, page-edge
- * detection and auto-capture; pages come back as JPEG files in the app's
- * storage, addressed by `file://` URIs.
+ * Android app (Tauri) bridge to the app's own capture screen — see
+ * `src-tauri/plugins/mlkit-scanner` (CaptureActivity): camera, page frame
+ * (DocAligner), auto-capture and the printed page number read on the spot
+ * (ML Kit Text Recognition). Pages come back as JPEG files in the app's
+ * storage, addressed by `file://` URIs, with the number(s) read on them.
  *
  * Uses Tauri's global IPC (`__TAURI_INTERNALS__`) instead of
  * `@tauri-apps/api` so the web build gains no dependency.
@@ -14,11 +15,19 @@ export interface NativePage {
   readonly height: number
   /** Small JPEG data URL for the list. */
   readonly thumb: string
+  /** Printed number(s) the capture screen read and kept: `[]` none, two for a spread. */
+  readonly nums: readonly number[]
+  /** Two pages side by side. */
+  readonly spread: boolean
 }
 
 export interface NativeScanResult {
   readonly canceled: boolean
   readonly pages: readonly NativePage[]
+  /** Numbers the capture screen found missing and the user did not take. */
+  readonly missing: readonly number[]
+  /** 1: every page; 2: one side only (single pages, every other number). */
+  readonly sideStep?: 1 | 2
 }
 
 export interface SavedPdf {
@@ -50,17 +59,15 @@ function call<T>(cmd: string, args?: Record<string, unknown>): Promise<T> {
 }
 
 /**
- * Pages one ML Kit scanner session takes before it is saved into the app.
- * The scanner gives its pages back only on save; when Play services'
- * scanner process dies first, the whole session is lost (emulator run 13c:
- * 10 sessions of up to 6 pages). Short sessions bound that loss; the app
- * reopens the scanner after each full one, so scanning goes on.
+ * Open the capture screen and wait until the user is done. `known`: page
+ * numbers already in the list (so the screen goes on from them and spots a
+ * gap after them); `sideStep`: what an earlier capture learnt.
  */
-export const NATIVE_PAGES_PER_SCAN = 5
-
-/** Open the ML Kit scanner (full mode) and wait for its pages. */
-export function nativeScan(pageLimit = 0): Promise<NativeScanResult> {
-  return call<NativeScanResult>('scan', { pageLimit })
+export function nativeScan(
+  known: readonly number[] = [],
+  sideStep = 0,
+): Promise<NativeScanResult> {
+  return call<NativeScanResult>('scan', { known, sideStep })
 }
 
 /** A scanned page downscaled to `maxSide` px, as a JPEG data URL. */

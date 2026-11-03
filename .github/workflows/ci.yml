@@ -241,6 +241,11 @@ jobs:
       - name: Fetch public assets
         run: bash scripts/fetch-public-assets.sh
 
+      # DocAligner page-corner model for the capture screen (plugin assets,
+      # git-ignored; sha256-pinned).
+      - name: Fetch the DocAligner model
+        run: bash scripts/android/fetch-docaligner.sh
+
       - name: Initialize Android project
         run: bunx tauri android init --ci
         env:
@@ -295,7 +300,7 @@ jobs:
           echo "tag=$tag" >> "$GITHUB_OUTPUT"
           git tag -f "$tag" "$GITHUB_SHA"
           git push -f origin "refs/tags/$tag"
-          notes="Android 版 AstarScan（ML Kit Document Scanner）。ブランチ \`$BRANCH\` の ${GITHUB_SHA:0:7} から CI が作った debug 署名の APK です。"
+          notes="Android 版 AstarScan（自前の撮影画面: DocAligner の枠 + ML Kit の番号読み取り）。ブランチ \`$BRANCH\` の ${GITHUB_SHA:0:7} から CI が作った debug 署名の APK です。"
           if gh release view "$tag" >/dev/null 2>&1; then
             gh release edit "$tag" --prerelease --title "Android $BRANCH" --notes "$notes"
           else
@@ -307,7 +312,7 @@ jobs:
           echo "$url"
 
   android-emulator:
-    name: Android emulator check (ML Kit scanner, book clips on the camera)
+    name: Android emulator check (capture screen, book clips on the camera)
     needs: android
     if: github.event_name == 'push'
     runs-on: ubuntu-latest
@@ -315,11 +320,13 @@ jobs:
     permissions:
       contents: write
     env:
-      # Webcam frame size; the scanner sees its left 3:4 (1280x960 -> a
-      # 720x960 window, page-number digits 4-10 px). Run 10 tried 1920x1440:
-      # the emulator then offers the back camera only at 1920x1440 and the
-      # scanner's preview stays black (nothing captured), so 1280x960 stays.
+      # Webcam frame size; the phone sees its left 3:4 (1280x960 -> a
+      # 720x960 window, page-number digits 4-10 px): the back camera is
+      # mounted at 90° and the emulator hands the app that window upright.
+      # Run 10 tried 1920x1440: the emulator then offers the back camera
+      # only at 1920x1440 and the preview stays black, so 1280x960 stays.
       FEED_SIZE: 1280x960
+      FEED_LOG: /tmp/feed.log
 
     steps:
       - uses: actions/checkout@v4
@@ -361,7 +368,7 @@ jobs:
           ls -l /dev/video*
           lsmod | grep v4l2loopback
           nohup python3 -I scripts/android/camera-feed.py scripts/eval/book-clips/clips \
-            /tmp/feed.control /tmp/feed.status --size "$FEED_SIZE" >/tmp/camera-feed.log 2>&1 &
+            /tmp/feed.control /tmp/feed.status --size "$FEED_SIZE" --log "$FEED_LOG" >/tmp/camera-feed.log 2>&1 &
           for _ in $(seq 60); do [ -s /tmp/feed.status ] && break; sleep 2; done
           cat /tmp/camera-feed.log
           v4l2-ctl -d /dev/video0 --all | head -30
@@ -372,6 +379,7 @@ jobs:
         env:
           FEED_CONTROL: /tmp/feed.control
           FEED_STATUS: /tmp/feed.status
+          FEED_LOG: /tmp/feed.log
         with:
           api-level: 35
           target: google_apis_playstore
@@ -381,21 +389,30 @@ jobs:
           emulator-options: -no-window -gpu swiftshader_indirect -noaudio -no-boot-anim -camera-back webcam0 -camera-front emulated
           script: bash scripts/android/emulator-check.sh AstarScan-android.apk emulator-out
 
-      - name: Score the run (corner error, pages, silent misses)
+      - name: Score the run (what the screen said per page, corner error, numbers)
         if: always()
         run: |
           [ -d emulator-out ] || exit 0
           cp /tmp/camera-feed.log emulator-out/ 2>/dev/null || true
+          [ -s emulator-out/feed.log ] || cp "$FEED_LOG" emulator-out/feed.log 2>/dev/null || true
           python3 -I scripts/android/book-measure.py emulator-out scripts/eval/book-clips/clips --size "$FEED_SIZE" | tee -a "$GITHUB_STEP_SUMMARY"
-          if [ -s emulator-out/probe-lines.jsonl ]; then
-            {
-              echo
-              echo "### ML Kit page-number probe (same band pass on page images: emulator camera size vs clip size)"
-              echo
-              bun scripts/android/page-number-score.ts emulator-out/probe-lines.jsonl
-            } | tee -a "$GITHUB_STEP_SUMMARY"
-            bun scripts/android/page-number-score.ts emulator-out/probe-lines.jsonl --detail >emulator-out/probe-detail.txt || true
-          fi
+
+      # The detector comparison behind the capture screen's choice, on the
+      # same clips as the camera sees them (corner-compare.py).
+      - name: Page-frame detectors on the book clips (OpenCV vs DocAligner)
+        if: always()
+        run: |
+          set -uo pipefail
+          mkdir -p emulator-out
+          python3 -m pip install --quiet --break-system-packages onnxruntime 2>/dev/null || python3 -m pip install --quiet onnxruntime || true
+          bash scripts/android/fetch-docaligner.sh /tmp/docaligner
+          {
+            echo
+            echo "### Page-frame detectors on the book clips (clip px; camera window as the phone sees it)"
+            echo
+            python3 -I scripts/eval/book-clips/corner-compare.py scripts/eval/book-clips/clips \
+              --size "$FEED_SIZE" --docaligner /tmp/docaligner/docaligner-lcnet100.onnx --json emulator-out/corner-compare.json
+          } | tee emulator-out/corner-compare.md | tee -a "$GITHUB_STEP_SUMMARY"
 
       - uses: actions/upload-artifact@v4
         if: always()

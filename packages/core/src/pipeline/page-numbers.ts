@@ -186,11 +186,25 @@ export interface MissingPageRange {
    * "missing or unread" warning rather than a sure miss.
    */
   readonly unreadBetween: number
+  /**
+   * 2 when the book is taken one side only (single pages, every other
+   * number): the range holds only `from`, `from + 2`, …, `to`.
+   */
+  readonly step?: 2
 }
 
 export interface PageSequenceCheck {
   readonly pages: readonly PageNumberCheck[]
   readonly missing: readonly MissingPageRange[]
+}
+
+export interface PageSequenceOptions {
+  /**
+   * Numbers between two single pages that follow each other: 1 (every
+   * page is taken) or 2 (one side only — e.g. every right page, as the
+   * Android capture screen learns it: 31, 33, 35 is not a gap).
+   */
+  readonly singleStep?: 1 | 2
 }
 
 /**
@@ -202,7 +216,9 @@ export interface PageSequenceCheck {
 export function checkPageSequence(
   pages: readonly (readonly number[])[],
   maxGap = 20,
+  opts: PageSequenceOptions = {},
 ): PageSequenceCheck {
+  const oneSide = opts.singleStep === 2
   const seen = new Map<number, number>()
   const out: PageNumberCheck[] = []
   const missing: MissingPageRange[] = []
@@ -228,13 +244,15 @@ export function checkPageSequence(
       out.push({ state: 'outOfOrder', duplicateOf: null })
       return
     }
-    if (last !== null && lo > last + 1) {
+    const step = oneSide && sorted.length === 1 ? 2 : 1
+    if (last !== null && lo > last + step) {
       missing.push({
-        from: last + 1,
-        to: lo - 1,
+        from: last + step,
+        to: lo - step,
         beforeIndex: i,
         suspect: lo - 1 - last > maxGap,
         unreadBetween: unread,
+        ...(step === 2 ? { step: 2 as const } : {}),
       })
     }
     last = hi

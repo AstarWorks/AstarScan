@@ -1,10 +1,10 @@
 """Play the book clips on a v4l2loopback device for the emulator's back camera.
 
     python3 -I camera-feed.py <clips-dir> <control-file> <status-file> \
-        [--device /dev/video0] [--size 1280x960] [--fps 10] [--rotate-landscape]
+        [--device /dev/video0] [--size 1280x960] [--fps 10] [--log feed.log]
 
 The emulator is started with `-camera-back webcam0`, so whatever this
-writes to the loopback device is what ML Kit's scanner sees.
+writes to the loopback device is what the app's capture screen sees.
 
 The emulator check (emulator-check.sh) steers playback by writing one
 line to <control-file>:
@@ -16,7 +16,17 @@ turn, into the <hold-index>-th "hold" segment of the ground truth (the
 book held still on one spread), and keeps showing that hold (played
 forward and back, so the hand shake continues and nothing jumps) until
 the next command. This is a user who turns a page and then waits for the
-scanner to take it. A new clip starts at its first hold.
+app to take it. A new clip starts at its first hold.
+
+- The next hold: the page turn in between is played.
+- A hold further on (a page skipped on purpose): the feed jumps to the
+  start of the turn just before it, so the skipped page is never held
+  still in front of the camera (the app would take it).
+- An earlier hold (going back for a missing page): the turn just after
+  it is played backwards, like turning the leaf back.
+
+--log gets "<unix time> <clip> <frame> <hold>" for every frame written,
+so book-measure.py can tell which clip frame the app took a page from.
 
 <status-file> gets "<clip> <frame>" for every frame written, so the
 check can tell which ground-truth frame the camera showed when ML Kit
@@ -43,14 +53,22 @@ import cv2
 import numpy as np
 
 
+# Which part of the webcam frame the phone shows: "window" (ML Kit's
+# scanner: the left 3:4, see window()) or "full" (the app's own capture
+# screen, CameraX: the whole frame). Set with --view / FEED_VIEW.
+VIEW = os.environ.get("FEED_VIEW", "window")
+
+
 def window(out_w, out_h):
     """The part of the webcam frame the phone actually sees: (x, y, w, h).
 
     Emulator run 2 showed that the portrait scanner takes a 3:4 portrait
     window from the left of the landscape webcam frame (a 1280×960 frame
     -> columns 0–719, all rows), upright, not rotated. Anything outside
-    it never reaches ML Kit.
+    it never reaches ML Kit. With VIEW "full" the whole frame.
     """
+    if VIEW == "full":
+        return 0, 0, out_w, out_h
     w = min(out_w, round(out_h * 3 / 4))
     return 0, 0, w, out_h
 
@@ -163,7 +181,13 @@ def main():
     ap.add_argument("--size", default="1280x960")
     ap.add_argument("--fps", type=int, default=10)
     ap.add_argument("--first", default="spread-land-wood")
+    ap.add_argument("--log")
+    ap.add_argument("--view", choices=("window", "full"))
     a = ap.parse_args()
+    global VIEW
+    if a.view:
+        VIEW = a.view
+    print(f"[feed] view {VIEW}", flush=True)
     out_w, out_h = map(int, a.size.split("x"))
 
     ff = subprocess.Popen(
@@ -188,6 +212,7 @@ def main():
     hold = 0
     pos = clip.holds[0]["start_frame"]
     direction = 1
+    log = open(a.log, "a", buffering=1) if a.log else None
     last_cmd = None
     period = 1.0 / a.fps
     t_next = time.monotonic()
@@ -206,6 +231,12 @@ def main():
                 h = min(max(0, h), len(new.holds) - 1)
                 if new is not clip:
                     clip, pos = new, new.holds[h]["start_frame"]
+                elif h > hold + 1:
+                    # Skip: straight to the turn before hold h.
+                    pos = new.holds[h - 1]["end_frame"]
+                elif h < hold:
+                    # Back: from the start of hold h + 1, the turn played backwards.
+                    pos = new.holds[h + 1]["start_frame"]
                 hold, direction = h, 1
                 print(f"[feed] -> {name} hold {h}", flush=True)
             except (IndexError, ValueError, OSError) as e:
@@ -214,8 +245,8 @@ def main():
         seg = clip.holds[hold]
         start, end = seg["start_frame"], seg["end_frame"] - 1
         if pos < start or pos > end:
-            # Play the page turn (forward) or jump back to an earlier hold.
-            pos = pos + clip.step if pos < start else start
+            # Play the page turn: forward to a later hold, backwards to an earlier one.
+            pos = min(pos + clip.step, start) if pos < start else max(pos - clip.step, end)
             direction = 1
         else:
             nxt = pos + direction * clip.step
@@ -234,6 +265,8 @@ def main():
         with open(tmp, "w") as f:
             f.write(f"{clip.name} {pos}\n")
         os.replace(tmp, a.status)
+        if log:
+            log.write(f"{time.time():.3f} {clip.name} {pos} {hold}\n")
 
         t_next += period
         delay = t_next - time.monotonic()

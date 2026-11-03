@@ -13,7 +13,6 @@ import android.util.Base64
 import android.util.Log
 import android.webkit.WebView
 import androidx.activity.result.ActivityResult
-import androidx.activity.result.IntentSenderRequest
 import app.tauri.annotation.ActivityCallback
 import app.tauri.annotation.Command
 import app.tauri.annotation.InvokeArg
@@ -22,20 +21,7 @@ import app.tauri.plugin.Invoke
 import app.tauri.plugin.JSArray
 import app.tauri.plugin.JSObject
 import app.tauri.plugin.Plugin
-import com.google.android.gms.common.api.ApiException
-import com.google.android.gms.common.api.OptionalModuleApi
-import com.google.android.gms.common.moduleinstall.InstallStatusListener
-import com.google.android.gms.common.moduleinstall.ModuleInstall
-import com.google.android.gms.common.moduleinstall.ModuleInstallRequest
-import com.google.android.gms.common.moduleinstall.ModuleInstallStatusUpdate
-import com.google.mlkit.vision.documentscanner.GmsDocumentScanner
-import com.google.mlkit.vision.documentscanner.GmsDocumentScannerOptions
-import com.google.mlkit.vision.documentscanner.GmsDocumentScanning
-import com.google.mlkit.vision.documentscanner.GmsDocumentScanningResult
-import com.google.android.gms.tasks.Tasks
-import com.google.mlkit.vision.common.InputImage
-import com.google.mlkit.vision.text.TextRecognition
-import com.google.mlkit.vision.text.japanese.JapaneseTextRecognizerOptions
+import org.json.JSONObject
 import java.io.ByteArrayOutputStream
 import java.io.File
 import java.net.HttpURLConnection
@@ -45,15 +31,10 @@ import java.util.concurrent.Executors
 
 @InvokeArg
 class ScanArgs {
-    /**
-     * Most pages one scanner session takes (0 = no limit). The scanner
-     * hands its pages back only when the user saves; if Play services'
-     * scanner process dies first (run 13c: a NullPointerException in its
-     * page carousel and native crashes in its thumbnail loader), every page
-     * of that session is gone. The app therefore scans in short sessions
-     * and reopens the scanner after each full one.
-     */
-    var pageLimit: Int = 0
+    /** Page numbers already in the app's list (an earlier capture), so the screen goes on from them. */
+    var known: IntArray = IntArray(0)
+    /** 1 or 2 when an earlier capture learnt it (CaptureSession.step); 0 unknown. */
+    var sideStep: Int = 0
 }
 
 @InvokeArg
@@ -93,11 +74,10 @@ class UploadArgs {
 }
 
 /**
- * Google ML Kit Document Scanner (SCANNER_MODE_FULL: edge detection,
- * auto-capture, crop/rotate/filter UI, optional page limit) → JPEG pages copied
- * into the app's files dir. `readPage` hands a downscaled copy to the
- * webview; `savePdf` writes the full-size JPEGs into one PDF under
- * Download/AstarScan.
+ * The app's own capture screen (CaptureActivity: camera, DocAligner page
+ * frame, auto-capture, page number read on the spot) → JPEG pages in the
+ * app's files dir. `readPage` hands a downscaled copy to the webview;
+ * `savePdf` writes the full-size JPEGs into one PDF under Download/AstarScan.
  */
 @TauriPlugin
 class ScannerPlugin(private val activity: Activity) : Plugin(activity) {
@@ -106,158 +86,58 @@ class ScannerPlugin(private val activity: Activity) : Plugin(activity) {
     @Command
     fun scan(invoke: Invoke) {
         val args = invoke.parseArgs(ScanArgs::class.java)
-        startScan(invoke, args.pageLimit.coerceAtLeast(0))
-    }
-
-    /**
-     * The scanner's UI and models are an optional Play services module. It
-     * is checked (and, when missing, requested) with ML Kit's own
-     * ModuleInstallClient before the scanner opens, so a module that cannot
-     * be installed comes back to the app as an error with its reason
-     * instead of Play services' "Something went wrong" screen. No waiting or
-     * retrying of our own: Play services reports when the install is done or
-     * has failed.
-     */
-    private fun startScan(invoke: Invoke, pageLimit: Int) {
-        val builder = GmsDocumentScannerOptions.Builder()
-            .setScannerMode(GmsDocumentScannerOptions.SCANNER_MODE_FULL)
-            .setGalleryImportAllowed(true)
-            .setResultFormats(GmsDocumentScannerOptions.RESULT_FORMAT_JPEG)
-        if (pageLimit > 0) builder.setPageLimit(pageLimit)
-        val scanner = GmsDocumentScanning.getClient(builder.build())
-        val api = scanner as? OptionalModuleApi
-        if (api == null) {
-            Log.w(TAG, "scanner client is not an OptionalModuleApi; opening without a module check")
-            launchScanner(invoke, scanner)
-            return
-        }
-        val modules = ModuleInstall.getClient(activity)
-        modules.areModulesAvailable(api)
-            .addOnSuccessListener { r ->
-                if (r.areModulesAvailable()) {
-                    launchScanner(invoke, scanner)
-                } else {
-                    Log.i(TAG, "scanner module missing; requesting install")
-                    installThenLaunch(invoke, scanner, api)
-                }
-            }
-            .addOnFailureListener { e ->
-                // The check itself failed (old Play services): let the
-                // scanner try; its failure comes back as a closed scan.
-                Log.w(TAG, "scanner module check failed: ${e.message}")
-                launchScanner(invoke, scanner)
-            }
-    }
-
-    private fun installThenLaunch(invoke: Invoke, scanner: GmsDocumentScanner, api: OptionalModuleApi) {
-        val modules = ModuleInstall.getClient(activity)
-        var done = false
-        lateinit var listener: InstallStatusListener
-        listener = InstallStatusListener { u ->
-            if (done) return@InstallStatusListener
-            when (u.installState) {
-                ModuleInstallStatusUpdate.InstallState.STATE_COMPLETED -> {
-                    done = true
-                    modules.unregisterListener(listener)
-                    Log.i(TAG, "scanner module installed")
-                    launchScanner(invoke, scanner)
-                }
-                ModuleInstallStatusUpdate.InstallState.STATE_FAILED,
-                ModuleInstallStatusUpdate.InstallState.STATE_CANCELED -> {
-                    done = true
-                    modules.unregisterListener(listener)
-                    val failed = u.installState == ModuleInstallStatusUpdate.InstallState.STATE_FAILED
-                    Log.e(TAG, "scanner module install ${if (failed) "failed" else "canceled"} (error ${u.errorCode})")
-                    invoke.reject(
-                        "scanner module install ${if (failed) "failed" else "canceled"} (error ${u.errorCode})",
-                        if (failed) "MODULE_INSTALL_FAILED" else "MODULE_INSTALL_CANCELED",
-                    )
-                }
-                else -> Log.i(TAG, "scanner module install state ${u.installState}")
-            }
-        }
-        val request = ModuleInstallRequest.newBuilder().addApi(api).setListener(listener).build()
-        modules.installModules(request)
-            .addOnSuccessListener { r ->
-                if (r.areModulesAlreadyInstalled() && !done) {
-                    done = true
-                    modules.unregisterListener(listener)
-                    launchScanner(invoke, scanner)
-                }
-            }
-            .addOnFailureListener { e ->
-                if (done) return@addOnFailureListener
-                done = true
-                modules.unregisterListener(listener)
-                val code = (e as? ApiException)?.statusCode
-                Log.e(TAG, "scanner module install request failed (status $code)", e)
-                invoke.reject("scanner module install failed (status $code): ${e.message}", "MODULE_INSTALL_FAILED")
-            }
-    }
-
-    private fun launchScanner(invoke: Invoke, scanner: GmsDocumentScanner) {
-        scanner.getStartScanIntent(activity)
-            .addOnSuccessListener { sender ->
-                startIntentSenderForResult(
-                    invoke,
-                    IntentSenderRequest.Builder(sender).build(),
-                    "scanResult",
-                )
-            }
-            .addOnFailureListener { e ->
-                Log.e(TAG, "scanner unavailable", e)
-                invoke.reject(e.message ?: "scanner unavailable", "SCANNER_UNAVAILABLE")
-            }
+        val intent = Intent(activity, CaptureActivity::class.java)
+            .putExtra(CaptureActivity.EXTRA_KNOWN, args.known)
+            .putExtra(CaptureActivity.EXTRA_STEP, args.sideStep)
+        startActivityForResult(invoke, intent, "captureResult")
     }
 
     @ActivityCallback
-    private fun scanResult(invoke: Invoke, result: ActivityResult) {
-        if (result.resultCode != Activity.RESULT_OK) {
-            // Back pressed, or Play services' scanner process died: the
-            // scanner returns no pages either way (logged so the emulator
-            // check can tell a closed scan from a saved one).
-            Log.i(TAG, "scan closed without pages (result ${result.resultCode})")
-            invoke.resolve(
-                JSObject().put("canceled", true).put("pages", JSArray()).put("resultCode", result.resultCode),
-            )
+    private fun captureResult(invoke: Invoke, result: ActivityResult) {
+        val data = result.data
+        val path = data?.getStringExtra(CaptureActivity.EXTRA_RESULT)
+        if (result.resultCode != Activity.RESULT_OK || path == null) {
+            val code = data?.getStringExtra(CaptureActivity.EXTRA_ERROR)
+            if (code != null) {
+                invoke.reject(data.getStringExtra(CaptureActivity.EXTRA_MESSAGE) ?: code, code)
+            } else {
+                // The screen went away without its result (killed): nothing to hand over.
+                Log.i(TAG, "capture closed without a result (${result.resultCode})")
+                invoke.resolve(JSObject().put("canceled", true).put("pages", JSArray()).put("missing", JSArray()))
+            }
             return
         }
-        val scan = GmsDocumentScanningResult.fromActivityResultIntent(result.data)
-        val uris = scan?.pages?.map { it.imageUri } ?: emptyList()
         io.execute {
             try {
-                val dir = File(activity.filesDir, "scans").apply { mkdirs() }
-                val stamp = System.currentTimeMillis()
+                val json = JSONObject(File(path).readText())
+                val src = json.getJSONArray("pages")
                 val pages = JSArray()
-                uris.forEachIndexed { i, src ->
-                    val dest = File(dir, "$stamp-${i + 1}.jpg")
-                    activity.contentResolver.openInputStream(src)!!.use { input ->
-                        dest.outputStream().use { input.copyTo(it) }
-                    }
-                    // The one place every scanned page passes: pull a frame
-                    // that ran past the book's gutter back to it.
-                    val cut = try {
-                        GutterTrim.trim(dest)
-                    } catch (e: Exception) {
-                        Log.w(TAG, "gutter trim failed for ${dest.name}", e)
-                        null
-                    }
-                    // One line per page for the emulator check (book-measure.py).
-                    Log.i(TAG, "gutter ${dest.name} $cut")
-                    val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }
-                    BitmapFactory.decodeFile(dest.path, bounds)
+                for (i in 0 until src.length()) {
+                    val p = src.getJSONObject(i)
+                    val f = File(p.getString("file"))
+                    if (!f.exists()) continue
                     pages.put(
                         JSObject()
-                            .put("uri", Uri.fromFile(dest).toString())
-                            .put("width", bounds.outWidth)
-                            .put("height", bounds.outHeight)
-                            .put("thumb", jpegDataUrl(dest, 360, 70)),
+                            .put("uri", Uri.fromFile(f).toString())
+                            .put("width", p.getInt("width"))
+                            .put("height", p.getInt("height"))
+                            .put("nums", ints(p.getJSONArray("nums")))
+                            .put("spread", p.getBoolean("spread"))
+                            .put("numberState", p.getString("numberState"))
+                            .put("thumb", jpegDataUrl(f, 360, 70)),
                     )
                 }
-                invoke.resolve(JSObject().put("canceled", false).put("pages", pages))
+                File(path).delete()
+                invoke.resolve(
+                    JSObject()
+                        .put("canceled", false)
+                        .put("pages", pages)
+                        .put("missing", ints(json.getJSONArray("missing")))
+                        .put("sideStep", json.optInt("sideStep", 1)),
+                )
             } catch (e: Exception) {
-                Log.e(TAG, "copy scanned pages failed", e)
-                invoke.reject(e.message ?: "copy failed", "COPY_FAILED")
+                Log.e(TAG, "reading the capture result failed", e)
+                invoke.reject(e.message ?: "result failed", "COPY_FAILED")
             }
         }
     }
@@ -295,14 +175,13 @@ class ScannerPlugin(private val activity: Activity) : Plugin(activity) {
                 // Run 8 also read the outer 10 % in three enlarged tiles: +1
                 // right, +1 wrong (p9 as "6" at 0.91) of 41 pages, so only the
                 // band pass is kept — a wrong number makes a false 抜け row.
-                val band = bandLines(page, args.marginFrac, args.minWidth)
-                val folio = folioLines(page, args.marginFrac)
-                for (i in 0 until band.length()) lines.put(band.get(i))
-                for (i in 0 until folio.length()) lines.put(folio.get(i))
+                val band = MarginReader.bandLines(page, args.marginFrac, args.minWidth)
+                val folio = MarginReader.folioLines(page, args.marginFrac)
+                for (l in band + folio) lines.put(lineJs(l))
                 // One line per page and pass for the emulator check (book-measure.py).
                 val name = nameOf(args.uri)
-                Log.i(TAG, "margins $name ${w}x$h pass=band $band")
-                Log.i(TAG, "margins $name ${w}x$h pass=folio $folio")
+                Log.i(TAG, "margins $name ${w}x$h pass=band ${MarginReader.json(band)}")
+                Log.i(TAG, "margins $name ${w}x$h pass=folio ${MarginReader.json(folio)}")
                 invoke.resolve(JSObject().put("lines", lines).put("width", w).put("height", h))
             } catch (e: Exception) {
                 Log.e(TAG, "read margins failed", e)
@@ -311,159 +190,6 @@ class ScannerPlugin(private val activity: Activity) : Plugin(activity) {
                 page?.recycle()
             }
         }
-    }
-
-    /** Pass "band": the top and bottom margin bands, each enlarged to `minWidth`. */
-    private fun bandLines(page: Bitmap, marginFrac: Double, minWidth: Int): JSArray {
-        val w = page.width
-        val h = page.height
-        val band = (h * marginFrac.coerceIn(0.02, 0.5)).toInt().coerceAtLeast(1)
-        val out = JSArray()
-        val up = (minWidth.toFloat() / w).coerceIn(1f, 4f)
-        for (top in listOf(true, false)) {
-            val y0 = if (top) 0 else h - band
-            recognizeRegion(page, 0, y0, w, band, up, "band", out)
-        }
-        return out
-    }
-
-    /**
-     * Pass "folio": short, isolated pieces of print in the margin bands (a
-     * page number such as "— 31 —" stands alone, far from other text), each
-     * cut out tightly and enlarged so its text is ~FOLIO_TEXT_PX tall. The
-     * band pass reads the whole band, where such a number is only a few
-     * pixels in a 1600 px wide image and is often skipped (run 10 probe).
-     * The caller uses these lines only when the band pass gives no number.
-     */
-    private fun folioLines(page: Bitmap, marginFrac: Double): JSArray {
-        val w = page.width
-        val h = page.height
-        val band = (h * marginFrac.coerceIn(0.02, 0.5)).toInt().coerceAtLeast(1)
-        val out = JSArray()
-        for (top in listOf(true, false)) {
-            val y0 = if (top) 0 else h - band
-            for (seg in printSegments(page, y0, band).take(MAX_FOLIO_SEGMENTS)) {
-                val sh = seg[3] - seg[1]
-                val sw = seg[2] - seg[0]
-                val padX = sh * 3
-                val padY = sh
-                val x0 = (seg[0] - padX).coerceAtLeast(0)
-                val x1 = (seg[2] + padX).coerceAtMost(w)
-                val ry0 = (seg[1] - padY).coerceAtLeast(0)
-                val ry1 = (seg[3] + padY).coerceAtMost(h)
-                if (x1 - x0 < 4 || ry1 - ry0 < 4 || sw < 2) continue
-                val up = (FOLIO_TEXT_PX.toFloat() / sh).coerceIn(1f, 8f)
-                recognizeRegion(page, x0, ry0, x1 - x0, ry1 - ry0, up, "folio", out)
-            }
-        }
-        return out
-    }
-
-    /**
-     * Short, isolated pieces of print in rows [y0, y0 + bh) of the page,
-     * most isolated first, each [left, top, right, bottom] in page pixels.
-     * Ink = darker than 0.75× the paper (90th percentile; small digits on
-     * the emulator camera are faint grey). Ink is split into connected
-     * blobs; blobs bigger than a character (a thumb, a rule, a figure) and
-     * specks under 4 px are dropped; the rest are joined left to right into
-     * pieces of one text row (gap ≤ 1.5× the row height). Pieces wider than
-     * 12× their height are body text and dropped. Isolation is the gap to
-     * the nearest other piece in row heights — a page number stands alone.
-     */
-    private fun printSegments(page: Bitmap, y0: Int, bh: Int): List<IntArray> {
-        val w = page.width
-        val h = page.height
-        val px = IntArray(w * bh)
-        page.getPixels(px, 0, w, 0, y0, w, bh)
-        val lum = IntArray(px.size) { i ->
-            val c = px[i]
-            ((c shr 16 and 0xff) * 299 + (c shr 8 and 0xff) * 587 + (c and 0xff) * 114) / 1000
-        }
-        val hist = IntArray(256)
-        for (v in lum) hist[v]++
-        var acc = 0
-        var paper = 255
-        for (v in 255 downTo 0) {
-            acc += hist[v]
-            if (acc >= lum.size / 10) { paper = v; break }
-        }
-        val ink = (paper * 0.75).toInt()
-        // Leave out the outer 3 % (page edges, gutter shadow).
-        val xa = (w * 0.03).toInt()
-        val xb = w - xa
-        val minH = (h * 0.004).toInt().coerceAtLeast(2)
-        val maxH = (h * 0.04).toInt().coerceAtLeast(minH + 1)
-        // Connected blobs (8-neighbours), iterative flood fill.
-        val label = IntArray(w * bh)
-        val stack = IntArray(w * bh)
-        val blobs = ArrayList<IntArray>()
-        for (start in label.indices) {
-            val sx = start % w
-            if (sx < xa || sx >= xb || label[start] != 0 || lum[start] >= ink) continue
-            var top = 0
-            stack[top++] = start
-            label[start] = 1
-            var l = sx
-            var r = sx
-            var t = start / w
-            var b = t
-            var area = 0
-            while (top > 0) {
-                val p = stack[--top]
-                area++
-                val x = p % w
-                val y = p / w
-                if (x < l) l = x
-                if (x > r) r = x
-                if (y < t) t = y
-                if (y > b) b = y
-                for (dy in -1..1) for (dx in -1..1) {
-                    val nx = x + dx
-                    val ny = y + dy
-                    if (nx < xa || nx >= xb || ny < 0 || ny >= bh) continue
-                    val q = ny * w + nx
-                    if (label[q] == 0 && lum[q] < ink) {
-                        label[q] = 1
-                        stack[top++] = q
-                    }
-                }
-            }
-            val bw = r - l + 1
-            val bhh = b - t + 1
-            if (area < 4 || bhh > maxH || bw > maxH * 3) continue
-            blobs.add(intArrayOf(l, t, r + 1, b + 1))
-        }
-        blobs.sortBy { it[0] }
-        val pieces = ArrayList<IntArray>()
-        for (c in blobs) {
-            var joined = false
-            for (g in pieces) {
-                val gh = maxOf(g[3] - g[1], c[3] - c[1], minH)
-                val cy = (c[1] + c[3]) / 2.0
-                val gy = (g[1] + g[3]) / 2.0
-                if (Math.abs(cy - gy) <= gh * 0.6 && c[0] - g[2] <= gh * 1.5) {
-                    g[0] = minOf(g[0], c[0]); g[1] = minOf(g[1], c[1])
-                    g[2] = maxOf(g[2], c[2]); g[3] = maxOf(g[3], c[3])
-                    joined = true
-                    break
-                }
-            }
-            if (!joined) pieces.add(c.copyOf())
-        }
-        val scored = ArrayList<Pair<Double, IntArray>>()
-        for ((i, g) in pieces.withIndex()) {
-            val gh = g[3] - g[1]
-            val gw = g[2] - g[0]
-            if (gh < minH || gw > gh * 12) continue
-            var iso = bh.toDouble()
-            for ((j, o) in pieces.withIndex()) {
-                if (j == i) continue
-                val d = maxOf(maxOf(o[0] - g[2], g[0] - o[2]), maxOf(o[1] - g[3], g[1] - o[3]))
-                if (d < iso) iso = d.toDouble()
-            }
-            scored.add(Pair(iso / gh, intArrayOf(g[0], g[1] + y0, g[2], g[3] + y0)))
-        }
-        return scored.sortedByDescending { it.first }.map { it.second }
     }
 
     /**
@@ -485,10 +211,10 @@ class ScannerPlugin(private val activity: Activity) : Plugin(activity) {
                 var page: Bitmap? = null
                 try {
                     page = BitmapFactory.decodeFile(f.path) ?: throw IllegalStateException("decode failed")
-                    val band = bandLines(page, 0.15, 1600)
-                    Log.i(TAG, "probe ${f.name} ${page.width}x${page.height} pass=band $band")
-                    val folio = folioLines(page, 0.15)
-                    Log.i(TAG, "probe ${f.name} ${page.width}x${page.height} pass=folio $folio")
+                    val band = MarginReader.bandLines(page, 0.15, 1600)
+                    Log.i(TAG, "probe ${f.name} ${page.width}x${page.height} pass=band ${MarginReader.json(band)}")
+                    val folio = MarginReader.folioLines(page, 0.15)
+                    Log.i(TAG, "probe ${f.name} ${page.width}x${page.height} pass=folio ${MarginReader.json(folio)}")
                 } catch (e: Exception) {
                     Log.e(TAG, "probe ${f.name} failed", e)
                 } finally {
@@ -500,38 +226,17 @@ class ScannerPlugin(private val activity: Activity) : Plugin(activity) {
         }
     }
 
-    /** Recognise one region of the page (enlarged `up`×) into `out`, centres normalised to the page. */
-    private fun recognizeRegion(
-        page: Bitmap, x0: Int, y0: Int, rw: Int, rh: Int, up: Float, pass: String, out: JSArray,
-    ) {
-        val w = page.width
-        val h = page.height
-        val strip = Bitmap.createBitmap(page, x0, y0, rw, rh)
-        val input = if (up > 1f) {
-            Bitmap.createScaledBitmap(strip, (rw * up).toInt(), (rh * up).toInt(), true)
-                .also { if (it !== strip) strip.recycle() }
-        } else {
-            strip
-        }
-        try {
-            val text = Tasks.await(recognizer.process(InputImage.fromBitmap(input, 0)))
-            for (block in text.textBlocks) {
-                for (line in block.lines) {
-                    val box = line.boundingBox ?: continue
-                    out.put(
-                        JSObject()
-                            .put("text", line.text)
-                            .put("conf", line.confidence.toDouble())
-                            .put("cx", ((x0 + box.exactCenterX() / up) / w).toDouble())
-                            .put("cy", ((y0 + box.exactCenterY() / up) / h).toDouble())
-                            .put("h", (box.height() / up / h).toDouble())
-                            .put("pass", pass),
-                    )
-                }
-            }
-        } finally {
-            input.recycle()
-        }
+    private fun lineJs(l: PageNumbers.Line): JSObject = JSObject()
+        .put("text", l.text)
+        .put("conf", l.conf)
+        .put("cx", l.cx)
+        .put("cy", l.cy)
+        .put("pass", l.pass)
+
+    private fun ints(a: org.json.JSONArray): JSArray {
+        val out = JSArray()
+        for (i in 0 until a.length()) out.put(a.getInt(i))
+        return out
     }
 
     @Command
@@ -732,14 +437,8 @@ class ScannerPlugin(private val activity: Activity) : Plugin(activity) {
         return "data:image/jpeg;base64," + Base64.encodeToString(out.toByteArray(), Base64.NO_WRAP)
     }
 
-    private val recognizer by lazy {
-        TextRecognition.getClient(JapaneseTextRecognizerOptions.Builder().build())
-    }
-
     companion object {
         private const val TAG = "AstarScanMlkit"
         private const val MAX_OCR_SIDE = 4096
-        private const val FOLIO_TEXT_PX = 48
-        private const val MAX_FOLIO_SEGMENTS = 4
     }
 }

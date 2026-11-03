@@ -24,12 +24,15 @@ android {
 dependencies {
     implementation("androidx.core:core-ktx:1.9.0")
     implementation("androidx.appcompat:appcompat:1.6.0")
-    // Scanner UI, edge detection and auto-capture run inside Google Play
-    // services; the app only holds the thin client (no model in the APK).
-    implementation("com.google.android.gms:play-services-mlkit-document-scanner:16.0.0")
-    // ModuleInstallClient: check / request the scanner's Play services
-    // module before opening it (ScannerPlugin.startScan).
-    implementation("com.google.android.gms:play-services-base:18.5.0")
+    // The capture screen's camera (CaptureActivity): preview, analysis
+    // frames for the page frame, still pictures for the pages.
+    implementation("androidx.camera:camera-core:1.3.4")
+    implementation("androidx.camera:camera-camera2:1.3.4")
+    implementation("androidx.camera:camera-lifecycle:1.3.4")
+    implementation("androidx.camera:camera-view:1.3.4")
+    // Page corners: DocAligner (ONNX, assets/docaligner-lcnet100.onnx, put
+    // there by scripts/android/fetch-docaligner.sh) on ONNX Runtime.
+    implementation("com.microsoft.onnxruntime:onnxruntime-android:1.19.2")
     // Page numbers: ML Kit Text Recognition v2, Japanese model (reads Latin
     // too), bundled so it works offline from the first scan.
     implementation("com.google.mlkit:text-recognition-japanese:16.0.1")
