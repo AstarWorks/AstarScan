@@ -41,6 +41,7 @@ what ML Kit saw. GitHub's `ubuntu-latest` runner loads `v4l2loopback`
 | 13  | 194b33e | folio crops enlarged to 64 px with stretched levels                                                                                           | 41 taken, 41 reached the list, no crash; PDF saved                                                                                                                                                                                                            | spreads: mean 13.3 / 11.4 / 14.2, max 26; single-port-wood: 19.4 (max 53); single-land-white: 17.2 (max 117)                                                                                                                                  | 1 (p37); numbers 8 right / 0 wrong; false 抜け 0; plain 抜け spanning a captured page 0 (8〜12 shown as 欠番？)                                                                                       |
 | 13b | bdd0f91 | run 13 reverted to the run 12 folio pass (the push's own CI run, no new change)                                                               | 41 taken, 41 reached the list, no crash                                                                                                                                                                                                                       | spreads: mean 14.9 / 11.0 / 15.2, max 35; single-port-wood: 17.7 (max 46); single-land-white: 8.5 (max 21)                                                                                                                                    | 1 (p37); numbers 11 right / 0 wrong; false 抜け 0; plain 抜け spanning a captured page 0                                                                                                              |
 | 13c | 2b2c3e7 | docs-only push; same app code as 13b (run 41544015513) | 41 taken, 21 reached the list — Play services' scanner process (26.43.30) died 10 times in single-port-wood and single-land-white: 1 Java NullPointerException in its `CarouselLayoutManager`, 9 native SIGSEGVs in its glide thumbnail thread (tombstones; logcat has no "FATAL EXCEPTION" line for these); every page of the scan it held was lost | spreads: mean 14.9 / 12.3 / 13.7, max 31 | 20 (all pages of the two lost clips; the 3 spread clips: 0); numbers 0 / 0 — no single-page row reached the list, and the numbers of runs 11–13b were all read on the single-page clips (the spreads read 0 in every run), so this is the lost pages, not a reading change |
+| 14 | ea4b5c5 | app scans in sessions of 5 pages (ML Kit page limit) and reopens the scanner after each full one; check: sessions of 5, no shutter press on the review, lost later sessions caught with a fresh budget (run 41557577279) | 41 taken, **41 reached the list**; no scanner crash (logcat: no tombstone, no FATAL EXCEPTION, no "scan closed without pages"); the app reopened the scanner 7 times, once after each full session | spreads: mean 14.3 / 11.0 / 13.8, max 33; single-port-wood: 61.2 (max 990 — c5's registration failed, 5 inliers, scorer assumed the mapping; by eye the frame is on the page; without c5 18.8, max 43); single-land-white: 13.5 (max 117, c0: left edge past the gutter) | **1** (p37, skipped on purpose; its neighbours p35 / p39 unread, so no 欠番 covers it); numbers **9 right / 0 wrong** of 41 rows (single-port-wood 8, single-land-white 1); false 抜け 0; plain 抜け spanning a captured page 0 |
 
 Run 2 finding: the portrait scanner shows only a 3:4 window at the left
 of the 1280×960 webcam frame (columns 0–719), upright. The feed had
@@ -395,6 +396,37 @@ Fixes after 13c (run 14):
   detected on the list screen too and gets a fresh time budget; the
   shutter finder skips carousel / edit-menu nodes.
 
+Run 14 findings (run 41557577279, every adjust screenshot opened on a contact sheet, logcat read):
+
+- All 41 captures reached the page list; ML Kit's scanner did not crash
+  this time, so the session limit was not put to the test by a crash. It
+  worked as a flow: every clip of 6–12 pages was scanned as sessions of
+  5 + the rest, the app opening the scanner by itself after each full one
+  (7 times), and the check leaving the last reopened scanner with Back.
+- Silent misses 1 (p37, the page skipped on purpose; p35 and p39 unread,
+  so the app cannot show a 欠番 there) — back to the run 12 level.
+- Numbers 9 right / 0 wrong: single-port-wood 8 of 12, single-land-white
+  1 of 10, spreads 0 of 19 — the same picture as runs 11–13b (the
+  spreads never read at the emulator size). The 13c "regression" was the
+  lost single-page rows, not the reader (the APK of 13b and 13c was the
+  same build; the reads come back with the pages).
+- Frames, by eye: the 19 spread frames sit on the four outer corners of
+  the open book (thumbs on the bottom edge included). The 12
+  single-port-wood frames sit on the page outline; the tl corner lies
+  ~30 px off on all of them at the curled spine, as in earlier runs, and
+  c5 (shot 117) is on the page although the scorer's registration failed
+  (990 px is a scoring artefact). single-land-white: 9 of 10 on the page;
+  c0 (shot 154) again has its left edge at the image border past the
+  gutter, taking in a strip of the facing page (tl 117 px), as in 13c's
+  129 / 137 / 160.
+- The check's Close on Crop and rotate did not leave the screen: ML Kit
+  always asks "Discard changes?" (even with nothing changed), the check
+  answered Keep editing and then applied the crop unchanged, so Apply was
+  still pressed on every page. Fixed after the run: the check answers
+  that dialog with Discard (run 15).
+- Recording `book-eval-recording.mp4` (single-land-white) and the zip are
+  on the prerelease.
+
 Runs 10–13 summary (the 4 runs of this round):
 
 | Run                                          | Silent misses                       | Numbers right / wrong (of 41) | False 抜け | 抜け over a captured page |
@@ -406,6 +438,7 @@ Runs 10–13 summary (the 4 runs of this round):
 | 13                                           | 1 (p37)                             | 8 / 0                         | 0          | 0 (1 shown as 欠番？)     |
 | 13b (run 12 code again)                      | 1 (p37)                             | 11 / 0                        | 0          | 0                         |
 | 13c (same code, Play services scanner crash) | 20 (pages lost in ML Kit's scanner) | 0 / 0                         | 0          | 0                         |
+| 14 (sessions of 5 pages)                     | 1 (p37)                             | 9 / 0                         | 0          | 0                         |
 
 - Cause of the unread numbers, measured with the same ML Kit on the same
   page images: the camera size (emulator 9–14 right of 41 vs clip 22–28)

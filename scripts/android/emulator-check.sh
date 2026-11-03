@@ -338,10 +338,20 @@ scan_session() {
         ;;
       scanner-dialog)
         shot "$clip-dialog"
-        if has '^Keep editing$' "$GMS"; then tap_now '^Keep editing$' "$GMS"; else tap_now 'android:id/button1' "$GMS"; fi
+        if [ $crop_closed = 1 ] && has '^Discard changes' "$GMS"; then
+          # Close on Crop and rotate always asks "Discard changes?" (run
+          # 14), even with nothing changed: discarding keeps the page as
+          # ML Kit framed it. (This is not "Discard this scan?".)
+          tap_now 'android:id/button1' "$GMS"
+          crop_closed=2
+        elif has '^Keep editing$' "$GMS"; then
+          tap_now '^Keep editing$' "$GMS"
+        else
+          tap_now 'android:id/button1' "$GMS"
+        fi
         ;;
       scanner-adjust-corners)
-        if [ $crop_closed = 1 ]; then
+        if [ $crop_closed != 0 ]; then
           # Close did not leave the screen: apply it unchanged instead.
           log "$clip: Crop and rotate still open after Close, applying it unchanged"
           tap_now "$DOCSCAN/confirm_crop(_and_rotate)?_button" "$GMS"
