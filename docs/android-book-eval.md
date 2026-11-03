@@ -537,6 +537,46 @@ Run 17 findings (run 41601986645 — the push of eab1152):
   clip's was kept), spread-land-wood 14.8 / 36.6 (not scored in run 16;
   run 15 max 34).
 
+Run 18 findings (run 41624930649 — the push of 4170261, which carries 4d15aa1):
+
+- Cause of the lost pages in runs 13c–17 (logcat of run 17): every lost
+  session was Play services' scanner process `com.google.android.gms.ui`
+  dying. In the app, ML Kit's delegate activity then logs
+  `GmsDocScanDelAct: IllegalStateException: Failed to handle result` and
+  the ActivityResult is RESULT_CANCELED (0): the pages lived only in the
+  dead process, so the app had nothing to receive. Every native crash
+  (49) was a SIGSEGV on the same unmapped pointer 0x4abd7000 / 0x4abd7008,
+  in every Play services process (gms, gms.ui, gms.unstable; glide,
+  lowpool and binder threads), never in the app — one bad reference shared
+  by the package's processes, which pointed at the ART files written for the
+  Play services update installed at the start of the run.
+- Check: after that update, `cmd package compile -m verify -f
+com.google.android.gms` (Success) and a force-stop. Result: **0 scanner
+  process deaths, 0 native / Java crashes** (run 17: 55), 0 lost sessions,
+  41 of 41 captures kept; the run took 1 h 30 min (run 17: 2 h 40 min).
+- Silent misses **1 (p37, skipped on purpose)** (run 17: 29). Red notices
+  after a lost session 0 (none lost, so `notices.tsv` has no row; the check
+  now records one after every lost session). Numbers 9 right / 1 wrong
+  (single-land-white p47 read as 4), false 抜け 0.
+- Corner error over the 41 kept captures: ML Kit's frames mean 16.7 / max
+  113.4 px; after the gutter trim mean 14.7 / max 44.0 (single-port-wood,
+  tl at the spine curl, not trimmed as designed).
+- Gutter (single-land-white): both frames whose left edge ran past the
+  spine were kept and cut: c0 (p31) tl 113.4 / bl 80.1 → [7.5, 8.4, 6.0,
+  5.0], left cut 0.146 / 0.110; c8 (p47) tl 97.7 / bl 68.2 → [4.3, 5.7,
+  8.9, 5.4], cut 0.125 / 0.090. The other 8 were not cut; clip max after
+  trim 24.6 (c3 tl, on the page).
+- App: the red notice is a banner over the list (or over the start /
+  waiting screen when no page is kept), never a full-screen state; the list
+  stays on screen while the scanner is open again; a scanner call still
+  pending 5 s after the app has the focus back now gets its own red text.
+  Shot 195 (`195-app-list-single-land-white-list.png`) shows the banner
+  (after the check's own Back at the end of the clip) above the 10 kept
+  rows. The no-reply text was not exercised (no crash in this run).
+- Not verified: the recompile on a real device (not needed there: the bad
+  pointer is an emulator-run artefact of the in-run Play services update);
+  whether the crashes return in later runs.
+
 Runs 10–13 summary (the 4 runs of this round):
 
 | Run                                          | Silent misses                       | Numbers right / wrong (of 41) | False 抜け | 抜け over a captured page |
@@ -552,6 +592,7 @@ Runs 10–13 summary (the 4 runs of this round):
 | 15 (sessions of 5, 8 lost sessions retaken)  | 1 (p37)                             | 8 / 0                         | 0          | 0                         |
 | 16 (module update failed on clip 1)          | 15 (14 of them spread-land-wood)    | 9 / 0                         | 0          | 0                         |
 | 17 (55 scanner crashes, 2 clips empty)       | 29 (most behind the red notice)     | 1 / 0                         | 0          | 0                         |
+| 18 (Play services recompiled, 0 crashes)     | 1 (p37)                             | 9 / 1                         | 0          | 0                         |
 
 - Cause of the unread numbers, measured with the same ML Kit on the same
   page images: the camera size (emulator 9–14 right of 41 vs clip 22–28)
