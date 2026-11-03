@@ -761,7 +761,9 @@ class CaptureActivity : ComponentActivity() {
      *   the analysis frame of the same moment (another camera picture);
      *   kept only when both reads agree, otherwise the page is "番号なし";
      * - a number lower than the last page (and not missing), or more than
-     *   MAX_JUMP ahead → "番号なし".
+     *   MAX_JUMP ahead → "番号なし";
+     * - exception: ONE page skipped, read strongly once (the other read
+     *   found nothing) → kept when CaptureSession.singleReadJumpOk.
      */
     private fun confirm(pick: PageNumbers.Pick, spread: Boolean, name: String, second: Bitmap?): List<Int> {
         val nums = pick.nums
@@ -781,7 +783,18 @@ class CaptureActivity : ComponentActivity() {
             // First read found nothing: the second read may (kept only when it is the next page).
             val r2 = synchronized(session) { session.relation(again.nums, spread) }
             Log.i(TAG, "number for $name: second read ${again.nums} ($r2)")
-            return if (again.strong && (r2 == "expected" || r2 == "duplicate")) again.nums else emptyList()
+            if (again.strong && (r2 == "expected" || r2 == "duplicate")) return again.nums
+            if (again.strong && r2 == "jump" && synchronized(session) { session.singleReadJumpOk(again.nums, spread, name) }) {
+                Log.i(TAG, "number ${again.nums} for $name: one page skipped, read once; kept")
+                return again.nums
+            }
+            return emptyList()
+        }
+        if (again.nums.isEmpty() && rel == "jump" && pick.strong &&
+            synchronized(session) { session.singleReadJumpOk(nums, spread, name) }
+        ) {
+            Log.i(TAG, "number $nums for $name: one page skipped, read once; kept")
+            return nums
         }
         if (again.nums.sorted() == nums.sorted()) {
             Log.i(TAG, "number $nums for $name confirmed by a second read ($rel)")

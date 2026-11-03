@@ -88,6 +88,25 @@ class CaptureSession(known: Collection<Int> = emptyList(), step: Int = 0) {
         return "jump"
     }
 
+    /**
+     * Whether a jump read only once (the other read found nothing) may be
+     * kept: a single page, exactly ONE page missing by the step, and no page
+     * without a number taken after the one before the missing page — that
+     * page could be the missing one (then the jump would be a false red).
+     * Run 25: p39 was read once ("ー39") after 35; it was dropped as an
+     * unconfirmed jump, so the skipped p37 never turned red.
+     */
+    fun singleReadJumpOk(nums: List<Int>, spread: Boolean, name: String): Boolean {
+        if (spread || nums.size != 1) return false
+        val l = last ?: return false
+        val lo = nums[0]
+        val s = if (step == 2 || (step == 0 && (lo - l) % 2 == 0)) 2 else 1
+        if (lo - l != 2 * s) return false
+        val ref = pages.indexOfFirst { (l - s) in it.nums }
+        if (ref < 0) return false
+        return pages.drop(ref + 1).none { it.name != name && it.numberState != "ok" }
+    }
+
     /** A page just taken, its number still to be read: kept at the end, "reading". */
     fun addPending(name: String, width: Int, height: Int, spread: Boolean) {
         pages.add(Page(name, width, height, emptyList(), spread, "reading"))
