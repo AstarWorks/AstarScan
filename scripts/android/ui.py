@@ -63,12 +63,14 @@ def kind(path):
     if DOCSCAN + "gallery_button" in ids or any(i.startswith(DOCSCAN) for i in ids):
         return "scanner-camera"
     if APP in pkgs:
+        # The app keeps its list on screen while it waits for the scanner
+        # (and takes a session in), so the waiting button decides first.
+        if "もう一度スキャンを開く" in joined:
+            return "app-waiting-scanner"
         if re.search(r"^(撮れた|重複候補|抜け)$", joined, re.M):
             return "app-list"
         if re.search(r"^PDF 保存", joined, re.M):
             return "app-list-empty"
-        if "もう一度スキャンを開く" in joined:
-            return "app-waiting-scanner"
         if re.search(r"^スキャン$", joined, re.M):
             return "app-start"
         return "app-other"

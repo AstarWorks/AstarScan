@@ -128,6 +128,23 @@ while [ $SECONDS -lt $end ]; do
   sleep 20
 done
 
+# Run 17: Play services' processes (gms, gms.ui = the scanner, gms.unstable)
+# died 55 times, every native crash a SIGSEGV on the same unmapped pointer
+# 0x4abd7000 / 0x4abd7008 in every one of them (glide-source, lowpool,
+# binder threads) — one bad reference shared by every process of the
+# package, not a bug of one screen. The app process (same zygote) never
+# crashed. The suspect is the ART app image / odex written for the Play
+# services update installed a few minutes earlier. Recompile it without an
+# app image (filter "verify") and restart its processes before scanning.
+gms_dexopt() { adb shell dumpsys package dexopt 2>/dev/null | grep -A6 '^ *\[com.google.android.gms\]' | head -8 | tee -a "$OUT/steps.log"; }
+log "Play services dexopt state before recompiling:"
+gms_dexopt
+log "recompiling Play services (-m verify -f): $(adb shell cmd package compile -m verify -f com.google.android.gms 2>&1 | tr -d '\r' | tail -n1)"
+adb shell am force-stop com.google.android.gms 2>&1 | tee -a "$OUT/steps.log"
+sleep 30
+log "Play services dexopt state after recompiling:"
+gms_dexopt
+
 # ML Kit page-number probe: the same band pass the app runs on a scan,
 # on page images cut from the clips at the emulator camera's size and at
 # the clip's own size (probe-pages.py, ScannerPlugin.load). Tells whether
@@ -269,7 +286,27 @@ close_scanner() {
 # Play services' failed module screen: wait for the app, keep its screen
 # and record in notices.tsv whether it showed its red notice (book-measure
 # counts the session's untaken pages as "red notice", not silent, only then).
-NOTICE_RE='スキャナーを開けませんでした|スキャナーが閉じられました'
+NOTICE_RE='スキャナーを開けませんでした|スキャナーが閉じられました|スキャナーが応答していません'
+
+# lost_notice <clip> <holds of the session> — after a lost session: give
+# the app up to 12 s to show its red notice (it shows it over the list, or
+# over its waiting screen once it has the focus back), then record in
+# notices.tsv whether it did.
+lost_notice() {
+  local i shown=0 text=
+  for i in 1 2 3 4 5 6; do
+    dump
+    grep -qE "$NOTICE_RE" "$OUT/ui.xml" 2>/dev/null && break
+    sleep 2
+  done
+  shot "$1-scanner-lost"
+  if grep -qE "$NOTICE_RE" "$OUT/ui.xml" 2>/dev/null; then
+    shown=1
+    text=$(grep -oE "($NOTICE_RE)[^\"]*" "$OUT/ui.xml" | head -n1)
+  fi
+  log "$1: app after the lost session: red notice shown=$shown ${text:+($text)}"
+  printf '%s\t%s\t%s\t%s\t%s\n' "$1" "$2" "$SHOT" "$shown" "$text" >>"$OUT/notices.tsv"
+}
 scanner_failed_notice() {
   local i shown=0 text=
   for i in 1 2 3 4 5 6 7 8 9 10; do
@@ -313,7 +350,7 @@ scan_session() {
   # record as not kept, and the session is taken again from its first hold.
   lost() {
     log "$clip: the scanner closed with $adj page(s) taken; they are lost, starting the session again"
-    shot "$clip-scanner-lost"
+    lost_notice "$clip" "${plan[*]}"
     printf '%s' "$pending" | sed 's/$/\t0/' >>"$OUT/captures.tsv"
     pending=
     adj=0

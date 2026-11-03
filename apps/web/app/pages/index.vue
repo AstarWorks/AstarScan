@@ -1984,6 +1984,54 @@ const NATIVE_NOTICE_FIRST =
   'スキャナーを開けませんでした（ページを受け取れませんでした）。下の「スキャン」でもう一度開いてください。'
 const NATIVE_NOTICE_LATER =
   'スキャナーが閉じられました。閉じる前に撮ったページ（保存前のもの）は受け取れていません。続けるなら「追加スキャン」を押してください。'
+/**
+ * The scanner runs in Play services' own process. When that process dies
+ * the app usually gets a "closed" result, but now and then nothing at all
+ * (run 17: 12 of 37 lost sessions left the app on 「スキャナー起動中…」):
+ * once the app has the focus back while the call is still pending, say so.
+ */
+const NATIVE_NOTICE_NO_REPLY =
+  'スキャナーが応答していません（ページを受け取れていません）。「もう一度スキャンを開く」を押してください。'
+
+/** Increases with every scanner open, so an old open's watch stops. */
+let nativeScanSeq = 0
+
+/**
+ * Watch one pending scanner call: after the scanner has been in front (the
+ * app lost the focus) and the app has had the focus back for 5 s with the
+ * call still pending, show NATIVE_NOTICE_NO_REPLY. Returns the stop function.
+ */
+function watchScannerReply(seq: number): () => void {
+  let away = false
+  let backSince = 0
+  const timer = window.setInterval(() => {
+    if (seq !== nativeScanSeq || phase.value !== 'loading') return
+    const focused =
+      document.visibilityState === 'visible' && document.hasFocus()
+    if (!focused) {
+      away = true
+      backSince = 0
+      return
+    }
+    if (!away) return
+    if (backSince === 0) {
+      backSince = Date.now()
+      return
+    }
+    if (Date.now() - backSince >= 5000 && !errorText.value) {
+      errorText.value = NATIVE_NOTICE_NO_REPLY
+    }
+  }, 1000)
+  return () => window.clearInterval(timer)
+}
+
+/** Native mode: the page list stays on screen while the scanner is open again. */
+const nativeListShown = computed(
+  () =>
+    nativeMode &&
+    (phase.value === 'done' ||
+      (phase.value === 'loading' && captured.value.length > 0)),
+)
 
 function nativeFailureText(code: string, msg: string): string {
   if (code === 'MODULE_INSTALL_FAILED' || code === 'MODULE_INSTALL_CANCELED') {
@@ -2008,19 +2056,25 @@ async function startNativeScan(): Promise<void> {
   errorText.value = ''
   statusText.value = 'スキャナー起動中…（初回は部品の取得で数分かかります）'
   let sessions = 0
+  const seq = ++nativeScanSeq
   try {
     // Scan in sessions of NATIVE_PAGES_PER_SCAN pages: each full session
     // is saved into the list and the scanner opens again for the next
     // pages, so a crash of the scanner loses at most one short session.
     // A session the user ends (Back / save before the limit) stops it.
     for (;;) {
-      const res = await nativeScan(NATIVE_PAGES_PER_SCAN)
+      const stopWatch = watchScannerReply(seq)
+      const res = await nativeScan(NATIVE_PAGES_PER_SCAN).finally(stopWatch)
+      // 「もう一度スキャンを開く」 started a newer open: that one owns the screen.
+      if (seq !== nativeScanSeq) return
       if (res.canceled || res.pages.length === 0) {
         errorText.value =
           sessions === 0 ? NATIVE_NOTICE_FIRST : NATIVE_NOTICE_LATER
         break
       }
       sessions++
+      // Pages came back after all: a no-reply notice no longer holds.
+      if (errorText.value === NATIVE_NOTICE_NO_REPLY) errorText.value = ''
       statusText.value = '取り込み中…'
       const now = Date.now()
       const pages: Page[] = []
@@ -2041,15 +2095,16 @@ async function startNativeScan(): Promise<void> {
       if (res.pages.length < NATIVE_PAGES_PER_SCAN) break
       statusText.value = `${captured.value.length} ページ保存済み。続きを撮影します…`
     }
-    // No page at all: the start screen shows the notice in red (error
-    // phase) with 「スキャン」 under it; with pages, the list shows it.
-    phase.value =
-      captured.value.length > 0 ? 'done' : errorText.value ? 'error' : 'idle'
+    // The red notice is a banner over the list (or over the start screen
+    // when there is no page yet), never a full-screen state that hides the
+    // pages already taken.
+    phase.value = captured.value.length > 0 ? 'done' : 'idle'
     statusText.value = ''
   } catch (err) {
+    if (seq !== nativeScanSeq) return
     const msg = nativeErrorMessage(err)
     errorText.value = nativeFailureText(nativeErrorCode(err), msg)
-    phase.value = captured.value.length > 0 ? 'done' : 'error'
+    phase.value = captured.value.length > 0 ? 'done' : 'idle'
     statusText.value = ''
   }
 }
@@ -2368,9 +2423,16 @@ function pageIndexById(id: string): number {
     </div>
 
     <section
-      v-show="!nativeMode || phase !== 'done' || !!selectedPage"
+      v-show="!nativeListShown || !!selectedPage"
       class="viewport"
     >
+      <p
+        v-if="nativeMode && errorText && !nativeListShown && !selectedPage"
+        class="native-error native-error--overlay"
+        role="alert"
+      >
+        {{ errorText }}
+      </p>
       <video
         ref="videoRef"
         class="viewport__video"
@@ -2529,12 +2591,16 @@ raw: {{ selectedPage.llmDebug.bestFramePick.raw }}</pre
     <p v-if="nativeMode && savedPdfPath" class="native-saved">
       保存しました: {{ savedPdfPath }}
     </p>
-    <p v-if="nativeMode && phase === 'done' && errorText" class="native-error">
+    <p
+      v-if="nativeListShown && errorText"
+      class="native-error native-error--banner"
+      role="alert"
+    >
       {{ errorText }}
     </p>
 
     <CaptureReport
-      v-if="phase === 'done' && reportRows.length > 0"
+      v-if="(phase === 'done' || nativeListShown) && reportRows.length > 0"
       :rows="reportRows"
       :show-printed="nativeMode"
       :retake-busy="retakeTarget !== null"
@@ -2836,6 +2902,27 @@ raw: {{ selectedPage.llmDebug.bestFramePick.raw }}</pre
 .native-error {
   background: #fee2e2;
   color: #991b1b;
+}
+/* Red scanner notice: over the start / waiting screen, or above the list. */
+.native-error--overlay {
+  position: absolute;
+  top: 12px;
+  left: 0;
+  right: 0;
+  z-index: 5;
+  margin: 0 16px;
+  font-size: 15px;
+  line-height: 1.5;
+  background: #b91c1c;
+  color: #fff;
+  word-break: normal;
+}
+.native-error--banner {
+  font-size: 15px;
+  line-height: 1.5;
+  background: #b91c1c;
+  color: #fff;
+  word-break: normal;
 }
 .live-strip {
   position: absolute;
