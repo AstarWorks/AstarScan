@@ -18,7 +18,7 @@ Pages ("撮れた / 赤 / 無表示"): the app's page list after each clip is
 read from the UI dumps (several scroll positions). Row n of the list is
 the n-th capture, i.e. hold plan[n] of captures.tsv, so every row stands
 for the target pages of that hold. A target page counts as shown when a
-row stands for it (撮れた, 重複, 番号を読めず, …) or a red 欠番 range
+row stands for it (撮れた, 重複, 番号なし, …) or a red 欠番 range
 covers it; otherwise it is a silent miss ("無表示").
 
 Page numbers: a row's number is right when it equals the truth (one of
@@ -54,11 +54,13 @@ STATE_LABELS = {
     "読み取り中…": "reading",
     "重複": "duplicate",
     "順番が前後": "outOfOrder",
-    "番号を読めず": "unread",
-    "読み取りできず": "failed",
+    "番号なし": "unread",  # unread and failed share this label (grey)
+    "番号を読めず": "unread",  # earlier label
+    "読み取りできず": "failed",  # earlier label
     "欠番": "missing",
     "欠番（読み違いかも）": "suspect",
-    "欠番？（未読を挟む）": "missingOrUnread",
+    "欠番？": "missingOrUnread",
+    "欠番？（未読を挟む）": "missingOrUnread",  # earlier label
     "欠番？（間に番号を読めないページ）": "missingOrUnread",  # run 12 label
 }
 
