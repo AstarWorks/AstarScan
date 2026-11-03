@@ -188,12 +188,15 @@ print(max(map(int, m)) if m else 0)
 PY
 }
 
-# ML Kit's scanner crashed (NullPointerException in its review carousel,
-# Play services 26.42) when the 12th page of one scan was taken (run 4),
-# and the app got nothing back: every page of that scan was lost. A clip
-# is therefore scanned in sessions of at most SESSION_MAX pages; the next
-# session is opened from the page list with 追加スキャン.
-SESSION_MAX=10
+# ML Kit's scanner process dies now and then (run 4/5/13c: a
+# NullPointerException in its review carousel; run 13c: also native
+# SIGSEGVs in its thumbnail loader), and the scan it held never reaches the
+# app. The app therefore scans in sessions of NATIVE_PAGES_PER_SCAN pages
+# (apps/web/app/services/native-scanner.ts, ML Kit's page limit) and opens
+# the scanner again by itself after each full session. SESSION_MAX must be
+# the same number: the check saves a session when it is full, and then
+# finds the scanner open again for the next one.
+SESSION_MAX=5
 
 # scan_clip <clip> <hold indices to capture, in order>
 scan_clip() {
@@ -207,44 +210,93 @@ scan_clip() {
     scan_session "$clip" "$off" "${plan[@]:off:SESSION_MAX}" || break
     off=$((off + SESSION_MAX))
   done
+  close_scanner "$clip"
   clip_list "$clip"
 }
 
+# close_scanner — after the clip's last full session the app has opened the
+# scanner again for more pages; leave it (no page taken) to see the list.
+close_scanner() {
+  local i
+  for i in 1 2 3 4 5 6 7 8 9 10; do
+    dump
+    case $(kind) in
+      app-list | app-list-empty | app-start) return 0 ;;
+      app-waiting-scanner | app-other) sleep 3 ;;
+      scanner-dialog)
+        # "Discard this scan?" with no page in it.
+        shot "$1-close-dialog"
+        tap_now 'android:id/button1' "$GMS" || adb shell input keyevent KEYCODE_BACK
+        sleep 3
+        ;;
+      scanner-camera | no-dump)
+        log "$1: leaving the scanner the app opened for the next pages"
+        adb shell input keyevent KEYCODE_BACK
+        sleep 4
+        ;;
+      scanner-review)
+        # Not expected (no page is taken here): keep what it holds.
+        shot "$1-close-review"
+        tap_now "$DOCSCAN/save_document_button" "$GMS"
+        sleep 4
+        ;;
+      *) adb shell monkey -p "$PKG" -c android.intent.category.LAUNCHER 1 >/dev/null; sleep 3 ;;
+    esac
+  done
+  log "$1: still not back on the list"
+  return 1
+}
+
 # scan_session <clip> <index of its first capture in the clip> <holds>
-# One ML Kit scan, saved into the app. Returns 1 when nothing was saved.
+# One ML Kit scan (at most SESSION_MAX pages), saved into the app. Returns
+# 1 when nothing was saved.
 scan_session() {
   local clip=$1 off=$2
   shift 2
   local plan=("$@")
-  local want=${#plan[@]} m=0 adj=0 cam_shot=-1 cam_since=$SECONDS opens=0 saved=0 presses=0 stop=0 pending=
+  local want=${#plan[@]} m=0 adj=0 cam_shot=-1 cam_since=$SECONDS opens=0 saved=0 saved_at=0 presses=0 stop=0 pending= crop_closed=0
+  local soft end
   log "--- $clip: session from capture $off, holds ${plan[*]}"
   feed "$clip" "${plan[0]}"
   # Time budget: ~75 s per page (run 3: a page that needs the manual
   # shutter takes ~60 s), at least 10 min. When it runs out, or the clip
   # is given up, whatever the scanner holds is saved so those pages still
-  # reach the list; 2 more minutes are allowed for that.
-  local soft=$((SECONDS + (want * 75 > 600 ? want * 75 : 600)))
-  local end=$((soft + 120))
+  # reach the list; 2 more minutes are allowed for that. A session taken
+  # again after a lost scan gets a budget of its own (run 13c: the third
+  # try of single-port-wood started with 20 s left and saved nothing).
+  budget() {
+    soft=$((SECONDS + (want * 75 > 600 ? want * 75 : 600)))
+    end=$((soft + 120))
+  }
+  budget
+  # lost — the scanner closed without handing its pages to the app (Play
+  # services' scanner process died: logcat has its crash). Its pages are on
+  # record as not kept, and the session is taken again from its first hold.
+  lost() {
+    log "$clip: the scanner closed with $adj page(s) taken; they are lost, starting the session again"
+    shot "$clip-scanner-lost"
+    printf '%s' "$pending" | sed 's/$/\t0/' >>"$OUT/captures.tsv"
+    pending=
+    adj=0
+    m=0
+    cam_shot=-1
+    crop_closed=0
+    feed "$clip" "${plan[0]}"
+    budget
+  }
   while [ $SECONDS -lt $end ]; do
     if [ $stop = 0 ] && [ $SECONDS -ge "$soft" ]; then
       log "$clip: time budget used up with $m / $want pages, saving what the scanner has"
       stop=1
     fi
     dump
-    case $(kind) in
+    local k
+    k=$(kind)
+    case $k in
       app-start)
         [ $saved = 1 ] && break
         [ $stop = 1 ] && { log "$clip: stopped at the start screen (nothing saved)"; break; }
-        if [ "$adj" -gt 0 ]; then
-          # Run 5: the scanner crashed after a page's Apply and the app
-          # fell back to its start screen with nothing.
-          log "$clip: the scanner closed with $adj page(s) taken; they are lost, starting the session again"
-          shot "$clip-scanner-lost"
-          printf '%s' "$pending" | sed 's/$/\t0/' >>"$OUT/captures.tsv"
-          pending=
-          cam_shot=-1
-          feed "$clip" "${plan[0]}"
-        fi
+        [ "$adj" -gt 0 ] && lost
         opens=$((opens + 1))
         [ $opens -gt 6 ] && { log "gave up opening the scanner"; break; }
         tap_now '^スキャン$' "$PKG"
@@ -254,18 +306,9 @@ scan_session() {
         sleep 5
         ;;
       app-waiting-scanner)
-        if [ $saved = 0 ] && [ "$adj" -gt 0 ]; then
-          # The scanner closed without handing the scan back (crash):
-          # its pages never reach the list. Start the session again.
-          log "$clip: the scanner closed with $adj page(s) taken; they are lost, starting the session again"
-          shot "$clip-scanner-lost"
-          printf '%s' "$pending" | sed 's/$/\t0/' >>"$OUT/captures.tsv"
-          pending=
-          adj=0
-          m=0
-          cam_shot=-1
-          feed "$clip" "${plan[0]}"
-        fi
+        # Saved: the app takes the pages in and opens the scanner again.
+        [ $saved = 1 ] && break
+        [ "$adj" -gt 0 ] && lost
         if [ $((SECONDS - cam_since)) -gt 90 ]; then
           tap_now 'もう一度スキャンを開く' "$PKG"
           cam_since=$SECONDS
@@ -277,7 +320,9 @@ scan_session() {
           log "$clip: back in the app"
           break
         fi
-        # Next session of the clip: add pages to the list.
+        # A later session of the clip lost to a scanner crash lands here
+        # (the list holds the earlier sessions).
+        [ "$adj" -gt 0 ] && lost
         opens=$((opens + 1))
         [ $opens -gt 6 ] && { log "gave up opening the scanner"; break; }
         tap_now '^追加スキャン$' "$PKG"
@@ -296,16 +341,37 @@ scan_session() {
         if has '^Keep editing$' "$GMS"; then tap_now '^Keep editing$' "$GMS"; else tap_now 'android:id/button1' "$GMS"; fi
         ;;
       scanner-adjust-corners)
+        if [ $crop_closed = 1 ]; then
+          # Close did not leave the screen: apply it unchanged instead.
+          log "$clip: Crop and rotate still open after Close, applying it unchanged"
+          tap_now "$DOCSCAN/confirm_crop(_and_rotate)?_button" "$GMS"
+          crop_closed=0
+          sleep 2
+          continue
+        fi
         local fr
         fr=$(feed_frame)
         shot "$clip-c$adj-adjust"
         pending+=$(printf '%s\t%s\t%s\t%s\t%s' "$clip" "$((off + adj))" "${plan[$adj]:-}" "$fr" "$SHOT")$'\n'
-
         adj=$((adj + 1))
-        tap_now "$DOCSCAN/confirm_crop(_and_rotate)?_button" "$GMS"
+        # The screen is opened only to put ML Kit's frame on record; leave
+        # it with Close, not Apply. Apply re-crops the page and the review
+        # reloads its image: 6 of the 9 native crashes of run 13c came
+        # within 1 s of an Apply here.
+        if tap_now "$DOCSCAN/close_button" "$GMS"; then
+          crop_closed=1
+        else
+          tap_now "$DOCSCAN/confirm_crop(_and_rotate)?_button" "$GMS"
+        fi
         sleep 2
         ;;
       scanner-review)
+        crop_closed=0
+        if [ $saved = 1 ]; then
+          # Save tapped; the scanner is closing.
+          sleep 2
+          continue
+        fi
         m=$(page_count)
         if [ "$adj" -lt "$m" ]; then
           # ML Kit went straight to the review: open the newest page's
@@ -325,13 +391,25 @@ scan_session() {
           shot "$clip-review-final"
           tap_now "$DOCSCAN/save_document_button" "$GMS"
           saved=1
+          saved_at=$SECONDS
           printf '%s' "$pending" | sed 's/$/\t1/' >>"$OUT/captures.tsv"
           pending=
           sleep 4
         fi
         ;;
       *)
+        if [ $saved = 1 ]; then
+          # The scan is saved; a scanner camera now is the one the app
+          # opened for the next session (or the closing scanner, a few s).
+          if [ "$k" = scanner-camera ] || [ $((SECONDS - saved_at)) -gt 10 ]; then
+            log "$clip: saved; the app opened the scanner again ($k)"
+            break
+          fi
+          sleep 2
+          continue
+        fi
         # ML Kit's live camera (usually not dumpable while the preview runs).
+        crop_closed=0
         if [ $stop = 1 ]; then
           # Out of time / gave up: back to the review to save the pages
           # taken so far (none taken: nothing to save).
@@ -351,8 +429,16 @@ scan_session() {
           # the clip up after a few presses that took nothing, so one
           # stuck clip cannot eat the whole job (the pages taken so far
           # are still saved).
-          presses=$((presses + 1))
           shot "$clip-c$m-no-autocapture"
+          # The screenshot's fresh dump may show the review (ML Kit took
+          # the page meanwhile): never press a "shutter" there (run 13c
+          # pressed the carousel's "Page 4 of 6" as one).
+          k=$(kind)
+          if [ "$k" != no-dump ] && [ "$k" != scanner-camera ]; then
+            log "$clip c$m: the screen is $k now, not the camera; no shutter press"
+            continue
+          fi
+          presses=$((presses + 1))
           if [ "$presses" -gt 3 ]; then
             log "$clip c$m: nothing captured after 3 shutter presses, giving the clip up"
             stop=1

@@ -49,9 +49,18 @@ function call<T>(cmd: string, args?: Record<string, unknown>): Promise<T> {
   return t.invoke<T>(`plugin:mlkit-scanner|${cmd}`, args)
 }
 
-/** Open the ML Kit scanner (full mode, no page limit) and wait for its pages. */
-export function nativeScan(): Promise<NativeScanResult> {
-  return call<NativeScanResult>('scan')
+/**
+ * Pages one ML Kit scanner session takes before it is saved into the app.
+ * The scanner gives its pages back only on save; when Play services'
+ * scanner process dies first, the whole session is lost (emulator run 13c:
+ * 10 sessions of up to 6 pages). Short sessions bound that loss; the app
+ * reopens the scanner after each full one, so scanning goes on.
+ */
+export const NATIVE_PAGES_PER_SCAN = 5
+
+/** Open the ML Kit scanner (full mode) and wait for its pages. */
+export function nativeScan(pageLimit = 0): Promise<NativeScanResult> {
+  return call<NativeScanResult>('scan', { pageLimit })
 }
 
 /** A scanned page downscaled to `maxSide` px, as a JPEG data URL. */

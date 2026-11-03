@@ -85,6 +85,7 @@ import type {
 import { checkPageSequence } from '@astarworks/scan-core/pipeline'
 import {
   isNativeScanner,
+  NATIVE_PAGES_PER_SCAN,
   nativeErrorMessage,
   nativeReadPage,
   nativeSavePdf,
@@ -1977,31 +1978,35 @@ async function startNativeScan(): Promise<void> {
   errorText.value = ''
   statusText.value = 'スキャナー起動中…（初回は部品の取得で数分かかります）'
   try {
-    const res = await nativeScan()
-    if (res.canceled || res.pages.length === 0) {
-      phase.value = captured.value.length > 0 ? 'done' : 'idle'
-      statusText.value = ''
-      return
+    // Scan in sessions of NATIVE_PAGES_PER_SCAN pages: each full session
+    // is saved into the list and the scanner opens again for the next
+    // pages, so a crash of the scanner loses at most one short session.
+    // A session the user ends (Back / save before the limit) stops it.
+    for (;;) {
+      const res = await nativeScan(NATIVE_PAGES_PER_SCAN)
+      if (res.canceled || res.pages.length === 0) break
+      statusText.value = '取り込み中…'
+      const now = Date.now()
+      const pages: Page[] = []
+      for (const [i, s] of res.pages.entries()) {
+        pages.push({
+          id: `n${now}-${i + 1}`,
+          dataUrl: await nativeReadPage(s.uri, NATIVE_PREVIEW_LONG_SIDE),
+          width: s.width,
+          height: s.height,
+          capturedAt: now,
+          nativeUri: s.uri,
+          thumb: s.thumb,
+        })
+      }
+      captured.value = [...captured.value, ...pages]
+      void saveSession(captured.value.map(pageToStored))
+      queuePageNumbers(pages)
+      if (res.pages.length < NATIVE_PAGES_PER_SCAN) break
+      statusText.value = `${captured.value.length} ページ保存済み。続きを撮影します…`
     }
-    statusText.value = '取り込み中…'
-    const now = Date.now()
-    const pages: Page[] = []
-    for (const [i, s] of res.pages.entries()) {
-      pages.push({
-        id: `n${now}-${i + 1}`,
-        dataUrl: await nativeReadPage(s.uri, NATIVE_PREVIEW_LONG_SIDE),
-        width: s.width,
-        height: s.height,
-        capturedAt: now,
-        nativeUri: s.uri,
-        thumb: s.thumb,
-      })
-    }
-    captured.value = [...captured.value, ...pages]
-    void saveSession(captured.value.map(pageToStored))
-    phase.value = 'done'
+    phase.value = captured.value.length > 0 ? 'done' : 'idle'
     statusText.value = ''
-    queuePageNumbers(pages)
   } catch (err) {
     phase.value = 'error'
     const msg = nativeErrorMessage(err)

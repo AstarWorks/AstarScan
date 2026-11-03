@@ -81,7 +81,12 @@ def shutter(path):
     round capture button), never the gallery / flash / close buttons."""
     ns = [n for n in nodes(path) if "com.google.android.gms" in (n.get("package") or "")]
     named = re.compile(r"shutter|capture|take.?photo|撮影|シャッター", re.I)
-    skip = re.compile(r"gallery|flash|close|back|auto|done|navigate|thumbnail", re.I)
+    # Never a review / crop control: run 13c pressed the carousel's
+    # "Page 4 of 6" (maskable_frame_layout) and run 13b "Crop & rotate".
+    skip = re.compile(
+        r"gallery|flash|close|back|auto|done|navigate|thumbnail|maskable|page \d+ of|edit_menu|add_page|crop|filter",
+        re.I,
+    )
     for n in ns:
         label = " ".join(n.get(k) or "" for k in ("resource-id", "content-desc", "text"))
         if named.search(label) and not skip.search(label) and centre(n.get("bounds")):

@@ -39,6 +39,19 @@ import java.util.UUID
 import java.util.concurrent.Executors
 
 @InvokeArg
+class ScanArgs {
+    /**
+     * Most pages one scanner session takes (0 = no limit). The scanner
+     * hands its pages back only when the user saves; if Play services'
+     * scanner process dies first (run 13c: a NullPointerException in its
+     * page carousel and native crashes in its thumbnail loader), every page
+     * of that session is gone. The app therefore scans in short sessions
+     * and reopens the scanner after each full one.
+     */
+    var pageLimit: Int = 0
+}
+
+@InvokeArg
 class ReadPageArgs {
     lateinit var uri: String
     var maxSide: Int = 1600
@@ -76,7 +89,7 @@ class UploadArgs {
 
 /**
  * Google ML Kit Document Scanner (SCANNER_MODE_FULL: edge detection,
- * auto-capture, crop/rotate/filter UI, no page limit) → JPEG pages copied
+ * auto-capture, crop/rotate/filter UI, optional page limit) → JPEG pages copied
  * into the app's files dir. `readPage` hands a downscaled copy to the
  * webview; `savePdf` writes the full-size JPEGs into one PDF under
  * Download/AstarScan.
@@ -88,7 +101,8 @@ class ScannerPlugin(private val activity: Activity) : Plugin(activity) {
 
     @Command
     fun scan(invoke: Invoke) {
-        startScan(invoke, 0)
+        val args = invoke.parseArgs(ScanArgs::class.java)
+        startScan(invoke, args.pageLimit.coerceAtLeast(0), 0)
     }
 
     /**
@@ -96,12 +110,13 @@ class ScannerPlugin(private val activity: Activity) : Plugin(activity) {
      * background and `getStartScanIntent` fails with "Feature not
      * available" until it lands, so retry for up to ~3 minutes.
      */
-    private fun startScan(invoke: Invoke, attempt: Int) {
-        val options = GmsDocumentScannerOptions.Builder()
+    private fun startScan(invoke: Invoke, pageLimit: Int, attempt: Int) {
+        val builder = GmsDocumentScannerOptions.Builder()
             .setScannerMode(GmsDocumentScannerOptions.SCANNER_MODE_FULL)
             .setGalleryImportAllowed(true)
             .setResultFormats(GmsDocumentScannerOptions.RESULT_FORMAT_JPEG)
-            .build()
+        if (pageLimit > 0) builder.setPageLimit(pageLimit)
+        val options = builder.build()
         GmsDocumentScanning.getClient(options)
             .getStartScanIntent(activity)
             .addOnSuccessListener { sender ->
@@ -114,7 +129,7 @@ class ScannerPlugin(private val activity: Activity) : Plugin(activity) {
             .addOnFailureListener { e ->
                 if (attempt < MAX_ATTEMPTS) {
                     Log.w(TAG, "scanner not ready (attempt ${attempt + 1}): ${e.message}")
-                    handler.postDelayed({ startScan(invoke, attempt + 1) }, RETRY_MS)
+                    handler.postDelayed({ startScan(invoke, pageLimit, attempt + 1) }, RETRY_MS)
                 } else {
                     Log.e(TAG, "scanner unavailable", e)
                     invoke.reject(e.message ?: "scanner unavailable", "SCANNER_UNAVAILABLE")
@@ -125,6 +140,10 @@ class ScannerPlugin(private val activity: Activity) : Plugin(activity) {
     @ActivityCallback
     private fun scanResult(invoke: Invoke, result: ActivityResult) {
         if (result.resultCode != Activity.RESULT_OK) {
+            // Back pressed, or Play services' scanner process died: the
+            // scanner returns no pages either way (logged so the emulator
+            // check can tell a closed scan from a saved one).
+            Log.i(TAG, "scan closed without pages (result ${result.resultCode})")
             invoke.resolve(JSObject().put("canceled", true).put("pages", JSArray()))
             return
         }
