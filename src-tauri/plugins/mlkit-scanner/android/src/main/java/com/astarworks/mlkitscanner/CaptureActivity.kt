@@ -654,10 +654,9 @@ class CaptureActivity : ComponentActivity() {
             try {
                 val tmp = File(scansDir, "capture-$stamp.json.tmp")
                 tmp.writeText(sessionJson(false).toString())
-                if (!tmp.renameTo(resultFile)) {
-                    resultFile.writeText(tmp.readText())
-                    tmp.delete()
-                }
+                if (tmp.renameTo(resultFile)) return
+                resultFile.writeText(tmp.readText())
+                tmp.delete()
             } catch (e: Exception) {
                 Log.w(TAG, "saving the page list failed", e)
             }
