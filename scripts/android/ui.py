@@ -49,6 +49,10 @@ def kind(path):
     joined = "\n".join(texts)
     if any("permissioncontroller" in p for p in pkgs):
         return "other-permissioncontroller"
+    # A system "<app> isn't responding" dialog over everything (run 27: the
+    # Pixel Launcher's ANR stayed over the app for the whole run).
+    if re.search(r"isn.t responding", joined) and re.search(r"^Wait$", joined, re.M):
+        return "dialog-anr"
     if "Viewing full screen" in joined:
         return "dialog-full-screen"
     if "android:id/button1" in ids and "com.google.android.gms" in pkgs:

@@ -157,6 +157,7 @@ to_start() {
       app-start) return 0 ;;
       app-capture) adb shell input keyevent KEYCODE_BACK ;;
       dialog-full-screen) tap_now '^Got it$' ;;
+      dialog-anr) tap_now '^Wait$' ;;
       app-list | app-list-empty) tap_now '^すべて削除$' "$PKG" ;;
       no-dump) adb shell input keyevent KEYCODE_BACK ;;
       *) adb shell monkey -p "$PKG" -c android.intent.category.LAUNCHER 1 >/dev/null ;;
@@ -176,6 +177,7 @@ open_capture() {
   mark=$(events_lines)
   OPEN_MARK=$mark
   dump
+  if [ "$(kind)" = dialog-anr ]; then tap_now '^Wait$'; sleep 2; dump; fi
   tap_now '^スキャン$' "$PKG" || tap_now '^追加スキャン$' "$PKG" || { log "$1: no scan button"; return 1; }
   for i in $(seq 30); do
     events_since "$mark" | grep -q 'AstarScanCapture.*: camera bound' && events_since "$mark" | grep -q 'AstarScanCapture.*: detector ready' && break
