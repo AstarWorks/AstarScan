@@ -451,6 +451,44 @@ log "save Markdown (last clip)"
 save_file '^Markdown 保存' markdown markdown
 adb shell ls -l /sdcard/Download/AstarScan/ 2>&1 | tee -a "$OUT/steps.log"
 
+# --- Phone-resolution stills (not the live camera) ---------------------------
+# The emulator camera's 960x1280 leaves a spread's folio ~6 px tall; a
+# phone's still is ~12 MP. scripts/eval/book-clips/stills.py rendered the
+# middle frame of every hold at 3000x4000 (page) / 4000x3000 (spread) into
+# $STILLS; the app reads each with the capture screen's own page cut and
+# number read when it starts (StillsCheck.kt, "still …" log lines), after
+# the live clips so the two never share ML Kit. book-measure.py scores them
+# against $OUT/stills/stills.json.
+STILLS=${STILLS:-/tmp/stills}
+if [ -s "$STILLS/stills.json" ]; then
+  mkdir -p "$OUT/stills"
+  cp "$STILLS/stills.json" "$OUT/stills/"
+  SDIR=/sdcard/Android/data/$PKG/files/stills
+  log "phone-resolution stills: $(find "$STILLS" -maxdepth 1 -name '*.jpg' | wc -l) images"
+  adb shell am force-stop "$PKG"
+  adb shell mkdir -p "$SDIR"
+  find "$STILLS" -maxdepth 1 \( -name '*.jpg' -o -name '*.quad' \) -print0 | xargs -0 sh -c 'adb push "$@" '"$SDIR/"' | tail -n1' sh | tee -a "$OUT/steps.log"
+  mark=$(events_lines)
+  adb shell monkey -p "$PKG" -c android.intent.category.LAUNCHER 1 >/dev/null
+  t0=$SECONDS
+  last=$SECONDS
+  seen=0
+  while [ $((SECONDS - t0)) -lt 1800 ]; do
+    events_since "$mark" | grep -qE 'AstarScanMlkit.*: stills done' && break
+    if events_since "$mark" | grep -q 'FATAL EXCEPTION'; then log "stills: the app crashed"; break; fi
+    now=$(events_since "$mark" | grep -cE 'AstarScanMlkit.*: still ')
+    if [ "$now" != "$seen" ]; then seen=$now; last=$SECONDS; fi
+    # No still read for 4 minutes (the first one includes the app start).
+    if [ $((SECONDS - last)) -gt 240 ]; then log "stills: no progress for 240 s"; break; fi
+    sleep 5
+  done
+  events_since "$mark" | grep -E 'AstarScanMlkit.*: (stills|still )' | cut -c19- | cut -c1-300 | sed 's/^/    /' | tee -a "$OUT/steps.log"
+  log "stills: $seen still lines after $((SECONDS - t0))s"
+  shot stills-done nodump
+else
+  log "no phone-resolution stills in $STILLS"
+fi
+
 log "pull the camera pictures of the pages"
 adb pull "$EVAL_DIR" "$OUT/" 2>&1 | tail -n1 | tee -a "$OUT/steps.log"
 cp "$FEED_LOG" "$OUT/feed.log" 2>/dev/null || true

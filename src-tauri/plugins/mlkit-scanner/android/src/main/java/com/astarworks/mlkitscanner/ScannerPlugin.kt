@@ -262,6 +262,15 @@ class ScannerPlugin(private val activity: Activity) : Plugin(activity) {
      */
     override fun load(webView: WebView) {
         super.load(webView)
+        // Phone-resolution stills of the book clips (emulator check only;
+        // nothing happens without the external files folder `stills/`).
+        io.execute {
+            try {
+                StillsCheck.run(activity)
+            } catch (e: Throwable) {
+                Log.e(TAG, "stills check failed", e)
+            }
+        }
         val dir = activity.getExternalFilesDir("ocr-probe") ?: return
         val files = dir.listFiles { f -> f.name.endsWith(".jpg") }?.sortedBy { it.name } ?: return
         if (files.isEmpty()) return

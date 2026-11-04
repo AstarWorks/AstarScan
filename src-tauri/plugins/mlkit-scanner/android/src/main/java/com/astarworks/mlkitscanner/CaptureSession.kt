@@ -177,6 +177,79 @@ class CaptureSession(known: Collection<Int> = emptyList(), step: Int = 0) {
         if (unreadSince > 0) unreadSince--
     }
 
+    /**
+     * Pages taken without a number between two numbered ones get their
+     * numbers when they fit exactly: page `i` (just numbered) and the
+     * numbered page before the unread run, which carried the highest number
+     * taken until then (`prevLast`), leave room for exactly as many pages
+     * as were taken unread — by the step (not learnt yet: +2); a spread by
+     * pairs. Nothing is filled when a page in
+     * the run guessed another number, is still being read, or is of the
+     * other kind (spread / page). Run 24: single-port-wood 5, (7, 9, 11
+     * unread), 13 with step 2 — three pages for three numbers.
+     */
+    private fun fillBetween(i: Int, prevLast: Int?) {
+        if (i <= 0 || prevLast == null) return
+        val cur = pages[i]
+        var j = i - 1
+        val run = ArrayList<Int>()
+        while (j >= 0 && pages[j].numberState == "unread") {
+            if (pages[j].spread != cur.spread) return
+            run.add(0, j)
+            j--
+        }
+        if (run.isEmpty() || j < 0) return
+        val prev = pages[j]
+        if (prev.numberState != "ok" || prev.spread != cur.spread || prev.nums.isEmpty() || prev.nums.max() != prevLast) return
+        val d = cur.nums.min() - prev.nums.max()
+        val n = run.size
+        // No room between the two (this page follows that one by the step)
+        // and as many unread pages as are missing, all before them: the
+        // user went back as the red notice said (35, 39 → "37 missing",
+        // a page without a number, 41 → that page is 37).
+        val by = if (cur.spread) 1 else if (step == 0) 2 else step
+        if (d == by && missing.isNotEmpty() && missing.size == (if (cur.spread) 2 * n else n) && missing.last() < prev.nums.min()) {
+            val ms = missing.toList()
+            val fills = if (cur.spread) List(n) { k -> listOf(ms[2 * k], ms[2 * k + 1]) } else List(n) { k -> listOf(ms[k]) }
+            if (cur.spread && fills.any { it[1] != it[0] + 1 }) return
+            for ((k, idx) in run.withIndex()) {
+                val g = pages[idx].guess
+                if (g.isNotEmpty() && g.sorted() != fills[k]) return
+            }
+            val moved = run.map { pages[it] }
+            for (idx in run.reversed()) pages.removeAt(idx)
+            for ((k, p) in moved.withIndex()) {
+                val at = pages.indexOfFirst { o -> o.nums.isNotEmpty() && o.nums.min() > fills[k].first() }
+                val page = Page(p.name, p.width, p.height, fills[k], p.spread, "ok")
+                if (at < 0) pages.add(page) else pages.add(at, page)
+                taken.addAll(fills[k])
+                missing.removeAll(fills[k].toSet())
+            }
+            return
+        }
+        val fill: List<List<Int>> = if (cur.spread) {
+            if (d - 1 != 2 * n) return
+            List(n) { k -> listOf(prev.nums.max() + 1 + 2 * k, prev.nums.max() + 2 + 2 * k) }
+        } else {
+            // Step not learnt yet: one side only, as `add` reads an even
+            // jump (31, (33), 35); +1 would also fit a page taken twice.
+            val steps = (if (step == 0) listOf(2) else listOf(step)).filter { s -> d % s == 0 && d / s - 1 == n }
+            if (steps.size != 1) return
+            List(n) { k -> listOf(prev.nums.max() + steps[0] * (k + 1)) }
+        }
+        if (fill.flatten().any { it in taken }) return
+        for ((k, idx) in run.withIndex()) {
+            val g = pages[idx].guess
+            if (g.isNotEmpty() && g.sorted() != fill[k]) return
+        }
+        for ((k, idx) in run.withIndex()) {
+            val p = pages[idx]
+            pages[idx] = Page(p.name, p.width, p.height, fill[k], p.spread, "ok")
+            taken.addAll(fill[k])
+            missing.removeAll(fill[k].toSet())
+        }
+    }
+
     /** Pages still "reading" when the screen closes: kept without a number. */
     fun giveUpReading() {
         for (i in pages.indices) {
@@ -277,7 +350,10 @@ class CaptureSession(known: Collection<Int> = emptyList(), step: Int = 0) {
         val unread = unreadSince
         unreadSince = 0
         val miss = gap.drop(unread)
-        if (miss.isEmpty()) return Outcome.Taken(sorted)
+        if (miss.isEmpty()) {
+            fillBetween(pages.indexOfFirst { it.name == name }, l)
+            return Outcome.Taken(sorted)
+        }
         missing.addAll(miss)
         return Outcome.Gap(sorted, miss)
     }

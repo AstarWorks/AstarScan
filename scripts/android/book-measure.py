@@ -290,6 +290,9 @@ def read_ocr_calls(path):
         return out
     with f:
         for line in f:
+            # The phone-resolution stills come after the live clips: not counted here.
+            if re.search(r"AstarScanMlkit\s*:\s*stills start", line):
+                break
             m = re.search(r"AstarScanMlkit\s*:\s*ocr (\S+)(?: \d+)? (\d+)x(\d+) (\d+)ms (\S+)", line)
             if m:
                 out.append({"pass": m.group(1), "w": int(m.group(2)), "h": int(m.group(3)), "ms": int(m.group(4)), "ok": m.group(5) == "ok"})
@@ -430,20 +433,33 @@ def list_check(out, clip, gts):
     return rows, gaps, leftover
 
 
-def save_report(out):
+def save_report(out, caps=()):
     """PDF / Markdown save and the curvature correction, after the last clip
     (emulator-check.sh: saved/save.tsv, the pulled files, flatten lines)."""
     md, res = [], {"flatten": {}, "files": []}
-    flat, none = [], 0
+    flat, not_flat = [], {}
     try:
         for line in open(os.path.join(out, "events.log"), encoding="utf-8", errors="replace"):
             m = re.search(r"AstarScanCapture\s*:\s*flatten (\S+) (\d+)x(\d+) bow top=(-?[\d.]+) bottom=(-?[\d.]+)", line)
             if m:
                 flat.append((m.group(1), float(m.group(4)), float(m.group(5))))
-            elif re.search(r"AstarScanCapture\s*:\s*flatten \S+ \S+ none", line):
-                none += 1
+                continue
+            m = re.search(r"AstarScanCapture\s*:\s*flatten (\S+) (\S+) none(?: \((.*?)\))?(?: spread=(\S+))?", line)
+            if m:
+                # The same page logged again (opened from the list) counts once.
+                not_flat[m.group(1)] = {"size": m.group(2), "why": m.group(3) or "edges not found", "spread": m.group(4)}
     except OSError:
         pass
+    flat_names = {n for n, _, _ in flat}
+    flat = list({n: (n, t, b) for n, t, b in flat}.values())
+    not_flat = {n: v for n, v in not_flat.items() if n not in flat_names}
+    none = len(not_flat)
+    where = {c["name"]: c for c in caps}
+    res["flatten_none"] = []
+    for n, v in not_flat.items():
+        c = where.get(n, {})
+        hold = c.get("measure", {}).get("hold", c.get("hold_mark"))
+        res["flatten_none"].append({"page": n, "clip": c.get("clip"), "hold": hold, **v})
     flat_files = sorted(glob.glob(os.path.join(out, "eval", "*-flat.jpg")))
     res["flatten"] = {"corrected": len(flat), "straight_kept": none, "flat_images": len(flat_files)}
     rows = []
@@ -460,6 +476,10 @@ def save_report(out):
     md.append(f"| curvature-corrected pages (flatten found both edges) | {len(flat)} of {len(flat) + none} pages; "
               f"largest edge bow corrected median {sorted(bows)[len(bows) // 2] * 100:.2f} % / max {max(bows) * 100:.2f} % of the page height; "
               f"{len(flat_files)} eval/*-flat.jpg |" if flat else f"| curvature-corrected pages | 0 of {none} pages |")
+    for x in res["flatten_none"]:
+        md.append(f"| not flattened: {x['clip'] or '?'} hold {x['hold'] if x['hold'] is not None else '?'} ({x['page']}, "
+                  f"{'spread' if x['spread'] == 'true' else 'page' if x['spread'] == 'false' else ''} {x['size']}) | "
+                  f"straight cut kept: {x['why']} |")
     opened = [r[1] for r in rows if r and r[0] == "page-open" and len(r) > 1]
     md.append(f"| one page opened from the list (screenshot) | {opened[0] + '.png' if opened else 'not opened'} |")
     for kind in ("pdf", "markdown"):
@@ -493,6 +513,83 @@ def save_report(out):
         md.append("```")
     md.append("")
     return md, res
+
+
+def stills_report(out):
+    """Phone-resolution stills (emulator-check.sh, after the live clips):
+    the capture screen's page cut and number read (StillsCheck.kt) on the
+    middle frame of every hold rendered at 3000x4000 / 4000x3000
+    (scripts/eval/book-clips/stills.py). A number counts as read when the
+    pick is strong (what the screen keeps); right = exactly the printed
+    number(s), wrong = any number not printed there."""
+    try:
+        with open(os.path.join(out, "stills", "stills.json")) as f:
+            truth = json.load(f)
+    except (OSError, ValueError):
+        return [], {}
+    got, failed = {}, {}
+    try:
+        for line in open(os.path.join(out, "events.log"), encoding="utf-8", errors="replace"):
+            m = re.search(r"AstarScanMlkit\s*:\s*still (\S+) (\d+)x(\d+) source=(\S+) spread=(\S+) page=(\S+) nums=\[([\d, ]*)\] "
+                          r"strong=(\S+) framed=(\S+) cut=(\d+)ms read=(\d+)ms", line)
+            if m:
+                got[m.group(1)] = {"source": m.group(4), "spread": m.group(5) == "true", "page": m.group(6),
+                                   "nums": [int(x) for x in m.group(7).replace(" ", "").split(",") if x],
+                                   "strong": m.group(8) == "true", "framed": m.group(9) == "true",
+                                   "cut_ms": int(m.group(10)), "read_ms": int(m.group(11))}
+                continue
+            m = re.search(r"AstarScanMlkit\s*:\s*still (\S+) (?:\d+x\d+: no frame|failed)", line)
+            if m:
+                failed[m.group(1)] = line.strip()[-160:]
+    except OSError:
+        pass
+    clips, rows = {}, []
+    for fn in sorted(truth):
+        t = truth[fn]
+        c = clips.setdefault(t["clip"], {"stills": 0, "right": 0, "wrong": 0, "unread": 0, "not_run": 0, "truth_frame": 0, "framed": 0,
+                                         "size": t.get("size", "")})
+        c["stills"] += 1
+        g = got.get(fn)
+        if g is None:
+            c["not_run"] += 1
+            c["unread"] += 1
+            rows.append(f"| {t['clip']} | {t['hold']} | {'・'.join(map(str, t['truth']))} | {failed.get(fn, 'not read (no log line)')} | | |")
+            continue
+        nums = g["nums"] if g["strong"] else []
+        if g["source"] == "truth":
+            c["truth_frame"] += 1
+        if not nums:
+            verdict = "番号なし" + (f" (weak {g['nums']})" if g["nums"] else "")
+            c["unread"] += 1
+        elif any(n not in t["truth"] for n in nums):
+            verdict = "誤"
+            c["wrong"] += 1
+        elif sorted(nums) == sorted(t["truth"]):
+            verdict = "正"
+            c["right"] += 1
+            c["framed"] += 1 if g["framed"] else 0
+        else:
+            verdict = "番号なし (one of the spread's two)"
+            c["unread"] += 1
+        rows.append(f"| {t['clip']} | {t['hold']} | {'・'.join(map(str, t['truth']))} | {'・'.join(map(str, g['nums'])) or '—'} {verdict} | "
+                    f"{g['source']} {g['page']} | {g['read_ms']} |")
+    md = ["### Phone-resolution stills (not the live camera)", "",
+          "The capture screen's own page cut and number read (DocAligner frame, gutter cut, page warp ≤ 2400 px, bands + folio "
+          "pieces in one ML Kit call) on the middle frame of every hold, rendered by the clip generator at a phone's still size "
+          "(3000x4000 for one page, 4000x3000 for a spread) instead of the emulator camera's 960x1280. Read = a strong pick "
+          "(the number the screen keeps).", "",
+          "| clip | still size | stills | right | wrong | unread | read rate | frame from the truth (model gave none) |",
+          "| --- | --- | --- | --- | --- | --- | --- | --- |"]
+    tot = {"stills": 0, "right": 0, "wrong": 0, "unread": 0}
+    for name, c in clips.items():
+        rate = c["right"] / c["stills"] * 100 if c["stills"] else 0
+        md.append(f"| {name} | {c['size']} | {c['stills']} | {c['right']} | {c['wrong']} | {c['unread']} | {rate:.0f} % | {c['truth_frame']} |")
+        for k in tot:
+            tot[k] += c[k]
+    if tot["stills"]:
+        md.append(f"| all | | {tot['stills']} | {tot['right']} | {tot['wrong']} | {tot['unread']} | {tot['right'] / tot['stills'] * 100:.0f} % | |")
+    md += ["", "| clip | hold | printed | read | frame, page px | read (ms) |", "| --- | --- | --- | --- | --- | --- |"] + rows + [""]
+    return md, clips
 
 
 def main():
@@ -582,6 +679,8 @@ def main():
             "pages_dropped_as_taken": sum(1 for c in cc if c.get("kind") == "duplicate"),
         }
         clips_out.append(c_out)
+    md.append("### Live camera (the emulator camera's 960x1280 picture)")
+    md.append("")
     md.append("| clip | pages in plan | 撮れた | 赤 | 灰（番号なし） | 黄 | 撮影済み | 何も出ない | pages taken (same hold again) | corner err mean / max (clip px) | numbers right / wrong / unread | list: rows, red rows (false), grey | 「受け取れていません」 left | notices.tsv red / yellow |")
     md.append("| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |")
     tot = {"none": 0, "wrong": 0}
@@ -645,14 +744,17 @@ def main():
         pass
     md.append(f"| calls that timed out (20 s) | {timeouts} |")
     md.append("")
-    save_md, save_res = save_report(a.out)
+    save_md, save_res = save_report(a.out, caps)
     md += save_md
+    stills_md, stills_res = stills_report(a.out)
+    md += stills_md
+    md += ["### Live camera, per page", ""]
     md += per_page
     text = "\n".join(md) + "\n"
     with open(os.path.join(a.out, "measure.md"), "w") as f:
         f.write(text)
     with open(os.path.join(a.out, "measure.json"), "w") as f:
-        json.dump({"clips": clips_out, "save": save_res, "captures": caps, "ocr_calls": read_ocr_calls(os.path.join(a.out, "events.log"))}, f, ensure_ascii=False, indent=1, default=float)
+        json.dump({"clips": clips_out, "save": save_res, "stills": stills_res, "captures": caps, "ocr_calls": read_ocr_calls(os.path.join(a.out, "events.log"))}, f, ensure_ascii=False, indent=1, default=float)
     print(text)
     return 0
 

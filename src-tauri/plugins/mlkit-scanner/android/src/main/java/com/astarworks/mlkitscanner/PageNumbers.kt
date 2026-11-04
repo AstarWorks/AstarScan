@@ -18,8 +18,12 @@ object PageNumbers {
 
     data class Token(val value: Int, val kind: Kind)
 
-    /** Numbers read, and whether the best one was a whole-line number (not a running-head edge). */
-    data class Pick(val nums: List<Int>, val strong: Boolean)
+    /**
+     * Numbers read, whether the best one was a whole-line number (not a
+     * running-head edge), and whether every number was printed as a folio
+     * ("— 39 —" at the bottom or top centre of its page, see [framedFor]).
+     */
+    data class Pick(val nums: List<Int>, val strong: Boolean, val framed: Boolean = false)
 
     const val MARGIN_FRAC = 0.15
     private const val MAX_PAGE_NUMBER = 3000
@@ -120,7 +124,12 @@ object PageNumbers {
      * enlarged) read "ー31-", the whole band "ー3-"; the band's 3 won, the two
      * reads of the page disagreed (31 / 3) and the page went unnumbered.
      */
-    fun pickNative(lines: List<Line>): Pick {
+    fun pickNative(lines: List<Line>, spread: Boolean = false): Pick {
+        val p = pickBandFolio(lines)
+        return if (p.strong && framedFor(p.nums, lines, spread)) p.copy(framed = true) else p
+    }
+
+    private fun pickBandFolio(lines: List<Line>): Pick {
         val band = pick(lines.filter { it.pass == "band" })
         val folio = pick(lines.filter { it.pass == "folio" })
         if (band.nums.isEmpty()) return folio
@@ -128,6 +137,55 @@ object PageNumbers {
         if (folio.strong && !band.strong) return folio
         if (folio.strong && lostDigits(band.nums, folio.nums)) return folio
         return band
+    }
+
+    /**
+     * Dash-like marks a folio is printed between, as ML Kit returns them
+     * ("— 39 —" read as "ー41-", "ー4-", "一39一", "－39－", "―39―", "‐39‐").
+     * After NFKC "－" is "-"; "一" (kanji one) is a dash only next to digits.
+     */
+    private const val DASHES = "ー―—–\\-‐－一~〜"
+    private val FRAMED_NUMBER = Regex("^(?:[$DASHES]\\s*)+(\\d{1,4})(?:\\s*[$DASHES])*$|^(\\d{1,4})(?:\\s*[$DASHES])+$")
+
+    /** The number of a line printed between dash-like marks ("ー41-", "ー39"), else null. */
+    fun framedNumber(text: String): Int? {
+        val s = Normalizer.normalize(text, Normalizer.Form.NFKC).trim()
+        val m = FRAMED_NUMBER.find(s) ?: return null
+        val v = (m.groupValues[1].ifEmpty { m.groupValues[2] }).toIntOrNull() ?: return null
+        return v.takeIf { valid(it) }
+    }
+
+    /** Where a folio sits: the centre of its page (a spread: of either half), in the top or bottom margin. */
+    private fun folioSpot(l: Line, spread: Boolean): Boolean {
+        val inMargin = l.cy <= MARGIN_FRAC || l.cy >= 1 - MARGIN_FRAC
+        val centred = if (spread) Math.abs(l.cx - 0.25) <= 0.12 || Math.abs(l.cx - 0.75) <= 0.12 else Math.abs(l.cx - 0.5) <= 0.15
+        return inMargin && centred
+    }
+
+    /**
+     * Every number of `nums` is printed as a folio: a line "— N —" (a
+     * number between dash-like marks, one side may be lost) at the top or
+     * bottom centre of its page. A dashed line that lost digits ("ー4-")
+     * counts for the longer number ("47") read next to it, also centred
+     * (run 24, single-land-white p47: "ー4-" and "47", conf 0.55, cy 0.95).
+     * Run 24 read "ー41-" (conf 0.25, cx 0.456 cy 0.936) on p41 and the page
+     * stayed 番号なし: the parser took 41, but a number read once on a page
+     * with no second camera picture was only a guess (CaptureActivity.confirm).
+     * A folio printed that way is not body text, so the screen keeps it.
+     * No ML Kit confidence threshold: ML Kit's line confidence for these
+     * tiny folios is 0.25–0.55 also when right.
+     */
+    fun framedFor(nums: List<Int>, lines: List<Line>, spread: Boolean): Boolean {
+        if (nums.isEmpty()) return false
+        val spots = lines.filter { folioSpot(it, spread) }
+        return nums.all { n ->
+            spots.any spot@{ l ->
+                val v = framedNumber(l.text) ?: return@spot false
+                v == n || (lostDigits(listOf(v), listOf(n)) && spots.any { o ->
+                    parseToken(o.text)?.value == n && Math.abs(o.cx - l.cx) <= 0.08 && Math.abs(o.cy - l.cy) <= 0.04
+                })
+            }
+        }
     }
 
     /** Every number of `short` is one of `long` with digits dropped ("3" for "31", "4" for "41"). */

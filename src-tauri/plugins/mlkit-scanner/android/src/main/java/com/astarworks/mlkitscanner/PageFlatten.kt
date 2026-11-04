@@ -61,7 +61,20 @@ object PageFlatten {
      * from `img` around `q`, or null when the edges are not found well
      * enough (the caller keeps the straight warp).
      */
-    fun flatten(img: Bitmap, q: Quad, ow: Int, oh: Int): Result? {
+    fun flatten(img: Bitmap, q: Quad, ow: Int, oh: Int): Result? = flattenOrWhy(img, q, ow, oh).first
+
+    /**
+     * [flatten], and when it gives null why (for the log the emulator check
+     * reports): "top|bottom edge: <n>/COLUMNS columns with an edge step"
+     * (too few), "… <n> of them on one curve" (they disagree), or "… bows
+     * <x> % of the page height" (more than MAX_BOW).
+     */
+    fun flattenOrWhy(img: Bitmap, q: Quad, ow: Int, oh: Int): Pair<Result?, String> {
+        val why = StringBuilder()
+        return Pair(flattenInto(img, q, ow, oh, why), why.toString())
+    }
+
+    private fun flattenInto(img: Bitmap, q: Quad, ow: Int, oh: Int, why: StringBuilder): Result? {
         // The page with a margin, in page units scaled to ow x oh.
         val mx = (ow * MARGIN).roundToInt()
         val my = (oh * MARGIN).roundToInt()
@@ -80,8 +93,8 @@ object PageFlatten {
             ext.getPixels(px, 0, ew, 0, 0, ew, eh)
             val lum = PageFrame.luminance(px)
             val reach = my + (oh * SEARCH).roundToInt()
-            val top = fitEdge(lum, ew, eh, mx, ow, 0, reach, my.toDouble(), oh) ?: return null
-            val bottom = fitEdge(lum, ew, eh, mx, ow, eh - 1, eh - 1 - reach, (my + oh).toDouble(), oh) ?: return null
+            val top = fitEdge(lum, ew, eh, mx, ow, 0, reach, my.toDouble(), oh, "top", why) ?: return null
+            val bottom = fitEdge(lum, ew, eh, mx, ow, eh - 1, eh - 1 - reach, (my + oh).toDouble(), oh, "bottom", why) ?: return null
             val out = IntArray(ow * oh)
             for (x in 0 until ow) {
                 val u = (x + 0.5) / ow
@@ -126,7 +139,19 @@ object PageFlatten {
      * page) in every sampled column, and the curve through them. `straight`
      * is where the four-corner warp put the edge.
      */
-    private fun fitEdge(lum: IntArray, w: Int, h: Int, x0: Int, pw: Int, from: Int, to: Int, straight: Double, ph: Int): Curve? {
+    private fun fitEdge(
+        lum: IntArray,
+        w: Int,
+        h: Int,
+        x0: Int,
+        pw: Int,
+        from: Int,
+        to: Int,
+        straight: Double,
+        ph: Int,
+        edge: String,
+        why: StringBuilder,
+    ): Curve? {
         val dir = if (to > from) 1 else -1
         val us = ArrayList<Double>()
         val ys = ArrayList<Double>()
@@ -155,15 +180,25 @@ object PageFlatten {
                 ys.add(bestY.toDouble())
             }
         }
-        if (us.size < COLUMNS * MIN_INLIERS) return null
-        var fit = lsq(us, ys, null) ?: return null
+        if (us.size < COLUMNS * MIN_INLIERS) {
+            why.append("$edge edge: ${us.size}/$COLUMNS columns with an edge step")
+            return null
+        }
+        var fit = lsq(us, ys, null) ?: return null.also { why.append("$edge edge: no curve fit") }
         val tol = max(2.0, ph * 0.012)
         val keep = us.indices.filter { abs(ys[it] - fit.at(us[it])) <= tol }
-        if (keep.size < COLUMNS * MIN_INLIERS) return null
-        fit = lsq(us, ys, keep) ?: return null
+        if (keep.size < COLUMNS * MIN_INLIERS) {
+            why.append("$edge edge: ${us.size}/$COLUMNS columns with an edge step, ${keep.size} of them on one curve")
+            return null
+        }
+        fit = lsq(us, ys, keep) ?: return null.also { why.append("$edge edge: no curve fit") }
         // Not more than MAX_BOW away from where the corners put the edge.
         for (i in 0..20) {
-            if (abs(fit.at(i / 20.0) - straight) > ph * MAX_BOW) return null
+            val d = abs(fit.at(i / 20.0) - straight)
+            if (d > ph * MAX_BOW) {
+                why.append("$edge edge: bows %.1f %% of the page height".format(d / ph * 100))
+                return null
+            }
         }
         return Curve(fit.c, fit.a, fit.b, keep.size)
     }

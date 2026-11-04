@@ -43,6 +43,10 @@ object MarginReader {
     private const val MAX_FOLIO_SEGMENTS = 4
     /** Height of the top / bottom centre strips (share of the page height). */
     private const val CENTER_STRIP_FRAC = 0.07
+    /** Height of a spread's bottom strip (share of its height). */
+    private const val SPREAD_STRIP_FRAC = 0.10
+    /** Width of a single page's bottom outer-corner tiles (share of its width). */
+    private const val CORNER_FRAC = 0.22
     /** A page number's height as a share of the page height (~9–10 px on a 1040 px page). */
     private const val FOLIO_TEXT_FRAC = 0.009
     /** A spread's spots (shares of its width, bottom strip): outer left corner, middle of the left page, middle of the right page, outer right corner. */
@@ -189,7 +193,10 @@ object MarginReader {
         val textPx = h * FOLIO_TEXT_FRAC
         if (w > h) {
             val upS = (FOLIO_TEXT_PX / textPx).toFloat().coerceIn(1f, SPREAD_UP_MAX)
-            val y0 = h - strip
+            // A deeper strip than a single page's: the spread's frame
+            // (DocAligner corners + edge fit) can sit a few % low, and the
+            // folio's top is ~6 % above the paper's bottom edge.
+            val y0 = h - (h * SPREAD_STRIP_FRAC).toInt().coerceAtLeast(4)
             for (fr in SPREAD_SPOTS) {
                 tiles.add(Tile(Rect((w * fr[0]).toInt(), y0, (w * fr[1]).toInt(), h), upS, "folio"))
             }
@@ -210,6 +217,16 @@ object MarginReader {
                     tiles.add(Tile(r, upC, "folio", stretch = false))
                 }
             }
+            // The bottom outer corners, as drawn (no level stretch: a thumb
+            // in the corner would set the levels). Run 24, single-port-wood
+            // p7, p9, p11: the folio ("7", "9", "11") touches the thumb on
+            // the bottom margin, so its ink joins the thumb's blob, which is
+            // too big for a character and dropped by printSegments; the
+            // band alone (at ~1.3×) read nothing on either camera picture.
+            val cw = (w * CORNER_FRAC).toInt().coerceAtLeast(4)
+            val ry0 = h - strip
+            tiles.add(Tile(Rect(0, ry0, cw, h), upC, "folio", stretch = false))
+            tiles.add(Tile(Rect(w - cw, ry0, w, h), upC, "folio", stretch = false))
         }
         return tiles
     }

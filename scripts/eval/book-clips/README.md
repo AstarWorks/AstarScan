@@ -81,6 +81,24 @@ python3 -I frame.py clips framed            # all five, ~2 min on 4 cores
 
 The emulator check (CI `android-emulator`) plays `framed/`.
 
+## Phone-resolution stills (`stills.py`)
+
+The emulator camera's 960x1280 leaves a spread's folio ~6 px tall; a
+phone's still is ~12 MP. `stills.py` renders the middle frame of every
+hold again with `render.py` (same seeds) at 3000x4000 (one page) or
+4000x3000 (a spread), page texture at 12 px/mm, as JPEG q92 plus the
+target page's true corners (`<clip>__hNN.quad`) and `stills.json`
+(printed numbers per still):
+
+```sh
+python3 -I stills.py /tmp/stills --jobs 3     # all five, ~3 min on 4 cores
+```
+
+CI renders them before the emulator check; after the live clips the
+check pushes them into the app, which reads each with the capture
+screen's own page cut and number read (`StillsCheck.kt`), and
+`book-measure.py` reports a separate "phone-resolution stills" table.
+
 ## Ground truth JSON (`clips/<clip>.gt.json`)
 
 ```jsonc

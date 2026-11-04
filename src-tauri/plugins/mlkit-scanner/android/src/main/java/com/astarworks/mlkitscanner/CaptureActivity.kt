@@ -563,19 +563,16 @@ class CaptureActivity : ComponentActivity() {
                 }
             }
             val tDetect = SystemClock.elapsedRealtime()
-            // Gutter cut / edge fit on a copy of at most 1600 px.
-            val ks = min(1f, 1600f / max(photo.width, photo.height))
-            val probe = if (ks < 1f) Bitmap.createScaledBitmap(photo, (photo.width * ks).roundToInt(), (photo.height * ks).roundToInt(), true) else photo
-            val (kept0, cut) = PageFrame.keep(probe, q.scaled(ks, ks))
-            if (probe !== photo) probe.recycle()
-            val kept = kept0.scaled(1 / ks, 1 / ks)
-            val page = PageFrame.warp(photo, kept, PAGE_MAX_SIDE)
+            val pc = PageRead.cut(photo, q)
+            val kept = pc.kept
+            val cut = pc.gutter
+            val page = pc.page
             // The same page cut from the analysis frame (another camera
             // picture of the same moment) for the number's second read.
             val second = if (photo !== frame) {
                 val kf = kept.scaled(frame.width.toFloat() / photo.width, frame.height.toFloat() / photo.height)
                 try {
-                    PageFrame.warp(frame, kf, PAGE_MAX_SIDE)
+                    PageFrame.warp(frame, kf, PageRead.PAGE_MAX_SIDE)
                 } catch (e: Exception) {
                     null
                 }
@@ -587,11 +584,11 @@ class CaptureActivity : ComponentActivity() {
             // The kept page is the curvature-corrected one (PageFlatten);
             // the number is still read on the straight cut `page`.
             val tFlat = SystemClock.elapsedRealtime()
-            val flat = try {
-                PageFlatten.flatten(photo, kept, page.width, page.height)
+            val (flat, flatWhy) = try {
+                PageFlatten.flattenOrWhy(photo, kept, page.width, page.height)
             } catch (e: Exception) {
                 Log.w(TAG, "flatten failed for $name", e)
-                null
+                Pair(null, "error ${e.javaClass.simpleName}")
             }
             Log.i(
                 TAG,
@@ -600,7 +597,7 @@ class CaptureActivity : ComponentActivity() {
                         flat.topBow, flat.bottomBow, flat.inliersTop, flat.inliersBottom, SystemClock.elapsedRealtime() - tFlat,
                     )
                 } else {
-                    "flatten $name ${page.width}x${page.height} none (edges not found; straight cut kept) ${SystemClock.elapsedRealtime() - tFlat}ms"
+                    "flatten $name ${page.width}x${page.height} none (straight cut kept: $flatWhy) spread=${kept.isSpread} ${SystemClock.elapsedRealtime() - tFlat}ms"
                 },
             )
             File(scansDir, name).outputStream().use { (flat?.image ?: page).compress(Bitmap.CompressFormat.JPEG, 90, it) }
@@ -652,7 +649,7 @@ class CaptureActivity : ComponentActivity() {
         try {
             if (closed.get()) return
             val t0 = SystemClock.elapsedRealtime()
-            val pick = readNumber(page, name)
+            val pick = readNumber(page, name, spread)
             val tRead = SystemClock.elapsedRealtime()
             val (nums, guess) = confirm(pick, spread, name, second)
             val tConfirm = SystemClock.elapsedRealtime()
@@ -771,10 +768,10 @@ class CaptureActivity : ComponentActivity() {
         return out
     }
 
-    private fun readNumber(page: Bitmap, name: String): PageNumbers.Pick {
+    private fun readNumber(page: Bitmap, name: String, spread: Boolean): PageNumbers.Pick {
         if (evalDir != null && !name.contains('#')) {
             try {
-                val pic = MarginReader.marginPicture(page, BAND_FRAC, PageNumbers.MARGIN_FRAC, BAND_WIDTH)
+                val pic = MarginReader.marginPicture(page, PageRead.BAND_FRAC, PageNumbers.MARGIN_FRAC, PageRead.BAND_WIDTH)
                 synchronized(this) {
                     soloSample?.recycle()
                     soloSample = pic
@@ -783,10 +780,7 @@ class CaptureActivity : ComponentActivity() {
             }
         }
         // One ML Kit call: the bands and the folio pieces in one picture.
-        val lines = MarginReader.marginLines(page, BAND_FRAC, PageNumbers.MARGIN_FRAC, BAND_WIDTH)
-        Log.i(AstarScanMlkit, "margins $name ${page.width}x${page.height} pass=band ${MarginReader.json(lines.filter { it.pass == "band" })}")
-        Log.i(AstarScanMlkit, "margins $name ${page.width}x${page.height} pass=folio ${MarginReader.json(lines.filter { it.pass == "folio" })}")
-        return PageNumbers.pickNative(lines)
+        return PageRead.read(page, name, spread)
     }
 
     /**
@@ -817,7 +811,17 @@ class CaptureActivity : ComponentActivity() {
         // A number read once (first page, a jump) is the page's guess: the
         // session keeps it when a neighbour confirms it.
         fun once(n: List<Int>, r: String, strong: Boolean) = if (strong && (r == "first" || r == "jump")) n else none
-        val again = second?.let { readNumber(it, "$name#2") }
+        val again = second?.let { readNumber(it, "$name#2", spread) }
+        // Printed as a folio ("— 41 —" at the bottom / top centre,
+        // PageNumbers.framedFor): the page number, not body text — kept
+        // read once, unless the other camera picture reads another number.
+        // Run 24: "ー41-" on p41 and "ー4-" + "47" on p47 stayed guesses
+        // (no second picture on the emulator) and both pages 番号なし.
+        val folio = pick.framed && pick.strong && (rel == "first" || rel == "jump")
+        if (folio && (again == null || again.nums.isEmpty() || again.nums.sorted() == nums.sorted() || PageNumbers.lostDigits(again.nums, nums))) {
+            Log.i(TAG, "number $nums for $name: printed as a folio ($rel); kept")
+            return Pair(nums, none)
+        }
         if (again == null) {
             Log.i(TAG, "number $nums for $name: no second frame; ${if (rel == "first" && pick.strong) "kept" else "not kept"}")
             return if ((rel == "first" || rel == "expected") && pick.strong) Pair(nums, none) else Pair(none, once(nums, rel, pick.strong))
@@ -827,6 +831,10 @@ class CaptureActivity : ComponentActivity() {
             val r2 = synchronized(session) { session.relation(again.nums, spread) }
             Log.i(TAG, "number for $name: second read ${again.nums} ($r2)")
             if (again.strong && (r2 == "expected" || r2 == "duplicate")) return Pair(again.nums, none)
+            if (again.framed && again.strong && (r2 == "first" || r2 == "jump")) {
+                Log.i(TAG, "number ${again.nums} for $name: printed as a folio on the second read ($r2); kept")
+                return Pair(again.nums, none)
+            }
             if (again.strong && r2 == "jump" && synchronized(session) { session.singleReadJumpOk(again.nums, spread, name) }) {
                 Log.i(TAG, "number ${again.nums} for $name: one page skipped, read once; kept")
                 return Pair(again.nums, none)
@@ -1002,7 +1010,6 @@ class CaptureActivity : ComponentActivity() {
 
     companion object {
         const val TAG = "AstarScanCapture"
-        private const val AstarScanMlkit = "AstarScanMlkit"
         const val EXTRA_KNOWN = "known"
         const val EXTRA_STEP = "sideStep"
         const val EXTRA_RESULT = "result"
@@ -1017,16 +1024,6 @@ class CaptureActivity : ComponentActivity() {
         private const val READ_PAUSE_MS = 15_000L
         /** After a page is taken, the "another page?" match runs at most this often. */
         private const val MATCH_EVERY_MS = 400L
-        /** The margin bands go to ML Kit at this width (run 21: 1600 px, 20–180 s a call). */
-        private const val BAND_WIDTH = 1000
-        /**
-         * Height of the top / bottom band read whole (share of the page):
-         * the numbers of the five book clips sit within 7 % of the edge;
-         * a smaller band is less body text for ML Kit to read (run 22: one
-         * call ~9 s while pages were taken). Folio pieces are still looked
-         * for in PageNumbers.MARGIN_FRAC.
-         */
-        private const val BAND_FRAC = 0.10
         /** Done waits this long for numbers still being read. */
         private const val FINISH_READ_WAIT_MS = 15_000L
         /** Frames whose corners are combined (median) for the stillness check. */
@@ -1048,6 +1045,5 @@ class CaptureActivity : ComponentActivity() {
         /** A page's banner stays at least this long before yellow may replace it. */
         private const val BANNER_MS = 2500L
         private const val STILL_TIMEOUT_MS = 4000L
-        private const val PAGE_MAX_SIDE = 2400
     }
 }

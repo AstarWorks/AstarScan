@@ -375,6 +375,20 @@ jobs:
           v4l2-ctl -d /dev/video0 --all | head -30
           test -s /tmp/feed.status
 
+      # The middle frame of every hold rendered again by the clip generator at
+      # a phone's still size (3000x4000 page / 4000x3000 spread): the check
+      # reads them after the live clips with the capture screen's own page
+      # cut and number read (StillsCheck.kt), since the emulator camera's
+      # 960x1280 leaves a spread's folio ~6 px tall.
+      - name: Phone-resolution stills of the book clips
+        continue-on-error: true
+        run: |
+          set -euo pipefail
+          sudo apt-get install -y -qq fonts-liberation fonts-ipafont-gothic python3-pil >/dev/null
+          python3 -I scripts/eval/book-clips/stills.py /tmp/stills --jobs 3 | grep -v ' / ' | tail -n 50
+          ls -la /tmp/stills | head -n 5
+          du -sh /tmp/stills
+
       - name: Run the app on a Google Play emulator
         uses: reactivecircus/android-emulator-runner@v2
         env:
