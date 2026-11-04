@@ -38,6 +38,8 @@ import java.util.concurrent.TimeoutException
  */
 object MarginReader {
     private const val FOLIO_TEXT_PX = 48
+    /** Grey the darkest ink of a folio piece is mapped to (see [levels]). */
+    private const val INK_LEVEL = 96f
     private const val MAX_FOLIO_SEGMENTS = 4
     /** Height of the top / bottom centre strips (share of the page height). */
     private const val CENTER_STRIP_FRAC = 0.07
@@ -277,8 +279,12 @@ object MarginReader {
     /**
      * A paint that stretches the levels of `src` in `page`: its paper (90th
      * percentile of brightness) to white, its darkest ink (1st percentile)
-     * to black. Small digits in the CI emulator's camera picture are faint
-     * grey on grey (run 13 did the same for the folio pieces).
+     * to INK_LEVEL grey, linearly, nothing clipped. Small digits in the CI
+     * emulator's camera picture are faint grey on grey (run 13). Run 23 took
+     * the darkest ink to black: the blurred halo of 9 px digits went black
+     * too, "35", "43", "45" became blobs and ML Kit read nothing on 7 of 10
+     * pages of single-land-white; with the ink at mid grey the strokes stay
+     * apart.
      */
     private fun levels(page: Bitmap, src: Rect): Paint {
         val w = src.width()
@@ -299,8 +305,8 @@ object MarginReader {
         val ink = pct(0.01)
         val white = pct(0.90)
         if (white - ink < 24) return paint
-        val k = 255f / (white - ink)
-        val off = -ink * k
+        val k = (255f - INK_LEVEL) / (white - ink)
+        val off = 255f - white * k
         val m = ColorMatrix(
             floatArrayOf(
                 k, 0f, 0f, 0f, off,

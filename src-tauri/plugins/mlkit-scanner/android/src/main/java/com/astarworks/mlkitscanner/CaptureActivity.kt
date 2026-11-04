@@ -633,20 +633,27 @@ class CaptureActivity : ComponentActivity() {
             val t0 = SystemClock.elapsedRealtime()
             val pick = readNumber(page, name)
             val tRead = SystemClock.elapsedRealtime()
-            val nums = confirm(pick, spread, name, second)
+            val (nums, guess) = confirm(pick, spread, name, second)
             val tConfirm = SystemClock.elapsedRealtime()
             Log.i(
                 TAG,
                 "timing $name queued=${t0 - shotAt}ms read=${tRead - t0}ms confirm=${tConfirm - tRead}ms " +
                     "total=${tConfirm - t0}ms",
             )
+            val before = synchronized(session) { session.pages.associate { it.name to it.nums } }
             val outcome = synchronized(session) {
-                if (closed.get()) null else session.resolve(name, nums)
+                if (closed.get()) null else session.resolve(name, nums, guess)
             } ?: return
+            // Earlier pages whose number read once this page confirmed.
+            val promoted = synchronized(session) {
+                session.pages.filter { it.name != name && it.nums.isNotEmpty() && before[it.name]?.isEmpty() == true }.map { it.name to it.nums }
+            }
+            for ((pn, pnums) in promoted) Log.i(TAG, "page $pn kind=promoted nums=$pnums (confirmed by $name)")
             if (outcome is CaptureSession.Outcome.Duplicate) File(scansDir, name).delete()
             persist()
             val (missing, step, n) = synchronized(session) { Triple(session.missing.toList(), session.step, session.pages.size) }
-            Log.i(TAG, "page $name kind=${kindOf(outcome)} nums=$nums missing=$missing step=$step pages=$n")
+            val kept = synchronized(session) { session.pages.firstOrNull { it.name == name }?.nums ?: emptyList() }
+            Log.i(TAG, "page $name kind=${kindOf(outcome)} nums=$kept guess=$guess missing=$missing step=$step pages=$n")
             runOnUiThread { shown(name, outcome) }
         } catch (e: Exception) {
             Log.e(TAG, "reading the number of $name failed", e)
@@ -772,48 +779,71 @@ class CaptureActivity : ComponentActivity() {
      *   MAX_JUMP ahead → "番号なし";
      * - exception: ONE page skipped, read strongly once (the other read
      *   found nothing) → kept when CaptureSession.singleReadJumpOk.
+     * Returns (kept, guess): a number read strongly once that is not kept
+     * (first page, a jump, the other read lost its digits or found nothing)
+     * is the guess, which CaptureSession keeps once a neighbour confirms it.
      */
-    private fun confirm(pick: PageNumbers.Pick, spread: Boolean, name: String, second: Bitmap?): List<Int> {
+    private fun confirm(pick: PageNumbers.Pick, spread: Boolean, name: String, second: Bitmap?): Pair<List<Int>, List<Int>> {
+        val none = emptyList<Int>()
         val nums = pick.nums
         val rel = synchronized(session) { session.relation(nums, spread) }
-        if (rel == "duplicate") return nums
-        if (rel == "expected" && pick.strong) return nums
+        if (rel == "duplicate") return Pair(nums, none)
+        if (rel == "expected" && pick.strong) return Pair(nums, none)
         if (rel == "lower" || rel == "far") {
             Log.i(TAG, "number $nums for $name is $rel; not kept")
-            return emptyList()
+            return Pair(none, none)
         }
+        // A number read once (first page, a jump) is the page's guess: the
+        // session keeps it when a neighbour confirms it.
+        fun once(n: List<Int>, r: String, strong: Boolean) = if (strong && (r == "first" || r == "jump")) n else none
         val again = second?.let { readNumber(it, "$name#2") }
         if (again == null) {
             Log.i(TAG, "number $nums for $name: no second frame; ${if (rel == "first" && pick.strong) "kept" else "not kept"}")
-            return if ((rel == "first" || rel == "expected") && pick.strong) nums else emptyList()
+            return if ((rel == "first" || rel == "expected") && pick.strong) Pair(nums, none) else Pair(none, once(nums, rel, pick.strong))
         }
         if (nums.isEmpty()) {
             // First read found nothing: the second read may (kept only when it is the next page).
             val r2 = synchronized(session) { session.relation(again.nums, spread) }
             Log.i(TAG, "number for $name: second read ${again.nums} ($r2)")
-            if (again.strong && (r2 == "expected" || r2 == "duplicate")) return again.nums
+            if (again.strong && (r2 == "expected" || r2 == "duplicate")) return Pair(again.nums, none)
             if (again.strong && r2 == "jump" && synchronized(session) { session.singleReadJumpOk(again.nums, spread, name) }) {
                 Log.i(TAG, "number ${again.nums} for $name: one page skipped, read once; kept")
-                return again.nums
+                return Pair(again.nums, none)
             }
-            return emptyList()
+            return Pair(none, once(again.nums, r2, again.strong))
         }
         if (again.nums.isEmpty() && rel == "jump" && pick.strong &&
             synchronized(session) { session.singleReadJumpOk(nums, spread, name) }
         ) {
             Log.i(TAG, "number $nums for $name: one page skipped, read once; kept")
-            return nums
+            return Pair(nums, none)
         }
         if (again.nums.sorted() == nums.sorted()) {
             Log.i(TAG, "number $nums for $name confirmed by a second read ($rel)")
-            return nums
+            return Pair(nums, none)
+        }
+        // One read lost digits of the other ("3" for "31"): the longer one, read once.
+        if (again.nums.isNotEmpty() && PageNumbers.lostDigits(again.nums, nums) && pick.strong) {
+            Log.i(TAG, "number $nums for $name: second read ${again.nums} lost digits; guess")
+            return Pair(none, once(nums, rel, true))
+        }
+        if (again.nums.isNotEmpty() && PageNumbers.lostDigits(nums, again.nums) && again.strong) {
+            val r2 = synchronized(session) { session.relation(again.nums, spread) }
+            Log.i(TAG, "number $nums for $name: lost digits of the second read ${again.nums} ($r2); guess")
+            if (r2 == "expected") return Pair(again.nums, none)
+            return Pair(none, once(again.nums, r2, true))
         }
         // Reads disagree: a spread may lose one number on one read.
         if (spread && again.nums.isNotEmpty() && again.nums.all { it in nums }) {
-            return again.nums.takeIf { synchronized(session) { session.relation(it, spread) } == "expected" } ?: emptyList()
+            val kept = again.nums.takeIf { synchronized(session) { session.relation(it, spread) } == "expected" }
+            return if (kept != null) Pair(kept, none) else Pair(none, none)
+        }
+        if (again.nums.isEmpty()) {
+            Log.i(TAG, "number $nums for $name not confirmed (second read []); guess")
+            return Pair(none, once(nums, rel, pick.strong))
         }
         Log.i(TAG, "number $nums for $name not confirmed (second read ${again.nums}); not kept")
-        return emptyList()
+        return Pair(none, none)
     }
 
     private fun kindOf(o: CaptureSession.Outcome): String = when (o) {

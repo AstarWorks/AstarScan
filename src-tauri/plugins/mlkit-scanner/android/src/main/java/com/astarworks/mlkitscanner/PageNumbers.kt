@@ -106,10 +106,32 @@ object PageNumbers {
         return Pick(listOf(best.value), strong)
     }
 
-    /** The band pass first; the folio pass only when the band pass gives no number. */
+    /**
+     * The band pass first; the folio pass when the band pass gives no
+     * number, or a weaker one, or a number that is the folio's with digits
+     * lost. Run 23, single-land-white p31: the folio piece (cut tight,
+     * enlarged) read "ー31-", the whole band "ー3-"; the band's 3 won, the two
+     * reads of the page disagreed (31 / 3) and the page went unnumbered.
+     */
     fun pickNative(lines: List<Line>): Pick {
         val band = pick(lines.filter { it.pass == "band" })
-        if (band.nums.isNotEmpty()) return band
-        return pick(lines.filter { it.pass == "folio" })
+        val folio = pick(lines.filter { it.pass == "folio" })
+        if (band.nums.isEmpty()) return folio
+        if (folio.nums.isEmpty() || folio.nums == band.nums) return band
+        if (folio.strong && !band.strong) return folio
+        if (folio.strong && lostDigits(band.nums, folio.nums)) return folio
+        return band
+    }
+
+    /** Every number of `short` is one of `long` with digits dropped ("3" for "31", "4" for "41"). */
+    fun lostDigits(short: List<Int>, long: List<Int>): Boolean =
+        short.size <= long.size && short.all { s ->
+            long.any { l -> l.toString().length > s.toString().length && subsequence(s.toString(), l.toString()) }
+        }
+
+    private fun subsequence(a: String, b: String): Boolean {
+        var i = 0
+        for (c in b) if (i < a.length && a[i] == c) i++
+        return i == a.length
     }
 }
