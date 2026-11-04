@@ -468,7 +468,9 @@ def timeline(cfg, r):
 # ---------------------------------------------------------------- render
 
 
-def render(name, out_dir, max_frames=None, dump_png=False, only=None):
+def render(name, out_dir, max_frames=None, dump_png=False, only=None, sink=None):
+    """sink(frame_index, bgr_frame, gt_frame): frames go there instead of
+    the mp4 (stills.py; no mp4 and no gt.json are written then)."""
     cfg = CLIPS[name]
     W, H = cfg['W'], cfg['H']
     r = np.random.default_rng(cfg['seed'])
@@ -504,7 +506,7 @@ def render(name, out_dir, max_frames=None, dump_png=False, only=None):
 
     os.makedirs(out_dir, exist_ok=True)
     mp4 = os.path.join(out_dir, name + '.mp4')
-    enc = subprocess.Popen(['ffmpeg', '-v', 'error', '-y', '-f', 'rawvideo', '-pix_fmt', 'bgr24', '-s', f'{W}x{H}',
+    enc = None if sink else subprocess.Popen(['ffmpeg', '-v', 'error', '-y', '-f', 'rawvideo', '-pix_fmt', 'bgr24', '-s', f'{W}x{H}',
                             '-r', str(FPS), '-i', '-', '-c:v', 'libx264', '-preset', 'slow', '-crf', '27',
                             '-maxrate', '5M', '-bufsize', '10M', '-g', '60', '-pix_fmt', 'yuv420p',
                             '-movflags', '+faststart', mp4], stdin=subprocess.PIPE)
@@ -642,7 +644,8 @@ def render(name, out_dir, max_frames=None, dump_png=False, only=None):
         fr = cv2.GaussianBlur(fr, (0, 0), 0.9)
         fr += r.normal(0, 2.2, (H, W, 1)).astype(np.float32)
         out = np.clip(fr, 0, 255).astype(np.uint8)
-        enc.stdin.write(out.tobytes())
+        if enc:
+            enc.stdin.write(out.tobytes())
         if dump_png:
             cv2.imwrite(os.path.join(out_dir, name + '-frames', f'{fi:04d}.png'), out)
         # ---- ground truth
@@ -667,8 +670,12 @@ def render(name, out_dir, max_frames=None, dump_png=False, only=None):
         gt_frames.append({'i': fi, 't': round(t, 4), 'phase': 'hold' if kind == 'hold' else 'turn',
                           'spread': k, 'pages': pages_gt,
                           'turn_progress': round((t - ts) / (te - ts), 3) if kind == 'turn' else None})
+        if sink:
+            sink(fi, out, gt_frames[-1])
         if fi % 60 == 0:
             print(name, fi, '/', n_frames, flush=True)
+    if sink:
+        return
     enc.stdin.close(); enc.wait()
     meta = {
         'clip': name, 'W': W, 'H': H, 'fps': FPS, 'n_frames': n_frames, 'duration_s': round(n_frames / FPS, 3),
