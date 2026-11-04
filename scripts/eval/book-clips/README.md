@@ -51,6 +51,36 @@ Common to every clip:
 - slight blur, sensor noise, small exposure drift, faint show-through of
   the other side of each leaf.
 
+## Framed clips (`framed/`): the paper fills the phone's view
+
+`clips/` shows the whole open book on the desk. A user scanning a book
+holds the phone so the page (or the open spread) fills about 85–90 % of
+the view, all four corners in view with a little desk around them, and
+re-frames after each turn. `frame.py` makes that from `clips/`, at exactly
+the 720x960 portrait window the Android emulator's camera hands the app
+(a 1280x960 webcam frame is the most the emulator takes; run 10's 1440p
+gave a black preview):
+
+```sh
+python3 -I frame.py clips framed            # all five, ~2 min on 4 cores
+```
+
+- per hold, the target pages' outline (corners + curved edges, over every
+  frame of the hold, so the shake stays inside) takes 90 % of the crop's
+  limiting side; between holds the crop moves smoothly;
+- single pages are height-limited: the page fills ~86–89 % of the height;
+- spreads (~1.4 : 1) on an upright phone are width-limited: ~83–88 % of
+  the width and ~45–48 % of the height. A spread's page is then ~410 px
+  tall and its printed number (body size, ~1.2 % of the page height) ~5 px
+  tall — what a real upright phone frames too, but a real phone's still is
+  ~4000x3000, about 4x these pixels;
+- the font is not changed (framing scales the whole picture);
+- the ground truth (`framed/*.gt.json`) is in the framed clip's pixels,
+  with `framing` (per-frame crop, fill per hold). camera-feed.py shows a
+  framed clip 1:1 in the window.
+
+The emulator check (CI `android-emulator`) plays `framed/`.
+
 ## Ground truth JSON (`clips/<clip>.gt.json`)
 
 ```jsonc

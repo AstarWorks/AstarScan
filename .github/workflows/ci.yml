@@ -368,7 +368,7 @@ jobs:
           sudo chmod 666 /dev/video0
           ls -l /dev/video*
           lsmod | grep v4l2loopback
-          nohup python3 -I scripts/android/camera-feed.py scripts/eval/book-clips/clips \
+          nohup python3 -I scripts/android/camera-feed.py scripts/eval/book-clips/framed \
             /tmp/feed.control /tmp/feed.status --size "$FEED_SIZE" --log "$FEED_LOG" >/tmp/camera-feed.log 2>&1 &
           for _ in $(seq 60); do [ -s /tmp/feed.status ] && break; sleep 2; done
           cat /tmp/camera-feed.log
@@ -399,7 +399,7 @@ jobs:
           [ -d emulator-out ] || exit 0
           cp /tmp/camera-feed.log emulator-out/ 2>/dev/null || true
           [ -s emulator-out/feed.log ] || cp "$FEED_LOG" emulator-out/feed.log 2>/dev/null || true
-          python3 -I scripts/android/book-measure.py emulator-out scripts/eval/book-clips/clips --size "$FEED_SIZE" | tee -a "$GITHUB_STEP_SUMMARY"
+          python3 -I scripts/android/book-measure.py emulator-out scripts/eval/book-clips/framed --size "$FEED_SIZE" | tee -a "$GITHUB_STEP_SUMMARY"
 
       # The detector comparison behind the capture screen's choice, on the
       # same clips as the camera sees them (corner-compare.py).
@@ -418,7 +418,7 @@ jobs:
             echo
             echo "### Page-frame detectors on the book clips (clip px; camera window as the phone sees it)"
             echo
-            python3 -I scripts/eval/book-clips/corner-compare.py scripts/eval/book-clips/clips \
+            python3 -I scripts/eval/book-clips/corner-compare.py scripts/eval/book-clips/framed \
               --size "$FEED_SIZE" --docaligner /tmp/docaligner/docaligner-lcnet100.onnx --json emulator-out/corner-compare.json
           } | tee emulator-out/corner-compare.md | tee -a "$GITHUB_STEP_SUMMARY"
 

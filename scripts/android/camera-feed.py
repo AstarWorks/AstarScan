@@ -85,7 +85,14 @@ def clip_box(gt):
     spread in a "spread" clip) instead of filming the whole desk; run 3
     showed the page numbers were unreadable when the whole 16:9 clip was
     squeezed into the 720 px wide window.
+
+    Clips framed ahead of time (scripts/eval/book-clips/frame.py: per hold,
+    the paper at ~88–90 % of the window's limiting side, ground truth in
+    the framed clip's pixels; gt "framing") are shown whole: the box is the
+    clip itself, so a 720x960 clip lands 1:1 in the 720x960 window.
     """
+    if gt.get("framing"):
+        return 0.0, 0.0, float(gt["W"]), float(gt["H"])
     xs, ys = [], []
     for s in gt["segments"]:
         if s["phase"] != "hold":
