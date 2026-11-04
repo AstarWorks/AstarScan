@@ -436,7 +436,19 @@ save_file() {
   fi
   path=$(sed -E 's/.*: [a-z]+ saved ([^ ]+) .*/\1/' <<<"$line")
   log "$label: $(cut -c19- <<<"$line") after $((SECONDS - t0))s"
-  adb pull "/sdcard/$path" "$OUT/saved/" 2>&1 | tail -n1 | tee -a "$OUT/steps.log"
+  # Run 25: one pull stalled at 7 % (adb hiccup) and the PDF row came out
+  # empty although the app had saved it; pull again until the file is whole.
+  local want got i
+  want=$(adb shell stat -c %s "/sdcard/$path" 2>/dev/null | tr -d '\r')
+  for i in 1 2 3 4; do
+    rm -f "$OUT/saved/$(basename "$path")"
+    timeout 60 adb pull "/sdcard/$path" "$OUT/saved/" 2>&1 | tail -n1 | tee -a "$OUT/steps.log"
+    got=$(stat -c %s "$OUT/saved/$(basename "$path")" 2>/dev/null || echo 0)
+    [ -n "$want" ] && [ "$got" = "$want" ] && break
+    [ -z "$want" ] && [ "$got" != 0 ] && break
+    log "$label: pulled $got of ${want:-?} bytes (try $i)"
+    sleep 3
+  done
   printf '%s\tsaved\t%s\t%s\n' "$label" "$(basename "$path")" "$(sed -E 's/.*: [a-z]+ saved //' <<<"$line")" >>"$OUT/saved/save.tsv"
   return 0
 }
@@ -482,6 +494,8 @@ if [ -s "$STILLS/stills.json" ]; then
     if [ $((SECONDS - last)) -gt 240 ]; then log "stills: no progress for 240 s"; break; fi
     sleep 5
   done
+  sleep 3
+  seen=$(events_since "$mark" | grep -cE 'AstarScanMlkit.*: still ')
   events_since "$mark" | grep -E 'AstarScanMlkit.*: (stills|still )' | cut -c19- | cut -c1-300 | sed 's/^/    /' | tee -a "$OUT/steps.log"
   log "stills: $seen still lines after $((SECONDS - t0))s"
   shot stills-done nodump

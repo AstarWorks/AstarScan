@@ -41,6 +41,7 @@ object MarginReader {
     /** Grey the darkest ink of a folio piece is mapped to (see [levels]). */
     private const val INK_LEVEL = 96f
     private const val MAX_FOLIO_SEGMENTS = 4
+    private const val MAX_FOLIO_SEGMENTS_TOP = 2
     /** Height of the top / bottom centre strips (share of the page height). */
     private const val CENTER_STRIP_FRAC = 0.07
     /** Height of a spread's bottom strip (share of its height). */
@@ -61,7 +62,7 @@ object MarginReader {
      * stays ML Kit's until its task ends either way, and the real time of
      * every call is logged ("ocr …") when it ends.
      */
-    private const val RECOGNIZE_TIMEOUT_MS = 20_000L
+    private const val RECOGNIZE_TIMEOUT_MS = 35_000L
     /**
      * A call that timed out still runs inside ML Kit; the next call waits
      * up to this long for it first. Run 21 started a new call after every
@@ -169,7 +170,10 @@ object MarginReader {
         val tiles = ArrayList<Tile>()
         for (top in listOf(true, false)) {
             val y0 = if (top) 0 else h - band
-            for (seg in printSegments(page, y0, band).take(MAX_FOLIO_SEGMENTS)) {
+            // Fewer at the top (running head) than at the bottom: every tile
+            // makes the one picture taller, and run 25's ~2900 px pictures
+            // took 15–23 s on the CI emulator (20 s timeouts, pages unread).
+            for (seg in printSegments(page, y0, band).take(if (top) MAX_FOLIO_SEGMENTS_TOP else MAX_FOLIO_SEGMENTS)) {
                 val sh = seg[3] - seg[1]
                 val sw = seg[2] - seg[0]
                 val padX = sh * 3
@@ -208,14 +212,12 @@ object MarginReader {
                 val ry0 = if (top) 0 else h - strip
                 val r = Rect((w * 0.33).toInt(), ry0, (w * 0.67).toInt(), ry0 + strip)
                 tiles.add(Tile(r, upC, "folio"))
-                // The bottom strip twice more, drawn differently (3×; 4×
-                // without the level stretch): run 24 read a "— N —" folio on
-                // 4 of 10 pages, a different one from picture to picture of
-                // the same page, so each rendering is another chance.
-                if (!top) {
-                    tiles.add(Tile(r, (upC * 0.75f).coerceAtLeast(1f), "folio"))
-                    tiles.add(Tile(r, upC, "folio", stretch = false))
-                }
+                // The bottom strip once more, without the level stretch:
+                // run 24 read a "— N —" folio on 4 of 10 pages, a different
+                // one from picture to picture of the same page, so another
+                // rendering is another chance. (A third, at 3×, made the
+                // picture too slow in run 25.)
+                if (!top) tiles.add(Tile(r, upC, "folio", stretch = false))
             }
             // The bottom outer corners, as drawn (no level stretch: a thumb
             // in the corner would set the levels). Run 24, single-port-wood
@@ -223,10 +225,13 @@ object MarginReader {
             // the bottom margin, so its ink joins the thumb's blob, which is
             // too big for a character and dropped by printSegments; the
             // band alone (at ~1.3×) read nothing on either camera picture.
+            // At 2×-ish: these folios are body size (~12 px on the CI
+            // emulator), larger than "— N —" read in the centre strip.
             val cw = (w * CORNER_FRAC).toInt().coerceAtLeast(4)
             val ry0 = h - strip
-            tiles.add(Tile(Rect(0, ry0, cw, h), upC, "folio", stretch = false))
-            tiles.add(Tile(Rect(w - cw, ry0, w, h), upC, "folio", stretch = false))
+            val upK = (upC * 0.55f).coerceAtLeast(1f)
+            tiles.add(Tile(Rect(0, ry0, cw, h), upK, "folio", stretch = false))
+            tiles.add(Tile(Rect(w - cw, ry0, w, h), upK, "folio", stretch = false))
         }
         return tiles
     }

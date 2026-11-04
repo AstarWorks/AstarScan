@@ -86,7 +86,7 @@ object PageNumbers {
 
     private class Cand(val value: Int, val score: Double, val cx: Double, val top: Boolean)
 
-    fun pick(lines: List<Line>, marginFrac: Double = MARGIN_FRAC): Pick {
+    fun pick(lines: List<Line>, marginFrac: Double = MARGIN_FRAC, spread: Boolean = false): Pick {
         val cands = ArrayList<Cand>()
         for (l in lines) {
             val top = l.cy <= marginFrac
@@ -114,6 +114,15 @@ object PageNumbers {
         if (strong && other != null) {
             return Pick(listOf(minOf(best.value, other.value), maxOf(best.value, other.value)), true)
         }
+        // A spread whose other folio was not read: its two pages are
+        // consecutive, so the side the read one sits on gives the other
+        // (left half N → N, N+1; right half N → N−1, N). Phone-resolution
+        // stills, spread-port-white 2・3: "— 3 —" read, "— 2 —" next to the
+        // left thumb not. Only a clearly one-sided, whole-line number.
+        if (spread && strong && Math.abs(best.cx - 0.5) >= 0.1) {
+            val pair = if (best.cx < 0.5) listOf(best.value, best.value + 1) else listOf(best.value - 1, best.value)
+            if (pair.all { valid(it) }) return Pick(pair, true)
+        }
         return Pick(listOf(best.value), strong)
     }
 
@@ -125,13 +134,13 @@ object PageNumbers {
      * reads of the page disagreed (31 / 3) and the page went unnumbered.
      */
     fun pickNative(lines: List<Line>, spread: Boolean = false): Pick {
-        val p = pickBandFolio(lines)
+        val p = pickBandFolio(lines, spread)
         return if (p.strong && framedFor(p.nums, lines, spread)) p.copy(framed = true) else p
     }
 
-    private fun pickBandFolio(lines: List<Line>): Pick {
-        val band = pick(lines.filter { it.pass == "band" })
-        val folio = pick(lines.filter { it.pass == "folio" })
+    private fun pickBandFolio(lines: List<Line>, spread: Boolean): Pick {
+        val band = pick(lines.filter { it.pass == "band" }, spread = spread)
+        val folio = pick(lines.filter { it.pass == "folio" }, spread = spread)
         if (band.nums.isEmpty()) return folio
         if (folio.nums.isEmpty() || folio.nums == band.nums) return band
         if (folio.strong && !band.strong) return folio

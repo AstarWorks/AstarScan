@@ -867,6 +867,14 @@ class CaptureActivity : ComponentActivity() {
             val kept = again.nums.takeIf { synchronized(session) { session.relation(it, spread) } == "expected" }
             return if (kept != null) Pair(kept, none) else Pair(none, none)
         }
+        if (again.nums.isEmpty() && rel == "first" && pick.strong) {
+            // Nothing read on the other picture is no other number: the
+            // first page is kept as when there is no second picture (run 25,
+            // single-port-wood p3 stayed a guess, so 5–11 had nothing to
+            // follow and stayed 番号なし).
+            Log.i(TAG, "number $nums for $name: second read [] (first); kept")
+            return Pair(nums, none)
+        }
         if (again.nums.isEmpty()) {
             Log.i(TAG, "number $nums for $name not confirmed (second read []); guess")
             return Pair(none, once(nums, rel, pick.strong))
@@ -1025,7 +1033,7 @@ class CaptureActivity : ComponentActivity() {
         /** After a page is taken, the "another page?" match runs at most this often. */
         private const val MATCH_EVERY_MS = 400L
         /** Done waits this long for numbers still being read. */
-        private const val FINISH_READ_WAIT_MS = 15_000L
+        private const val FINISH_READ_WAIT_MS = 45_000L
         /** Frames whose corners are combined (median) for the stillness check. */
         private const val SMOOTH_N = 3
         /** This many frames in a row without the paper end the stillness. */

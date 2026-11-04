@@ -479,7 +479,7 @@ def save_report(out, caps=()):
     for x in res["flatten_none"]:
         md.append(f"| not flattened: {x['clip'] or '?'} hold {x['hold'] if x['hold'] is not None else '?'} ({x['page']}, "
                   f"{'spread' if x['spread'] == 'true' else 'page' if x['spread'] == 'false' else ''} {x['size']}) | "
-                  f"straight cut kept: {x['why']} |")
+                  f"{x['why']} |")
     opened = [r[1] for r in rows if r and r[0] == "page-open" and len(r) > 1]
     md.append(f"| one page opened from the list (screenshot) | {opened[0] + '.png' if opened else 'not opened'} |")
     for kind in ("pdf", "markdown"):
