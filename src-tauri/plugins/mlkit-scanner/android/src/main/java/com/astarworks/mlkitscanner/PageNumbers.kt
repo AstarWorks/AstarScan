@@ -94,7 +94,14 @@ object PageNumbers {
         }
         if (cands.isEmpty()) return Pick(emptyList(), false)
         cands.sortByDescending { it.score }
-        val best = cands[0]
+        // A number that is another candidate with digits lost ("4" next to
+        // "47", run 24: the same folio read twice in one picture) gives way
+        // to the longer one when that is as strong a kind.
+        val best = cands[0].let { b ->
+            cands.firstOrNull { o ->
+                o.top == b.top && o.score >= Kind.KANJI.score && b.score - o.score < 1.0 && lostDigits(listOf(b.value), listOf(o.value))
+            } ?: b
+        }
         val strong = best.score >= Kind.KANJI.score
         val other = cands.firstOrNull {
             it.score >= Kind.KANJI.score && it.top == best.top &&

@@ -97,6 +97,12 @@ class CaptureSession(known: Collection<Int> = emptyList(), step: Int = 0) {
         // next page as far as the step goes (no second read needed).
         if (!spread && step == 2 && (lo - l) % 2 == 0 && (lo - l) / 2 - 1 <= unreadSince) return "expected"
         if (!spread && step == 1 && lo - l - 1 <= unreadSince) return "expected"
+        // Step not learnt yet: either way, as long as pages taken without a
+        // number cover the pages in between (run 24: 31, (33 unread), 35
+        // was a "jump" and 35, read once, was dropped).
+        if (!spread && step == 0 && unreadSince > 0 &&
+            ((lo - l) % 2 == 0 && (lo - l) / 2 - 1 <= unreadSince || lo - l - 1 <= unreadSince)
+        ) return "expected"
         if (lo - l > MAX_JUMP) return "far"
         return "jump"
     }
@@ -115,7 +121,10 @@ class CaptureSession(known: Collection<Int> = emptyList(), step: Int = 0) {
         val lo = nums[0]
         val s = if (step == 2 || (step == 0 && (lo - l) % 2 == 0)) 2 else 1
         if (lo - l != 2 * s) return false
-        val ref = pages.indexOfFirst { (l - s) in it.nums }
+        // The page before the missing one, or (that one taken without a
+        // number, run 24: 31, (33), 35, 39 read once) the page of `l`.
+        val ref = pages.indexOfFirst { (l - s) in it.nums }.takeIf { it >= 0 }
+            ?: pages.indexOfFirst { l in it.nums }
         if (ref < 0) return false
         return pages.drop(ref + 1).none { it.name != name && it.numberState != "ok" }
     }

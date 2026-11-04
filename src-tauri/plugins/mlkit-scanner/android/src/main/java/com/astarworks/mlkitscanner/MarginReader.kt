@@ -199,7 +199,16 @@ object MarginReader {
             val upC = (FOLIO_TEXT_PX / textPx).toFloat().coerceIn(1f, 4f)
             for (top in listOf(true, false)) {
                 val ry0 = if (top) 0 else h - strip
-                tiles.add(Tile(Rect((w * 0.33).toInt(), ry0, (w * 0.67).toInt(), ry0 + strip), upC, "folio"))
+                val r = Rect((w * 0.33).toInt(), ry0, (w * 0.67).toInt(), ry0 + strip)
+                tiles.add(Tile(r, upC, "folio"))
+                // The bottom strip twice more, drawn differently (3×; 4×
+                // without the level stretch): run 24 read a "— N —" folio on
+                // 4 of 10 pages, a different one from picture to picture of
+                // the same page, so each rendering is another chance.
+                if (!top) {
+                    tiles.add(Tile(r, (upC * 0.75f).coerceAtLeast(1f), "folio"))
+                    tiles.add(Tile(r, upC, "folio", stretch = false))
+                }
             }
         }
         return tiles
@@ -237,7 +246,7 @@ object MarginReader {
     }
 
     /** A region of the page and how much it is enlarged in the picture read. */
-    private class Tile(val src: Rect, val up: Float, val pass: String = "band") {
+    private class Tile(val src: Rect, val up: Float, val pass: String = "band", val stretch: Boolean = pass == "folio") {
         val outW: Int get() = (src.width() * up).toInt().coerceAtLeast(1)
         val outH: Int get() = (src.height() * up).toInt().coerceAtLeast(1)
         var top = 0
@@ -286,7 +295,7 @@ object MarginReader {
         val canvas = Canvas(pic)
         canvas.drawColor(Color.WHITE)
         for (t in tiles) {
-            canvas.drawBitmap(page, t.src, Rect(0, t.top, t.outW, t.top + t.outH), if (t.pass == "folio") levels(page, t.src) else paint)
+            canvas.drawBitmap(page, t.src, Rect(0, t.top, t.outW, t.top + t.outH), if (t.stretch) levels(page, t.src) else paint)
         }
         return pic
     }

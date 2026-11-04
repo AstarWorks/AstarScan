@@ -91,7 +91,13 @@ tap_now() { local p; p=$(xy "$@") || return 1; log "tap '$1' at $p"; adb shell i
 # out blank).
 feed() {
   echo "$1 $2" >"$FEED_CONTROL"
-  adb shell log -t AstarScanEval "hold $1 $2" 2>/dev/null || true
+  # Run 24: one of these marks never reached the device log (adb hiccup),
+  # and book-measure.py put that hold's page under the hold before.
+  local i
+  for i in 1 2 3; do
+    adb shell log -t AstarScanEval "hold $1 $2" 2>/dev/null && break
+    sleep 1
+  done
   log "feed -> $1 hold $2"
 }
 
