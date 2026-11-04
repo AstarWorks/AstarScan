@@ -430,6 +430,71 @@ def list_check(out, clip, gts):
     return rows, gaps, leftover
 
 
+def save_report(out):
+    """PDF / Markdown save and the curvature correction, after the last clip
+    (emulator-check.sh: saved/save.tsv, the pulled files, flatten lines)."""
+    md, res = [], {"flatten": {}, "files": []}
+    flat, none = [], 0
+    try:
+        for line in open(os.path.join(out, "events.log"), encoding="utf-8", errors="replace"):
+            m = re.search(r"AstarScanCapture\s*:\s*flatten (\S+) (\d+)x(\d+) bow top=(-?[\d.]+) bottom=(-?[\d.]+)", line)
+            if m:
+                flat.append((m.group(1), float(m.group(4)), float(m.group(5))))
+            elif re.search(r"AstarScanCapture\s*:\s*flatten \S+ \S+ none", line):
+                none += 1
+    except OSError:
+        pass
+    flat_files = sorted(glob.glob(os.path.join(out, "eval", "*-flat.jpg")))
+    res["flatten"] = {"corrected": len(flat), "straight_kept": none, "flat_images": len(flat_files)}
+    rows = []
+    try:
+        with open(os.path.join(out, "saved", "save.tsv"), encoding="utf-8") as f:
+            rows = [l.rstrip("\n").split("\t") for l in f if l.strip()]
+    except OSError:
+        pass
+    md.append("Save and dewarp (after the last clip, single-land-white):")
+    md.append("")
+    md.append("| what | result |")
+    md.append("| --- | --- |")
+    bows = [max(abs(t), abs(b)) for _, t, b in flat]
+    md.append(f"| curvature-corrected pages (flatten found both edges) | {len(flat)} of {len(flat) + none} pages; "
+              f"largest edge bow corrected median {sorted(bows)[len(bows) // 2] * 100:.2f} % / max {max(bows) * 100:.2f} % of the page height; "
+              f"{len(flat_files)} eval/*-flat.jpg |" if flat else f"| curvature-corrected pages | 0 of {none} pages |")
+    opened = [r[1] for r in rows if r and r[0] == "page-open" and len(r) > 1]
+    md.append(f"| one page opened from the list (screenshot) | {opened[0] + '.png' if opened else 'not opened'} |")
+    for kind in ("pdf", "markdown"):
+        r = next((r for r in rows if r and r[0] == kind), None)
+        if not r or len(r) < 3 or r[1] != "saved":
+            md.append(f"| {kind} save | {' '.join(r[1:]) if r else 'not run'} |")
+            res["files"].append({"kind": kind, "ok": False})
+            continue
+        path = os.path.join(out, "saved", r[2])
+        size = os.path.getsize(path) if os.path.exists(path) else 0
+        info = {"kind": kind, "file": r[2], "bytes": size, "app": r[3] if len(r) > 3 else "", "ok": size > 0}
+        if kind == "pdf" and size:
+            data = open(path, "rb").read()
+            info["pages"] = len(re.findall(rb"/Type\s*/Page(?![s\w])", data))
+            md.append(f"| PDF save | {r[2]}: {info['pages']} pages, {size} bytes (app: {info['app']}) |")
+        elif kind == "markdown" and size:
+            text = open(path, encoding="utf-8", errors="replace").read()
+            info["pages"] = len(re.findall(r"^## ", text, re.M))
+            info["head"] = text.splitlines()[:14]
+            md.append(f"| Markdown save | {r[2]}: {info['pages']} page headings, {size} bytes (app: {info['app']}) |")
+        else:
+            md.append(f"| {kind} save | {r[2]}: empty or not pulled |")
+        res["files"].append(info)
+    head = next((f.get("head") for f in res["files"] if f.get("kind") == "markdown" and f.get("head")), None)
+    if head:
+        md.append("")
+        md.append("Head of the Markdown:")
+        md.append("")
+        md.append("```markdown")
+        md += head
+        md.append("```")
+    md.append("")
+    return md, res
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("out")
@@ -580,12 +645,14 @@ def main():
         pass
     md.append(f"| calls that timed out (20 s) | {timeouts} |")
     md.append("")
+    save_md, save_res = save_report(a.out)
+    md += save_md
     md += per_page
     text = "\n".join(md) + "\n"
     with open(os.path.join(a.out, "measure.md"), "w") as f:
         f.write(text)
     with open(os.path.join(a.out, "measure.json"), "w") as f:
-        json.dump({"clips": clips_out, "captures": caps, "ocr_calls": read_ocr_calls(os.path.join(a.out, "events.log"))}, f, ensure_ascii=False, indent=1, default=float)
+        json.dump({"clips": clips_out, "save": save_res, "captures": caps, "ocr_calls": read_ocr_calls(os.path.join(a.out, "events.log"))}, f, ensure_ascii=False, indent=1, default=float)
     print(text)
     return 0
 

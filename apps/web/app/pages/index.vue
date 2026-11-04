@@ -88,6 +88,7 @@ import {
   nativeErrorMessage,
   nativeReadPage,
   nativeSavePdf,
+  nativeSaveMarkdown,
   nativeScan,
   nativeSendToAstar,
   nativeTakePending,
@@ -2109,18 +2110,45 @@ async function startNativeScan(): Promise<void> {
 }
 
 const savedPdfPath = ref('')
+const savedMdPath = ref('')
+const mdExporting = ref(false)
+
+function exportStamp(): string {
+  return new Date()
+    .toISOString()
+    .replace(/[-:]/g, '')
+    .replace('T', '-')
+    .slice(0, 15)
+}
+
+/** The pages' text as Markdown under Download/AstarScan (read on the device). */
+async function exportNativeMarkdown(): Promise<void> {
+  if (captured.value.length === 0 || mdExporting.value) return
+  mdExporting.value = true
+  try {
+    const labels = captured.value.map((p) => {
+      const r = pageNoReads.value[p.id]
+      return r?.status === 'done' ? r.nums.join('・') : ''
+    })
+    const res = await nativeSaveMarkdown(
+      captured.value.map((p) => p.nativeUri ?? p.dataUrl),
+      labels,
+      `astarscan-${exportStamp()}`,
+    )
+    savedMdPath.value = res.path
+  } catch (err) {
+    errorText.value = `Markdown を保存できませんでした: ${nativeErrorMessage(err)}`
+  } finally {
+    mdExporting.value = false
+  }
+}
 
 async function exportNativePdf(): Promise<void> {
   pdfExporting.value = true
   try {
-    const stamp = new Date()
-      .toISOString()
-      .replace(/[-:]/g, '')
-      .replace('T', '-')
-      .slice(0, 15)
     const res = await nativeSavePdf(
       captured.value.map((p) => p.nativeUri ?? p.dataUrl),
-      `astarscan-${stamp}`,
+      `astarscan-${exportStamp()}`,
       true,
     )
     savedPdfPath.value = res.path
@@ -2344,6 +2372,7 @@ async function clearAll(): Promise<void> {
   pageNoReads.value = {}
   nativeSideStep.value = null
   savedPdfPath.value = ''
+  savedMdPath.value = ''
   resetPipelineState()
   await clearSession()
   phase.value = 'idle'
@@ -2588,6 +2617,9 @@ raw: {{ selectedPage.llmDebug.bestFramePick.raw }}</pre
     <p v-if="nativeMode && savedPdfPath" class="native-saved">
       保存しました: {{ savedPdfPath }}
     </p>
+    <p v-if="nativeMode && savedMdPath" class="native-saved">
+      保存しました: {{ savedMdPath }}
+    </p>
     <p
       v-if="nativeListShown && errorText"
       class="native-error native-error--banner"
@@ -2751,6 +2783,18 @@ raw: {{ selectedPage.llmDebug.bestFramePick.raw }}</pre
           @click="exportPdf"
         >
           {{ pdfExporting ? 'PDF 保存中…' : `PDF 保存 (${captured.length})` }}
+        </button>
+        <button
+          class="btn btn--secondary"
+          type="button"
+          :disabled="captured.length === 0 || mdExporting"
+          @click="exportNativeMarkdown"
+        >
+          {{
+            mdExporting
+              ? 'Markdown 保存中…'
+              : `Markdown 保存 (${captured.length})`
+          }}
         </button>
         <button
           class="btn btn--secondary"

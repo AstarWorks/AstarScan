@@ -584,10 +584,31 @@ class CaptureActivity : ComponentActivity() {
             }
             seq++
             val name = "$stamp-$seq.jpg"
-            File(scansDir, name).outputStream().use { page.compress(Bitmap.CompressFormat.JPEG, 90, it) }
+            // The kept page is the curvature-corrected one (PageFlatten);
+            // the number is still read on the straight cut `page`.
+            val tFlat = SystemClock.elapsedRealtime()
+            val flat = try {
+                PageFlatten.flatten(photo, kept, page.width, page.height)
+            } catch (e: Exception) {
+                Log.w(TAG, "flatten failed for $name", e)
+                null
+            }
+            Log.i(
+                TAG,
+                if (flat != null) {
+                    "flatten $name ${page.width}x${page.height} bow top=%.4f bottom=%.4f inliers=%d/%d %dms".format(
+                        flat.topBow, flat.bottomBow, flat.inliersTop, flat.inliersBottom, SystemClock.elapsedRealtime() - tFlat,
+                    )
+                } else {
+                    "flatten $name ${page.width}x${page.height} none (edges not found; straight cut kept) ${SystemClock.elapsedRealtime() - tFlat}ms"
+                },
+            )
+            File(scansDir, name).outputStream().use { (flat?.image ?: page).compress(Bitmap.CompressFormat.JPEG, 90, it) }
             evalDir?.let { dir ->
                 File(dir, name.replace(".jpg", "-frame.jpg")).outputStream().use { photo.compress(Bitmap.CompressFormat.JPEG, 92, it) }
+                flat?.let { f -> File(dir, name.replace(".jpg", "-flat.jpg")).outputStream().use { f.image.compress(Bitmap.CompressFormat.JPEG, 92, it) } }
             }
+            flat?.image?.recycle()
             // t = wall clock (ms) of the analysed frame that triggered the page.
             Log.i(TAG, "capture $name t=$at photo=${photo.width}x${photo.height} source=$source spread=${kept.isSpread} found=$q kept=$kept cut=$cut")
             val spread = kept.isSpread

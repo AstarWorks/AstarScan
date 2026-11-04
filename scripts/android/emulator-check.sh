@@ -26,6 +26,9 @@
 #   - the app's page list after each clip (several scroll positions).
 # The last clip skips p37 on purpose (hold 3): the screen must say in red
 # that 37 is missing, and taking it afterwards must fill the gap.
+# After the last clip: one page opened from the list (the curvature-
+# corrected image), then PDF save and Markdown save; both files are pulled
+# into <out-dir>/saved/ (saved/save.tsv; book-measure.py reports them).
 # Never fails the job on a UI miss: every step leaves evidence in <out-dir>.
 
 set -uo pipefail
@@ -372,10 +375,74 @@ record_start
 scan_clip single-land-white 0 1 2 4 3 5 6 7 8 9
 record_stop
 
+# --- Save and dewarp on their own (last clip's list) -----------------------
+# One page opened from the list: the image the list holds is the
+# curvature-corrected page (PageFlatten, "flatten … bow" in events.log; the
+# same picture is kept as eval/<page>-flat.jpg).
+log "open one captured page"
+mkdir -p "$OUT/saved"
+: >"$OUT/saved/save.tsv"
+dump
+if tap_now '^書類 [0-9]+ 件' "$PKG"; then
+  sleep 3
+  opened=
+  for _ in 1 2 3 4; do
+    dump
+    if tap_now '^詳細を見る$' "$PKG"; then opened=1; break; fi
+    adb shell input swipe 540 1700 540 900 400
+    sleep 2
+  done
+  sleep 3
+  if [ -n "$opened" ]; then
+    shot page-open
+    printf 'page-open\t%s\n' "$SHOT" >>"$OUT/saved/save.tsv"
+  else
+    log "no page thumbnail to open"
+  fi
+else
+  log "page strip (書類 N 件) not found"
+fi
+grep -E 'AstarScanCapture.*: flatten ' "$EVENTS" | cut -c19- | tail -n 12 | sed 's/^/    /' | tee -a "$OUT/steps.log"
+
+# save_file <button-regex> <log-regex> <label> — tap a save button, wait for
+# the app's "… saved <path> pages=N bytes=B" line, pull the file.
+save_file() {
+  local button=$1 pat=$2 label=$3 mark t0 line path
+  mark=$(events_lines)
+  dump
+  [ "$(kind)" = app-capture ] && adb shell input keyevent KEYCODE_BACK && sleep 2 && dump
+  # Scroll to the bottom bar if the button is not on screen.
+  if ! has "$button" "$PKG"; then adb shell input swipe 540 1700 540 600 400; sleep 2; dump; fi
+  tap_now "$button" "$PKG" || { log "$label: button not found"; printf '%s\tbutton not found\n' "$label" >>"$OUT/saved/save.tsv"; return 1; }
+  t0=$SECONDS
+  line=
+  while [ $((SECONDS - t0)) -lt 240 ]; do
+    line=$(events_since "$mark" | grep -m1 -E "AstarScanMlkit.*: $pat saved |AstarScanMlkit.*: save $pat failed" || true)
+    [ -n "$line" ] && break
+    sleep 2
+  done
+  sleep 3
+  shot "$label-saved"
+  if [ -z "$line" ] || ! grep -q " saved " <<<"$line"; then
+    log "$label: no saved line after $((SECONDS - t0))s: $line"
+    printf '%s\tnot saved\t%s\n' "$label" "$line" >>"$OUT/saved/save.tsv"
+    return 1
+  fi
+  path=$(sed -E 's/.*: [a-z]+ saved ([^ ]+) .*/\1/' <<<"$line")
+  log "$label: $(cut -c19- <<<"$line") after $((SECONDS - t0))s"
+  adb pull "/sdcard/$path" "$OUT/saved/" 2>&1 | tail -n1 | tee -a "$OUT/steps.log"
+  printf '%s\tsaved\t%s\t%s\n' "$label" "$(basename "$path")" "$(sed -E 's/.*: [a-z]+ saved //' <<<"$line")" >>"$OUT/saved/save.tsv"
+  return 0
+}
+
 log "save PDF (last clip)"
-dump && tap_now '^PDF 保存' "$PKG" || log "save button not found"
-sleep 8
-shot pdf-saved
+save_file '^PDF 保存' pdf pdf
+# The PDF opens in a viewer: back to the app.
+sleep 4
+dump
+case $(kind) in app-list | app-list-empty | app-start) ;; *) adb shell input keyevent KEYCODE_BACK; sleep 3 ;; esac
+log "save Markdown (last clip)"
+save_file '^Markdown 保存' markdown markdown
 adb shell ls -l /sdcard/Download/AstarScan/ 2>&1 | tee -a "$OUT/steps.log"
 
 log "pull the camera pictures of the pages"

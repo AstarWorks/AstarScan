@@ -130,6 +130,24 @@ export function nativeSavePdf(
   return call<SavedPdf>('save_pdf', { pages, name, open })
 }
 
+export interface SavedFile extends SavedPdf {
+  /** Size of the file written. */
+  readonly bytes: number
+}
+
+/**
+ * Read the pages' text on the device (ML Kit, one call per page) and write
+ * it as one Markdown file under Download/AstarScan: a heading per page
+ * (with its printed number from `labels`, "" when none), then the text.
+ */
+export function nativeSaveMarkdown(
+  pages: readonly string[],
+  labels: readonly string[],
+  name: string,
+): Promise<SavedFile> {
+  return call<SavedFile>('save_markdown', { pages, labels, name })
+}
+
 export interface AstarSendTarget {
   /** AstarManagement origin, e.g. https://app.example.com */
   readonly server: string

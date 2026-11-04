@@ -63,6 +63,15 @@ class SavePdfArgs {
 }
 
 @InvokeArg
+class SaveMarkdownArgs {
+    /** `file://` paths returned by `scan`, or `data:image/jpeg;base64,` URLs. */
+    lateinit var pages: Array<String>
+    /** Printed page number(s) of each page as shown in the list ("31", "2・3"); "" when none. */
+    var labels: Array<String> = emptyArray()
+    var name: String? = null
+}
+
+@InvokeArg
 class UploadArgs {
     /** AstarManagement origin, e.g. `https://app.example.com`. */
     lateinit var server: String
@@ -297,34 +306,14 @@ class ScannerPlugin(private val activity: Activity) : Plugin(activity) {
             invoke.reject("no pages", "NO_PAGES")
             return
         }
-        val base = (args.name ?: "astarscan-${System.currentTimeMillis()}")
-            .replace(Regex("[\\\\/:*?\"<>|]"), "_")
-        val fileName = if (base.endsWith(".pdf")) base else "$base.pdf"
+        val fileName = downloadName(args.name, ".pdf")
         io.execute {
             try {
-                val saved = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
-                    val values = ContentValues().apply {
-                        put(MediaStore.MediaColumns.DISPLAY_NAME, fileName)
-                        put(MediaStore.MediaColumns.MIME_TYPE, "application/pdf")
-                        put(MediaStore.MediaColumns.RELATIVE_PATH, "${Environment.DIRECTORY_DOWNLOADS}/AstarScan")
-                        put(MediaStore.MediaColumns.IS_PENDING, 1)
-                    }
-                    val resolver = activity.contentResolver
-                    val uri = resolver.insert(MediaStore.Downloads.EXTERNAL_CONTENT_URI, values)
-                        ?: throw IllegalStateException("MediaStore insert failed")
-                    resolver.openOutputStream(uri)!!.use { JpegPdfWriter.write(it, args.pages.map { p -> { jpegBytes(p) } }) }
-                    values.clear()
-                    values.put(MediaStore.MediaColumns.IS_PENDING, 0)
-                    resolver.update(uri, values, null, null)
-                    Pair(uri, "${Environment.DIRECTORY_DOWNLOADS}/AstarScan/$fileName")
-                } else {
-                    val dir = activity.getExternalFilesDir(Environment.DIRECTORY_DOCUMENTS)
-                        ?: File(activity.filesDir, "pdf")
-                    dir.mkdirs()
-                    val file = File(dir, fileName)
-                    file.outputStream().use { JpegPdfWriter.write(it, args.pages.map { p -> { jpegBytes(p) } }) }
-                    Pair(Uri.fromFile(file), file.path)
+                val saved = saveDownload(fileName, "application/pdf") { out ->
+                    JpegPdfWriter.write(out, args.pages.map { p -> { jpegBytes(p) } })
                 }
+                // One line for the emulator check (emulator-check.sh, book-measure.py).
+                Log.i(TAG, "pdf saved ${saved.second} pages=${args.pages.size} bytes=${saved.third}")
                 if (args.open && saved.first.scheme == "content") {
                     activity.runOnUiThread {
                         try {
@@ -339,13 +328,109 @@ class ScannerPlugin(private val activity: Activity) : Plugin(activity) {
                     }
                 }
                 invoke.resolve(
-                    JSObject().put("uri", saved.first.toString()).put("path", saved.second),
+                    JSObject().put("uri", saved.first.toString()).put("path", saved.second).put("bytes", saved.third),
                 )
             } catch (e: Exception) {
                 Log.e(TAG, "save pdf failed", e)
                 invoke.reject(e.message ?: "save failed", "SAVE_FAILED")
             }
         }
+    }
+
+    /**
+     * The pages' text as one Markdown file under Download/AstarScan, read
+     * on the device (ML Kit Text Recognition v2, Japanese + Latin, one call
+     * per page on the full-size scan, no network): a heading per page (its
+     * printed number when the app has one, from `labels`), then ML Kit's
+     * text blocks as paragraphs, top to bottom. A page with no text gets a
+     * "（文字なし）" line, so every page has its heading.
+     */
+    @Command
+    fun saveMarkdown(invoke: Invoke) {
+        val args = invoke.parseArgs(SaveMarkdownArgs::class.java)
+        if (args.pages.isEmpty()) {
+            invoke.reject("no pages", "NO_PAGES")
+            return
+        }
+        val fileName = downloadName(args.name, ".md")
+        io.execute {
+            try {
+                val t0 = System.currentTimeMillis()
+                val md = StringBuilder()
+                md.append("# ").append(fileName.removeSuffix(".md")).append("\n")
+                for ((i, page) in args.pages.withIndex()) {
+                    val label = args.labels.getOrNull(i)?.takeIf { it.isNotBlank() }
+                    md.append("\n## ページ ").append(i + 1)
+                    if (label != null) md.append("（p. ").append(label).append("）")
+                    md.append("\n\n")
+                    val blocks = MarginReader.pageText(decodePage(page, MAX_OCR_SIDE))
+                    if (blocks.isEmpty()) md.append("（文字なし）\n")
+                    for (b in blocks) md.append(b.joinToString("\n")).append("\n\n")
+                }
+                val bytes = md.toString().trimEnd().plus("\n").toByteArray(Charsets.UTF_8)
+                val saved = saveDownload(fileName, "text/markdown") { it.write(bytes) }
+                Log.i(TAG, "markdown saved ${saved.second} pages=${args.pages.size} bytes=${saved.third} ${System.currentTimeMillis() - t0}ms")
+                invoke.resolve(
+                    JSObject().put("uri", saved.first.toString()).put("path", saved.second).put("bytes", saved.third),
+                )
+            } catch (e: Exception) {
+                Log.e(TAG, "save markdown failed", e)
+                invoke.reject(e.message ?: "save failed", "SAVE_FAILED")
+            }
+        }
+    }
+
+    private fun downloadName(name: String?, ext: String): String {
+        val base = (name ?: "astarscan-${System.currentTimeMillis()}").replace(Regex("[\\\\/:*?\"<>|]"), "_")
+        return if (base.endsWith(ext)) base else "$base$ext"
+    }
+
+    /**
+     * Write a file into Download/AstarScan (MediaStore on Android 10+, the
+     * app's Documents dir before). Returns its uri, path and size in bytes.
+     */
+    private fun saveDownload(fileName: String, mime: String, write: (java.io.OutputStream) -> Unit): Triple<Uri, String, Long> {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+            val values = ContentValues().apply {
+                put(MediaStore.MediaColumns.DISPLAY_NAME, fileName)
+                put(MediaStore.MediaColumns.MIME_TYPE, mime)
+                put(MediaStore.MediaColumns.RELATIVE_PATH, "${Environment.DIRECTORY_DOWNLOADS}/AstarScan")
+                put(MediaStore.MediaColumns.IS_PENDING, 1)
+            }
+            val resolver = activity.contentResolver
+            val uri = resolver.insert(MediaStore.Downloads.EXTERNAL_CONTENT_URI, values)
+                ?: throw IllegalStateException("MediaStore insert failed")
+            val counter = CountingStream(resolver.openOutputStream(uri) ?: throw IllegalStateException("cannot open $uri"))
+            counter.use { write(it) }
+            values.clear()
+            values.put(MediaStore.MediaColumns.IS_PENDING, 0)
+            resolver.update(uri, values, null, null)
+            return Triple(uri, "${Environment.DIRECTORY_DOWNLOADS}/AstarScan/$fileName", counter.count)
+        }
+        val dir = activity.getExternalFilesDir(Environment.DIRECTORY_DOCUMENTS) ?: File(activity.filesDir, "pdf")
+        dir.mkdirs()
+        val file = File(dir, fileName)
+        file.outputStream().use { write(it) }
+        return Triple(Uri.fromFile(file), file.path, file.length())
+    }
+
+    private class CountingStream(private val out: java.io.OutputStream) : java.io.OutputStream() {
+        var count = 0L
+            private set
+
+        override fun write(b: Int) {
+            out.write(b)
+            count++
+        }
+
+        override fun write(b: ByteArray, off: Int, len: Int) {
+            out.write(b, off, len)
+            count += len
+        }
+
+        override fun flush() = out.flush()
+
+        override fun close() = out.close()
     }
 
     /**

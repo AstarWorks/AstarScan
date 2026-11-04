@@ -64,6 +64,8 @@ object MarginReader {
      * 20 s timeout, ML Kit queued them, and single calls then took 70–180 s.
      */
     private const val PREVIOUS_WAIT_MS = 60_000L
+    /** A whole page (Markdown save) takes longer than the margins. */
+    private const val PAGE_TIMEOUT_MS = 60_000L
     private const val TAG = "AstarScanMlkit"
     /** The last call handed to ML Kit (one at a time, see PREVIOUS_WAIT_MS). */
     private var inFlight: Task<Text>? = null
@@ -203,6 +205,19 @@ object MarginReader {
         return tiles
     }
 
+    /**
+     * All the text of a page (for the Markdown file): one ML Kit call on
+     * `page`, which is consumed (recycled when the call ends). Paragraphs
+     * are ML Kit's blocks, top to bottom; lines keep their order.
+     */
+    fun pageText(page: Bitmap): List<List<String>> {
+        val text = recognize(page, "page", PAGE_TIMEOUT_MS) ?: return emptyList()
+        return text.textBlocks
+            .sortedWith(compareBy({ it.boundingBox?.top ?: 0 }, { it.boundingBox?.left ?: 0 }))
+            .map { b -> b.lines.map { it.text.trim() }.filter { it.isNotEmpty() } }
+            .filter { it.isNotEmpty() }
+    }
+
     /** Lines as JSON for the log lines the emulator check reads (book-measure.py). */
     fun json(lines: List<PageNumbers.Line>): String = lines.joinToString(",", "[", "]") { l ->
         "{\"text\":${quote(l.text)},\"conf\":${l.conf},\"cx\":${l.cx},\"cy\":${l.cy},\"pass\":\"${l.pass}\"}"
@@ -324,7 +339,7 @@ object MarginReader {
      * left ML Kit reading recycled bitmaps). Logs the call's real time.
      * Null when it fails or does not end within RECOGNIZE_TIMEOUT_MS.
      */
-    private fun recognize(input: Bitmap, what: String): Text? = synchronized(callLock) {
+    private fun recognize(input: Bitmap, what: String, timeoutMs: Long = RECOGNIZE_TIMEOUT_MS): Text? = synchronized(callLock) {
         val prev = inFlight
         if (prev != null && !prev.isComplete) {
             val tw = SystemClock.elapsedRealtime()
@@ -350,7 +365,7 @@ object MarginReader {
             },
         )
         try {
-            Tasks.await(task, RECOGNIZE_TIMEOUT_MS, TimeUnit.MILLISECONDS)
+            Tasks.await(task, timeoutMs, TimeUnit.MILLISECONDS)
         } catch (e: TimeoutException) {
             Log.w(TAG, "text recognition timed out ($what ${w}x$h)")
             null
