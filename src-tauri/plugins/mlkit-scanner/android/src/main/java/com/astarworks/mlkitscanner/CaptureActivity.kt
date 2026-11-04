@@ -524,6 +524,7 @@ class CaptureActivity : ComponentActivity() {
             recent.addLast(q)
             while (recent.size > SMOOTH_N) recent.removeFirst()
             val m = median(recent)
+            lastMedian = m
             val a = anchor
             if (a == null || m.maxMove(a) > STABLE_TOL * m.diagonal) {
                 if (a != null && !armed && now - lastCaptureAt > 300) turnSeen = true
@@ -605,7 +606,11 @@ class CaptureActivity : ComponentActivity() {
             val copy = frame.copy(Bitmap.Config.ARGB_8888, false)
             val at = System.currentTimeMillis()
             runOnUiThread { setBanner("busy", "撮影中…") }
-            work.execute { capture(copy, q, at) }
+            // The median of the last frames too: the shot's own frame may be
+            // one bad detection (run 27, single-land-white p39: top-left
+            // 330 px low on the last frame only).
+            val med = if (recent.isEmpty()) q else median(recent)
+            work.execute { capture(copy, q, med, at) }
             return
         }
         // Yellow: waiting for a page, and for YELLOW_MS no frame held still.
@@ -618,6 +623,10 @@ class CaptureActivity : ComponentActivity() {
             runOnUiThread { if (bannerKind == "yellow") setBanner("idle", "そのまま止めてください") }
         }
     }
+
+    /** Median of the last frames found, for the work thread (the frames analysed while the still is taken). */
+    @Volatile
+    private var lastMedian: Quad? = null
 
     /** Corner by corner median of the frames found. */
     private fun median(qs: Collection<Quad>): Quad {
@@ -633,13 +642,18 @@ class CaptureActivity : ComponentActivity() {
     // ------------------------------------------------------------- capture
 
     /** Work thread: take the still, frame and cut the page, keep it; its number is read on readExec. */
-    private fun capture(frame: Bitmap, frameQuad: Quad, at: Long) {
+    private fun capture(frame: Bitmap, frameQuad0: Quad, medianQuad: Quad, at: Long) {
         var photo: Bitmap? = null
         try {
             val det = detector ?: return
             val t0 = SystemClock.elapsedRealtime()
             photo = takeStill() ?: frame
             val tStill = SystemClock.elapsedRealtime()
+            // The shot's frame, unless it is far from the median of the last
+            // frames found (one detection off while the rest held still).
+            val frameDiag = hypot(frame.width.toDouble(), frame.height.toDouble())
+            val frameQuad = if (frameQuad0.maxMove(medianQuad) / frameDiag > STILL_AGREE) medianQuad else frameQuad0
+            if (frameQuad !== frameQuad0) Log.i(TAG, "shot frame $frameQuad0 is %.1f %% of the diagonal from the median $medianQuad; median used".format(frameQuad0.maxMove(medianQuad) / frameDiag * 100))
             // The frame found on the still itself; when the model is not
             // sure there, the analysis frame's scaled over.
             var q = frameQuad.scaled(photo.width.toFloat() / frame.width, photo.height.toFloat() / frame.height)
@@ -662,8 +676,18 @@ class CaptureActivity : ComponentActivity() {
                 // Run 25, single-land-white p39: the still came mid-change
                 // (ghost of another page), DocAligner put its top-left
                 // corner 300 px low and the page was cut 253 clip px off.
-                val off = if (r != null && sure(r)) (r.quad.maxMove(q) / hypot(ph.width.toDouble(), ph.height.toDouble())).toFloat() else -1f
-                if (r != null && sure(r) && off <= STILL_AGREE) {
+                val diag = hypot(ph.width.toDouble(), ph.height.toDouble())
+                val off = if (r != null && sure(r)) (r.quad.maxMove(q) / diag).toFloat() else -1f
+                // They disagree: the one nearer the median of the frames
+                // analysed meanwhile (the page held still while the still
+                // was taken) wins. Run 25 the still was the odd one; run 27
+                // (single-land-white p39, 259 clip px) the shot's own frame
+                // was — its top-left on the leaf being turned.
+                val med = (lastMedian ?: medianQuad).scaled(ph.width.toFloat() / frame.width, ph.height.toFloat() / frame.height)
+                val q0 = frameQuad0.scaled(ph.width.toFloat() / frame.width, ph.height.toFloat() / frame.height)
+                val stillNearer = r != null && off > STILL_AGREE && r.quad.maxMove(med) < q0.maxMove(med)
+                if (r != null && sure(r) && (off <= STILL_AGREE || stillNearer)) {
+                    if (stillNearer) Log.i(TAG, "still frame ${r.quad} is %.1f %% of the diagonal from the held frame $q but nearer the median $med; still used".format(off * 100))
                     q = r.quad
                     source = how
                 } else if (photo.width == frame.width && photo.height == frame.height) {

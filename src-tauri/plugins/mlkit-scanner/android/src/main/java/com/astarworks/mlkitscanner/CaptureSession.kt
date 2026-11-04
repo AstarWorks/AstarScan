@@ -289,6 +289,7 @@ class CaptureSession(known: Collection<Int> = emptyList(), step: Int = 0) {
             if (at2 < 0) pages.add(pos, page) else pages.add(at2, page)
             missing.removeAll(sorted.toSet())
             taken.addAll(sorted)
+            settlePending()
             return Outcome.Filled(sorted)
         }
         // Pages just before, read once each, that this number confirms (by
@@ -356,10 +357,67 @@ class CaptureSession(known: Collection<Int> = emptyList(), step: Int = 0) {
         val miss = gap.drop(unread)
         if (miss.isEmpty()) {
             fillBetween(pages.indexOfFirst { it.name == name }, l)
-            return Outcome.Taken(sorted)
+            val now = settlePending()
+            return if (now.isEmpty()) Outcome.Taken(sorted) else Outcome.Gap(sorted, now)
         }
-        missing.addAll(miss)
-        return Outcome.Gap(sorted, miss)
+        // One read alone does not paint a run of red: the page before the
+        // gap must be confirmed by a neighbour (a taken page one step away),
+        // and a gap of more than one page (spread: one pair) also needs this
+        // page confirmed. Until then the gap waits (run 27 stills, thick
+        // spread: the first page misread 60・61 as 50・51, then 62・63 … →
+        // red 53–61 on pages that were never skipped).
+        val anchor = l?.let { a -> pages.firstOrNull { it.numberState == "ok" && a in it.nums }?.nums } ?: emptyList()
+        pending.add(Pending(anchor, sorted, spread, miss))
+        val now = settlePending()
+        return if (now.isEmpty()) Outcome.Taken(sorted) else Outcome.Gap(sorted, now)
+    }
+
+    /** A gap seen between two numbered pages, not yet red (see `add`). */
+    private class Pending(val before: List<Int>, val after: List<Int>, val spread: Boolean, val nums: List<Int>)
+
+    private val pending = ArrayList<Pending>()
+
+    /** Gaps waiting for their pages to be confirmed (not red yet). */
+    val unconfirmedGaps: List<Int> get() = pending.flatMap { it.nums }.filter { it !in taken }.sorted()
+
+    /**
+     * Another taken page sits one step from `nums` (below its lowest or
+     * above its highest number): the read agrees with its neighbours. A
+     * spread's neighbour is the next pair; a single page's the step (not
+     * learnt yet: 1 or 2).
+     */
+    private fun confirmed(nums: List<Int>, spread: Boolean): Boolean {
+        if (nums.isEmpty()) return false
+        val lo = nums.min()
+        val hi = nums.max()
+        val steps = if (spread || nums.size > 1) listOf(1) else when (step) {
+            1 -> listOf(1)
+            2 -> listOf(2)
+            else -> listOf(1, 2)
+        }
+        return steps.any { s -> (lo - s) in taken || (hi + s) in taken }
+    }
+
+    /** Pending gaps whose pages are now confirmed go red; returns the numbers newly missing. */
+    private fun settlePending(): List<Int> {
+        val now = ArrayList<Int>()
+        val iter = pending.iterator()
+        while (iter.hasNext()) {
+            val p = iter.next()
+            val left = p.nums.filter { it !in taken }
+            if (left.isEmpty()) {
+                iter.remove()
+                continue
+            }
+            val small = left.size <= (if (p.spread) 2 else 1)
+            if (confirmed(p.before, p.spread) && (small || confirmed(p.after, p.spread))) {
+                iter.remove()
+                val fresh = left.filter { it !in missing }
+                missing.addAll(fresh)
+                now.addAll(fresh)
+            }
+        }
+        return now.sorted()
     }
 
     companion object {
