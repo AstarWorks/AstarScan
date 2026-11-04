@@ -11,8 +11,13 @@ import java.text.Normalizer
  * reads the same number the page list used to.
  */
 object PageNumbers {
-    /** One recognised line; centre normalised to the page. */
-    data class Line(val text: String, val cx: Double, val cy: Double, val pass: String, val conf: Double = 0.0)
+    /**
+     * One recognised line; centre normalised to the page. `dashed`: read
+     * on a tile whose dash marks on both sides of the print were painted
+     * out before ML Kit saw it (MarginReader, the bottom centre strip):
+     * the print was "— N —" although the text no longer shows the dashes.
+     */
+    data class Line(val text: String, val cx: Double, val cy: Double, val pass: String, val conf: Double = 0.0, val dashed: Boolean = false)
 
     enum class Kind(val score: Int) { ARABIC(3), KANJI(2), EDGE(1) }
 
@@ -164,6 +169,20 @@ object PageNumbers {
         return v.takeIf { valid(it) }
     }
 
+    private val PLAIN_NUMBER = Regex("^\\d{1,4}$")
+
+    /**
+     * A line's folio number: printed between dash marks in its text, or a
+     * bare number read where the dash marks were painted out (`dashed`).
+     */
+    private fun folioNumber(l: Line): Int? {
+        framedNumber(l.text)?.let { return it }
+        if (!l.dashed) return null
+        val s = Normalizer.normalize(l.text, Normalizer.Form.NFKC).trim()
+        if (!PLAIN_NUMBER.matches(s)) return null
+        return s.toInt().takeIf { valid(it) }
+    }
+
     /** Where a folio sits: the centre of its page (a spread: of either half), in the top or bottom margin. */
     private fun folioSpot(l: Line, spread: Boolean): Boolean {
         val inMargin = l.cy <= MARGIN_FRAC || l.cy >= 1 - MARGIN_FRAC
@@ -189,7 +208,7 @@ object PageNumbers {
         val spots = lines.filter { folioSpot(it, spread) }
         return nums.all { n ->
             spots.any spot@{ l ->
-                val v = framedNumber(l.text) ?: return@spot false
+                val v = folioNumber(l) ?: return@spot false
                 v == n || (lostDigits(listOf(v), listOf(n)) && spots.any { o ->
                     parseToken(o.text)?.value == n && Math.abs(o.cx - l.cx) <= 0.08 && Math.abs(o.cy - l.cy) <= 0.04
                 })

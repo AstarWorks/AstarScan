@@ -697,7 +697,8 @@ class CaptureActivity : ComponentActivity() {
             seq++
             val name = "$stamp-$seq.jpg"
             val pageSeq = seq
-            heldSeq = seq
+            // Held pictures only for a single page (readHeld is not used for spreads).
+            heldSeq = if (kept.isSpread) 0 else seq
             val keptInFrame = kept.scaled(frame.width.toFloat() / photo.width, frame.height.toFloat() / photo.height)
             // The kept page is the curvature-corrected one (PageFlatten);
             // the number is still read on the straight cut `page`.
@@ -771,7 +772,10 @@ class CaptureActivity : ComponentActivity() {
             // other renderings of the shot (MarginReader.extraLines) read
             // none of 8 such pages in run 26, so they are not tried here.
             var pick = readNumber(page, name, spread, fallback = false)
-            if (pick.nums.isEmpty()) pick = readHeld(name, spread, pageSeq, keptInFrame) ?: pick
+            // Single pages only, one held picture: at most one more call, as
+            // the extra renderings were (spreads: none; at 960x1280 none of
+            // run 26's 19 spread pages read a number on any picture).
+            if (pick.nums.isEmpty() && !spread) pick = readHeld(name, spread, pageSeq, keptInFrame) ?: pick
             val tRead = SystemClock.elapsedRealtime()
             val (nums, guess) = confirm(pick, spread, name, second)
             val tConfirm = SystemClock.elapsedRealtime()
@@ -909,105 +913,18 @@ class CaptureActivity : ComponentActivity() {
     }
 
     /**
-     * The number(s) to keep for a page, so that a misread number never
-     * reaches the list (run 18: p47 read as "4" from the body text):
-     * - the next number (or a missing one), read as a whole line → kept;
-     * - anything else (a jump, the first page, a weak read) → read again on
-     *   the analysis frame of the same moment (another camera picture);
-     *   kept only when both reads agree, otherwise the page is "番号なし";
-     * - a number lower than the last page (and not missing), or more than
-     *   MAX_JUMP ahead → "番号なし";
-     * - exception: ONE page skipped, read strongly once (the other read
-     *   found nothing) → kept when CaptureSession.singleReadJumpOk.
-     * Returns (kept, guess): a number read strongly once that is not kept
-     * (first page, a jump, the other read lost its digits or found nothing)
-     * is the guess, which CaptureSession keeps once a neighbour confirms it.
+     * The number(s) to keep for a page (NumberRule, shared with the stills
+     * check): the other camera picture `second` is read (one ML Kit call)
+     * only when the rule needs it.
      */
-    private fun confirm(pick: PageNumbers.Pick, spread: Boolean, name: String, second: Bitmap?): Pair<List<Int>, List<Int>> {
-        val none = emptyList<Int>()
-        val nums = pick.nums
-        val rel = synchronized(session) { session.relation(nums, spread) }
-        if (rel == "duplicate") return Pair(nums, none)
-        if (rel == "expected" && pick.strong) return Pair(nums, none)
-        if (rel == "lower" || rel == "far") {
-            Log.i(TAG, "number $nums for $name is $rel; not kept")
-            return Pair(none, none)
-        }
-        // A number read once (first page, a jump) is the page's guess: the
-        // session keeps it when a neighbour confirms it.
-        fun once(n: List<Int>, r: String, strong: Boolean) = if (strong && (r == "first" || r == "jump")) n else none
-        // The other camera picture: the first picture only (no extra call).
-        val again = second?.let { readNumber(it, "$name#2", spread, fallback = false) }
-        // Printed as a folio ("— 41 —" at the bottom / top centre,
-        // PageNumbers.framedFor): the page number, not body text — kept
-        // read once, unless the other camera picture reads another number.
-        // Run 24: "ー41-" on p41 and "ー4-" + "47" on p47 stayed guesses
-        // (no second picture on the emulator) and both pages 番号なし.
-        val folio = pick.framed && pick.strong && (rel == "first" || rel == "jump")
-        if (folio && (again == null || again.nums.isEmpty() || again.nums.sorted() == nums.sorted() || PageNumbers.lostDigits(again.nums, nums))) {
-            Log.i(TAG, "number $nums for $name: printed as a folio ($rel); kept")
-            return Pair(nums, none)
-        }
-        if (again == null) {
-            Log.i(TAG, "number $nums for $name: no second frame; ${if (rel == "first" && pick.strong) "kept" else "not kept"}")
-            return if ((rel == "first" || rel == "expected") && pick.strong) Pair(nums, none) else Pair(none, once(nums, rel, pick.strong))
-        }
-        if (nums.isEmpty()) {
-            // First read found nothing: the second read may (kept only when it is the next page).
-            val r2 = synchronized(session) { session.relation(again.nums, spread) }
-            Log.i(TAG, "number for $name: second read ${again.nums} ($r2)")
-            if (again.strong && (r2 == "expected" || r2 == "duplicate")) return Pair(again.nums, none)
-            if (again.framed && again.strong && (r2 == "first" || r2 == "jump")) {
-                Log.i(TAG, "number ${again.nums} for $name: printed as a folio on the second read ($r2); kept")
-                return Pair(again.nums, none)
-            }
-            if (again.strong && r2 == "jump" && synchronized(session) { session.singleReadJumpOk(again.nums, spread, name) }) {
-                Log.i(TAG, "number ${again.nums} for $name: one page skipped, read once; kept")
-                return Pair(again.nums, none)
-            }
-            return Pair(none, once(again.nums, r2, again.strong))
-        }
-        if (again.nums.isEmpty() && rel == "jump" && pick.strong &&
-            synchronized(session) { session.singleReadJumpOk(nums, spread, name) }
-        ) {
-            Log.i(TAG, "number $nums for $name: one page skipped, read once; kept")
-            return Pair(nums, none)
-        }
-        if (again.nums.sorted() == nums.sorted()) {
-            Log.i(TAG, "number $nums for $name confirmed by a second read ($rel)")
-            return Pair(nums, none)
-        }
-        // One read lost digits of the other ("3" for "31"): the longer one, read once.
-        if (again.nums.isNotEmpty() && PageNumbers.lostDigits(again.nums, nums) && pick.strong) {
-            Log.i(TAG, "number $nums for $name: second read ${again.nums} lost digits; guess")
-            return Pair(none, once(nums, rel, true))
-        }
-        if (again.nums.isNotEmpty() && PageNumbers.lostDigits(nums, again.nums) && again.strong) {
-            val r2 = synchronized(session) { session.relation(again.nums, spread) }
-            Log.i(TAG, "number $nums for $name: lost digits of the second read ${again.nums} ($r2); guess")
-            if (r2 == "expected") return Pair(again.nums, none)
-            return Pair(none, once(again.nums, r2, true))
-        }
-        // Reads disagree: a spread may lose one number on one read.
-        if (spread && again.nums.isNotEmpty() && again.nums.all { it in nums }) {
-            val kept = again.nums.takeIf { synchronized(session) { session.relation(it, spread) } == "expected" }
-            return if (kept != null) Pair(kept, none) else Pair(none, none)
-        }
-        if (again.nums.isEmpty() && rel == "first" && pick.strong) {
-            // Nothing read on the other picture is no other number: the
-            // first page is kept as when there is no second picture (run 25,
-            // single-port-wood p3 stayed a guess, so 5–11 had nothing to
-            // follow and stayed 番号なし).
-            Log.i(TAG, "number $nums for $name: second read [] (first); kept")
-            return Pair(nums, none)
-        }
-        if (again.nums.isEmpty()) {
-            Log.i(TAG, "number $nums for $name not confirmed (second read []); guess")
-            return Pair(none, once(nums, rel, pick.strong))
-        }
-        Log.i(TAG, "number $nums for $name not confirmed (second read ${again.nums}); not kept")
-        return Pair(none, none)
-    }
+    private fun confirm(pick: PageNumbers.Pick, spread: Boolean, name: String, second: Bitmap?): Pair<List<Int>, List<Int>> =
+        NumberRule.decide(
+            session,
+            pick,
+            spread,
+            name,
+            second?.let { b -> { readNumber(b, "$name#2", spread, fallback = false) } },
+        ) { Log.i(TAG, it) }
 
     private fun kindOf(o: CaptureSession.Outcome): String = when (o) {
         is CaptureSession.Outcome.Taken -> "taken"
@@ -1193,6 +1110,6 @@ class CaptureActivity : ComponentActivity() {
         /** PageMatch inliers for "still the page just taken" (re-arming needs < OTHER_PAGE = 40). */
         private const val HELD_MATCH = 100
         /** Held pictures read at most, one ML Kit call each. */
-        private const val HELD_READS = 2
+        private const val HELD_READS = 1
     }
 }

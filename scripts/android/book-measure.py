@@ -593,6 +593,96 @@ def stills_report(out):
     return md, clips
 
 
+def label_nums(lab):
+    """"37", "37・39", "37〜41" → [37], [37, 39], [37, 38, 39, 40, 41]."""
+    if "〜" in lab:
+        a, b = lab.split("〜", 1)
+        return list(range(int(a), int(b) + 1)) if a.isdigit() and b.isdigit() else []
+    return [int(x) for x in lab.split("・") if x.isdigit()]
+
+
+def stills_sequence_report(out):
+    """The capture screen's session on the phone-resolution stills
+    (StillsCheck.replay, "stillseq …" lines): each clip's stills in hold
+    order — single-land-white without hold 3 (p37 skipped on purpose) —
+    kept or not by NumberRule and placed by CaptureSession, the code that
+    decides ✓ / red / grey on the capture screen and in the list. Wrong =
+    a page showing a number that is not printed on it; false red = a red
+    (missing) page that is not one of the skipped holds' pages."""
+    try:
+        with open(os.path.join(out, "stills", "stills.json")) as f:
+            truth = json.load(f)
+    except (OSError, ValueError):
+        return [], {}
+    steps, lists = {}, {}
+    try:
+        for line in open(os.path.join(out, "events.log"), encoding="utf-8", errors="replace"):
+            m = re.search(r"AstarScanMlkit\s*:\s*stillseq (\S+) step=(\d+) hold=(\d+) file=(\S+) read=\[([\d, ]*)\] strong=(\S+) "
+                          r"framed=(\S+) kept=\[([\d, ]*)\] guess=\[([\d, ]*)\] banner=(.+?) missing=\[([\d, ]*)\]", line)
+            if m:
+                steps.setdefault(m.group(1), []).append({
+                    "step": int(m.group(2)), "hold": int(m.group(3)), "file": m.group(4),
+                    "read": [int(x) for x in m.group(5).replace(" ", "").split(",") if x], "strong": m.group(6) == "true",
+                    "framed": m.group(7) == "true", "kept": [int(x) for x in m.group(8).replace(" ", "").split(",") if x],
+                    "guess": [int(x) for x in m.group(9).replace(" ", "").split(",") if x], "banner": m.group(10),
+                    "missing": [int(x) for x in m.group(11).replace(" ", "").split(",") if x]})
+                continue
+            m = re.search(r"AstarScanMlkit\s*:\s*stillseq (\S+) list rows=(\d+) \[(.*)\] red=\[([\d, ]*)\] step=(\d+) skipped=\[([\d, ]*)\]", line)
+            if m:
+                marks = {}
+                for part in m.group(3).split(","):
+                    h, _, mk = part.partition(":")
+                    if mk and h[1:].isdigit():
+                        marks[int(h[1:])] = mk
+                lists[m.group(1)] = {"rows": int(m.group(2)), "marks": marks,
+                                     "red": [int(x) for x in m.group(4).replace(" ", "").split(",") if x],
+                                     "step": int(m.group(5)), "skipped": [int(x) for x in m.group(6).replace(" ", "").split(",") if x]}
+    except OSError:
+        pass
+    by_clip_hold = {(t["clip"], t["hold"]): t["truth"] for t in truth.values()}
+    md = ["### Phone-resolution stills, as a session (hold order, the screen's ✓ / red / grey rule)", "",
+          "The reads above fed, clip by clip, to the capture screen's own number rule (NumberRule, no second camera picture) "
+          "and session (CaptureSession) in hold order; single-land-white without hold 3, so p37 is skipped as on the live camera. "
+          "Banner = what the screen would say when that page's number is in; list = the page list after the clip "
+          "(✓ N, grey 番号なし; red = pages the session says are missing).", ""]
+    if not lists and not steps:
+        md += ["No \"stillseq\" lines in events.log (the replay did not run).", ""]
+        return md, {}
+    md += ["| clip | holds taken | list rows | ✓ | grey | wrong | red | skipped pages | red = skipped only | false red |",
+           "| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |"]
+    res, rows = {}, []
+    for clip in sorted(set(steps) | set(lists)):
+        ss = sorted(steps.get(clip, []), key=lambda r: r["step"])
+        li = lists.get(clip, {"rows": 0, "marks": {}, "red": [], "skipped": []})
+        skipped_pages = sorted(n for h in li["skipped"] for n in by_clip_hold.get((clip, h), []))
+        ok = grey = wrong = 0
+        for h, mk in li["marks"].items():
+            printed = by_clip_hold.get((clip, h), [])
+            shown = label_nums(mk[1:]) if mk.startswith("✓") else []
+            if mk.startswith("✓"):
+                ok += 1
+                if sorted(shown) != sorted(printed):
+                    wrong += 1
+            else:
+                grey += 1
+        red = sorted(li["red"])
+        false_red = [n for n in red if n not in skipped_pages]
+        red_ok = red == skipped_pages
+        res[clip] = {"holds": len(ss), "rows": li["rows"], "ok": ok, "grey": grey, "wrong": wrong, "red": red,
+                     "skipped_pages": skipped_pages, "red_is_skipped_only": red_ok, "false_red": false_red}
+        md.append(f"| {clip} | {len(ss)} | {li['rows']} | {ok} | {grey} | {wrong} | {'・'.join(map(str, red)) or '—'} | "
+                  f"{'・'.join(map(str, skipped_pages)) or '—'} | {'yes' if red_ok else 'NO'} | {len(false_red)} |")
+        for r in ss:
+            printed = by_clip_hold.get((clip, r["hold"]), [])
+            mk = li["marks"].get(r["hold"], "—")
+            rows.append(f"| {clip} | {r['step']} | {r['hold']} | {'・'.join(map(str, printed))} | "
+                        f"{'・'.join(map(str, r['read'])) or '—'}{'' if r['strong'] else ' (weak)'}{' folio' if r['framed'] else ''} | "
+                        f"{r['banner']} | {mk} | {'・'.join(map(str, r['missing'])) or '—'} |")
+    md += ["", "| clip | step | hold | printed | read | banner | list after the clip | missing (red) after this page |",
+           "| --- | --- | --- | --- | --- | --- | --- | --- |"] + rows + [""]
+    return md, res
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("out")
@@ -751,13 +841,15 @@ def main():
     md += save_md
     stills_md, stills_res = stills_report(a.out)
     md += stills_md
+    seq_md, seq_res = stills_sequence_report(a.out)
+    md += seq_md
     md += ["### Live camera, per page", ""]
     md += per_page
     text = "\n".join(md) + "\n"
     with open(os.path.join(a.out, "measure.md"), "w") as f:
         f.write(text)
     with open(os.path.join(a.out, "measure.json"), "w") as f:
-        json.dump({"clips": clips_out, "save": save_res, "stills": stills_res, "captures": caps, "ocr_calls": read_ocr_calls(os.path.join(a.out, "events.log"))}, f, ensure_ascii=False, indent=1, default=float)
+        json.dump({"clips": clips_out, "save": save_res, "stills": stills_res, "stills_sequence": seq_res, "captures": caps, "ocr_calls": read_ocr_calls(os.path.join(a.out, "events.log"))}, f, ensure_ascii=False, indent=1, default=float)
     print(text)
     return 0
 

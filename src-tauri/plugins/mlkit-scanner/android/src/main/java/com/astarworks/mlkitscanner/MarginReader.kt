@@ -225,10 +225,17 @@ object MarginReader {
             }
         } else {
             // The bottom centre strip, up to 4× (at 2.5× run 24 read
-            // single-land-white's "— 33 —" on 2 pages of 10). The top strip
-            // and the other renderings are in [extraTiles].
+            // single-land-white's "— 33 —" on 2 pages of 10), with the dash
+            // marks of a "— N —" folio painted out ([dashMarks]): on the
+            // phone-resolution stills ML Kit read "ー 35 一" at conf ~0.55
+            // and the same print without its dashes ("35") at ~0.94; at
+            // the CI emulator's 960x1280 the dashed line was dropped on 8
+            // of 10 pages (run 26), while single-port-wood's bare "25", as
+            // tall and as grey (~12 px, ink ~65 below the paper), read on
+            // 12 of 12. The piece tiles above keep the print as it is.
+            // The top strip and the other renderings are in [extraTiles].
             val upC = (FOLIO_TEXT_PX / textPx).toFloat().coerceIn(1f, 4f)
-            tiles.add(Tile(Rect((w * 0.33).toInt(), h - strip, (w * 0.67).toInt(), h), upC, "folio"))
+            tiles.add(Tile(Rect((w * 0.33).toInt(), h - strip, (w * 0.67).toInt(), h), upC, "folio", maskDashes = true))
         }
         return tiles
     }
@@ -279,7 +286,7 @@ object MarginReader {
 
     /** Lines as JSON for the log lines the emulator check reads (book-measure.py). */
     fun json(lines: List<PageNumbers.Line>): String = lines.joinToString(",", "[", "]") { l ->
-        "{\"text\":${quote(l.text)},\"conf\":${l.conf},\"cx\":${l.cx},\"cy\":${l.cy},\"pass\":\"${l.pass}\"}"
+        "{\"text\":${quote(l.text)},\"conf\":${l.conf},\"cx\":${l.cx},\"cy\":${l.cy},\"pass\":\"${l.pass}\"${if (l.dashed) ",\"dashed\":true" else ""}}"
     }
 
     private fun quote(s: String): String {
@@ -296,10 +303,19 @@ object MarginReader {
     }
 
     /** A region of the page and how much it is enlarged in the picture read. */
-    private class Tile(val src: Rect, val up: Float, val pass: String = "band", val stretch: Boolean = pass == "folio") {
+    private class Tile(
+        val src: Rect,
+        val up: Float,
+        val pass: String = "band",
+        val stretch: Boolean = pass == "folio",
+        /** Paint out the dash marks of a "— N —" folio before ML Kit reads the tile ([dashMarks]). */
+        val maskDashes: Boolean = false,
+    ) {
         val outW: Int get() = (src.width() * up).toInt().coerceAtLeast(1)
         val outH: Int get() = (src.height() * up).toInt().coerceAtLeast(1)
         var top = 0
+        /** Dash marks were found on both sides of the print and painted out. */
+        var dashed = false
     }
 
     /**
@@ -324,6 +340,7 @@ object MarginReader {
                         cy = ((t.src.top + (by - t.top) / t.up) / page.height).toDouble(),
                         pass = t.pass,
                         conf = line.confidence.toDouble(),
+                        dashed = t.dashed,
                     ),
                 )
             }
@@ -346,8 +363,128 @@ object MarginReader {
         canvas.drawColor(Color.WHITE)
         for (t in tiles) {
             canvas.drawBitmap(page, t.src, Rect(0, t.top, t.outW, t.top + t.outH), if (t.stretch) levels(page, t.src) else paint)
+            if (t.maskDashes) maskDashes(page, t, canvas)
         }
         return pic
+    }
+
+    /**
+     * Paints the tile's dash marks ([dashMarks]) over with the paper: white
+     * when the tile's levels are stretched (paper → white), else the paper
+     * grey. Sets `t.dashed` when there were marks on both sides of the print.
+     */
+    private fun maskDashes(page: Bitmap, t: Tile, canvas: Canvas) {
+        val m = dashMarks(page, t.src) ?: return
+        if (m.rects.isEmpty()) return
+        t.dashed = m.bothSides
+        val fill = Paint().apply { color = if (t.stretch) Color.WHITE else Color.rgb(m.paper, m.paper, m.paper) }
+        for (r in m.rects) {
+            canvas.drawRect(
+                (r.left - 1) * t.up,
+                t.top + (r.top - 1) * t.up,
+                (r.right + 1) * t.up,
+                t.top + (r.bottom + 1) * t.up,
+                fill,
+            )
+        }
+    }
+
+    /** Dash marks in a tile (tile px), whether they sit on both sides of the print, the paper grey. */
+    private class DashMarks(val rects: List<Rect>, val bothSides: Boolean, val paper: Int)
+
+    /**
+     * The dash marks of a "— N —" folio in `src` of `page`: ink (darker than
+     * halfway between the paper, 90th percentile, and the darkest ink, 0.5th)
+     * split into connected blobs; the print's height is the tallest blob
+     * that looks like a character (≥ 6 px, at most 3× as wide as tall, under
+     * 60 % of the tile); a dash is a blob at most 0.45× that height, 2.5× as
+     * wide as tall or more, at most 3× the print's height long, on the
+     * print's row and within 2× its height of a character. Thresholded at
+     * halfway, not at 0.75× the paper as in [printSegments]: the 4 px dashes
+     * of the CI emulator's picture are lighter than the digits (run 26:
+     * paper ~205, darkest ink ~141). Measured on run 26's pages: the dashes
+     * of all 10 single-land-white folios, nothing on single-port-wood.
+     */
+    private fun dashMarks(page: Bitmap, src: Rect): DashMarks? {
+        val w = src.width()
+        val h = src.height()
+        if (w < 8 || h < 8) return null
+        val px = IntArray(w * h)
+        page.getPixels(px, 0, w, src.left, src.top, w, h)
+        val lum = IntArray(px.size) { i ->
+            val c = px[i]
+            ((c shr 16 and 0xff) * 299 + (c shr 8 and 0xff) * 587 + (c and 0xff) * 114) / 1000
+        }
+        val hist = IntArray(256)
+        for (v in lum) hist[v]++
+        fun pct(f: Double): Int {
+            var acc = 0
+            for (i in 0..255) {
+                acc += hist[i]
+                if (acc >= lum.size * f) return i
+            }
+            return 255
+        }
+        val paper = pct(0.90)
+        val ink = pct(0.005)
+        if (paper - ink < 24) return null
+        val thr = (paper + ink) / 2
+        val label = BooleanArray(w * h)
+        val stack = IntArray(w * h)
+        val blobs = ArrayList<Rect>()
+        for (start in lum.indices) {
+            if (label[start] || lum[start] >= thr) continue
+            var top = 0
+            stack[top++] = start
+            label[start] = true
+            var l = start % w
+            var r = l
+            var tt = start / w
+            var b = tt
+            var area = 0
+            while (top > 0) {
+                val p = stack[--top]
+                area++
+                val x = p % w
+                val y = p / w
+                if (x < l) l = x
+                if (x > r) r = x
+                if (y < tt) tt = y
+                if (y > b) b = y
+                for (dy in -1..1) for (dx in -1..1) {
+                    val nx = x + dx
+                    val ny = y + dy
+                    if (nx < 0 || nx >= w || ny < 0 || ny >= h) continue
+                    val q = ny * w + nx
+                    if (!label[q] && lum[q] < thr) {
+                        label[q] = true
+                        stack[top++] = q
+                    }
+                }
+            }
+            if (area >= 3) blobs.add(Rect(l, tt, r + 1, b + 1))
+        }
+        val rowH = blobs.filter { it.height() >= 6 && it.height() <= h * 0.6 && it.width() <= 3 * it.height() }.maxOfOrNull { it.height() }
+            ?: return DashMarks(emptyList(), false, paper)
+        val glyphs = blobs.filter { it.height() >= 0.6 * rowH }
+        val rects = ArrayList<Rect>()
+        var left = false
+        var right = false
+        for (d in blobs) {
+            val dh = d.height()
+            val dw = d.width()
+            if (dh > maxOf(3.0, 0.45 * rowH) || dw < 2.5 * dh || dw > 3 * rowH) continue
+            val cy = d.exactCenterY()
+            val near = glyphs.filter { g ->
+                Math.abs(g.exactCenterY() - cy) <= 0.6 * rowH &&
+                    minOf(Math.abs(g.left - d.right), Math.abs(d.left - g.right)) <= 2 * rowH
+            }
+            if (near.isEmpty()) continue
+            rects.add(d)
+            if (near.all { d.right <= it.left + 1 }) left = true
+            if (near.all { d.left >= it.right - 1 }) right = true
+        }
+        return DashMarks(rects, left && right, paper)
     }
 
     /**

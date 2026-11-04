@@ -57,6 +57,18 @@ object PageFlatten {
      * frame sits ~25 px low on the left: the edge is outside the margin).
      */
     private const val STEP_SPAN = 3
+    /**
+     * Second try, only when the first gives no result: a wider margin and a
+     * fit started from the columns near the edge's median row. Run 26,
+     * spread-land-white-thick holds 4 and 5: the frame sat ~22 px low at
+     * the top, so the paper's top edge was at (hold 4) or above (hold 5)
+     * the first row of the 5 % cut, and the running head and the gutter
+     * pulled the first fit off (22 / 13 of 60 columns on the curve). With
+     * 10 % and the median start: 40 and 33 columns on the curve, the edge
+     * bowing 3.7 % / 4.9 % (Python port on run 26's camera pictures); the
+     * pages that already flatten never get here.
+     */
+    private const val MARGIN_WIDE = 0.10
     private const val MIN_STEP = 10.0
 
     class Result(
@@ -83,13 +95,16 @@ object PageFlatten {
      */
     fun flattenOrWhy(img: Bitmap, q: Quad, ow: Int, oh: Int): Pair<Result?, String> {
         val why = StringBuilder()
-        return Pair(flattenInto(img, q, ow, oh, why), why.toString())
+        flattenInto(img, q, ow, oh, why, MARGIN, false)?.let { return Pair(it, "") }
+        val why2 = StringBuilder()
+        val r = flattenInto(img, q, ow, oh, why2, MARGIN_WIDE, true)
+        return Pair(r, if (r != null) "wide margin (first try: $why)" else "$why; wide margin: $why2")
     }
 
-    private fun flattenInto(img: Bitmap, q: Quad, ow: Int, oh: Int, why: StringBuilder): Result? {
+    private fun flattenInto(img: Bitmap, q: Quad, ow: Int, oh: Int, why: StringBuilder, margin: Double, robust: Boolean): Result? {
         // The page with a margin, in page units scaled to ow x oh.
-        val mx = (ow * MARGIN).roundToInt()
-        val my = (oh * MARGIN).roundToInt()
+        val mx = (ow * margin).roundToInt()
+        val my = (oh * margin).roundToInt()
         val ew = ow + 2 * mx
         val eh = oh + 2 * my
         val m = Matrix()
@@ -105,8 +120,8 @@ object PageFlatten {
             ext.getPixels(px, 0, ew, 0, 0, ew, eh)
             val lum = PageFrame.luminance(px)
             val reach = my + (oh * SEARCH).roundToInt()
-            val top = fitEdge(lum, ew, eh, mx, ow, 0, reach, my.toDouble(), oh, "top", why) ?: return null
-            val bottom = fitEdge(lum, ew, eh, mx, ow, eh - 1, eh - 1 - reach, (my + oh).toDouble(), oh, "bottom", why) ?: return null
+            val top = fitEdge(lum, ew, eh, mx, ow, 0, reach, my.toDouble(), oh, "top", why, robust) ?: return null
+            val bottom = fitEdge(lum, ew, eh, mx, ow, eh - 1, eh - 1 - reach, (my + oh).toDouble(), oh, "bottom", why, robust) ?: return null
             val out = IntArray(ow * oh)
             for (x in 0 until ow) {
                 val u = (x + 0.5) / ow
@@ -163,6 +178,7 @@ object PageFlatten {
         ph: Int,
         edge: String,
         why: StringBuilder,
+        robust: Boolean = false,
     ): Curve? {
         val dir = if (to > from) 1 else -1
         val us = ArrayList<Double>()
@@ -198,7 +214,20 @@ object PageFlatten {
         }
         var fit = lsq(us, ys, null) ?: return null.also { why.append("$edge edge: no curve fit") }
         val tol = max(2.0, ph * 0.012)
-        val keep = us.indices.filter { abs(ys[it] - fit.at(us[it])) <= tol }
+        var keep = us.indices.filter { abs(ys[it] - fit.at(us[it])) <= tol }
+        if (robust && keep.size < COLUMNS * MIN_INLIERS) {
+            // Started from the columns within 2 tol of the median row, then
+            // three rounds of refit and keep (running head, gutter dropped).
+            val med = ys.sorted()[ys.size / 2]
+            var idx = us.indices.filter { abs(ys[it] - med) <= 2 * tol }
+            for (round in 0 until 3) {
+                if (idx.size < 3) break
+                val f = lsq(us, ys, idx) ?: break
+                fit = f
+                idx = us.indices.filter { abs(ys[it] - f.at(us[it])) <= tol }
+            }
+            keep = idx
+        }
         if (keep.size < COLUMNS * MIN_INLIERS) {
             why.append("$edge edge: ${us.size}/$COLUMNS columns with an edge step, ${keep.size} of them on one curve")
             return null

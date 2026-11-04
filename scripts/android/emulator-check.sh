@@ -480,6 +480,12 @@ if [ -s "$STILLS/stills.json" ]; then
   adb shell am force-stop "$PKG"
   adb shell mkdir -p "$SDIR"
   find "$STILLS" -maxdepth 1 \( -name '*.jpg' -o -name '*.quad' \) -print0 | xargs -0 sh -c 'adb push "$@" '"$SDIR/"' | tail -n1' sh | tee -a "$OUT/steps.log"
+  # The order the app's session replay takes the stills in (StillsCheck,
+  # "stillseq …" lines): single-land-white without hold 3 (p37 skipped on
+  # purpose, as on the live camera) — the list must have p37, and only p37,
+  # red. Clips not listed: every hold in order.
+  printf 'single-land-white 0 1 2 4 5 6 7 8 9\n' >"$OUT/stills/sequence.txt"
+  adb push "$OUT/stills/sequence.txt" "$SDIR/" | tail -n1 | tee -a "$OUT/steps.log"
   mark=$(events_lines)
   adb shell monkey -p "$PKG" -c android.intent.category.LAUNCHER 1 >/dev/null
   t0=$SECONDS
@@ -496,7 +502,7 @@ if [ -s "$STILLS/stills.json" ]; then
   done
   sleep 3
   seen=$(events_since "$mark" | grep -cE 'AstarScanMlkit.*: still ')
-  events_since "$mark" | grep -E 'AstarScanMlkit.*: (stills|still )' | cut -c19- | cut -c1-300 | sed 's/^/    /' | tee -a "$OUT/steps.log"
+  events_since "$mark" | grep -E 'AstarScanMlkit.*: (stills|still |stillseq [^ ]+ (step|list))' | cut -c19- | cut -c1-400 | sed 's/^/    /' | tee -a "$OUT/steps.log"
   log "stills: $seen still lines after $((SECONDS - t0))s"
   shot stills-done nodump
 else
