@@ -132,6 +132,12 @@ class CaptureActivity : ComponentActivity() {
     private val busy = AtomicBoolean(false)
     private val finishing = AtomicBoolean(false)
 
+    /** Camera pictures held while a page's number is read, with that page's seq (grabHeld / readHeld). */
+    private val held = ArrayDeque<Pair<Int, Bitmap>>()
+    /** The seq of the page last taken (0: none yet). */
+    @Volatile private var heldSeq = 0
+    private var lastHeldAt = 0L
+
     /** The newest page's band picture, for the solo ML Kit call on close (eval mode only). */
     private var soloSample: Bitmap? = null
     private var cameraProvider: ProcessCameraProvider? = null
@@ -197,6 +203,10 @@ class CaptureActivity : ComponentActivity() {
         synchronized(this) {
             soloSample?.recycle()
             soloSample = null
+        }
+        synchronized(held) {
+            for (e in held) e.second.recycle()
+            held.clear()
         }
     }
 
@@ -355,6 +365,12 @@ class CaptureActivity : ComponentActivity() {
     private fun analyze(image: ImageProxy) {
         try {
             val now = SystemClock.elapsedRealtime()
+            // While the page just taken is read: keep a few more camera
+            // pictures of it (another chance for its folio, see readHeld).
+            if (!armed && !busy.get() && !finishing.get() && pendingReads.get() > 0 && now - lastHeldAt >= HELD_EVERY_MS) {
+                lastHeldAt = now
+                grabHeld(image)
+            }
             // No frame finding while a page is being cut, nor (for up to
             // READ_PAUSE_MS) while the number of the page just taken is read
             // ("✓ 撮れた" is up, the user is turning), and less of it while
@@ -410,6 +426,86 @@ class CaptureActivity : ComponentActivity() {
         } finally {
             image.close()
         }
+    }
+
+    /**
+     * Analysis thread: the camera picture now, kept for the page last taken
+     * (`heldSeq`) when its print still matches that page (PageMatch inliers
+     * ≥ HELD_MATCH; the same page scores ~190–216 on the CI emulator, the
+     * next one ~5), at most HELD_MAX of them.
+     */
+    private fun grabHeld(image: ImageProxy) {
+        val s = heldSeq
+        if (s == 0) return
+        synchronized(held) { if (held.count { it.first == s } >= HELD_MAX) return }
+        val ref = refFeatures ?: return
+        if (ref.size < PageMatch.MIN_FEATURES) return
+        val f = upright(image.toBitmap(), image.imageInfo.rotationDegrees)
+        val n = try {
+            PageMatch.inliers(ref, PageMatch.features(PageMatch.gray(f), refRegion))
+        } catch (e: Exception) {
+            0
+        }
+        if (n < HELD_MATCH || heldSeq != s) {
+            f.recycle()
+            return
+        }
+        synchronized(held) {
+            held.addLast(Pair(s, f))
+            while (held.size > HELD_MAX) held.removeFirst().second.recycle()
+        }
+        Log.i(TAG, "held picture for page $s (match=$n)")
+    }
+
+    /** The newest held picture of page `s` (removed from the list); older pages' pictures are dropped. */
+    private fun takeHeld(s: Int): Bitmap? = synchronized(held) {
+        val iter = held.iterator()
+        while (iter.hasNext()) {
+            val e = iter.next()
+            if (e.first < s) {
+                e.second.recycle()
+                iter.remove()
+            }
+        }
+        val e = held.lastOrNull { it.first == s } ?: return null
+        held.remove(e)
+        e.second
+    }
+
+    /**
+     * Read thread: the page's number on the pictures held after the shot,
+     * when the shot's own picture gave none. Each is framed again
+     * (DocAligner; the shot's frame when the model is not sure) and read
+     * with the same one ML Kit call. Run 25/26, single-land-white at
+     * 960x1280: the folio "— N —" read on 2 of 10 shots; another rendering
+     * of the same picture (MarginReader.extraLines) read none of the other
+     * 8, while run 24 saw the same page read on one camera picture and not
+     * on the next — a new picture is the better second chance.
+     */
+    private fun readHeld(name: String, spread: Boolean, s: Int, kf: Quad): PageNumbers.Pick? {
+        for (i in 1..HELD_READS) {
+            if (closed.get()) return null
+            val f = takeHeld(s) ?: return null
+            val page = try {
+                val r = detector?.detect(f)
+                val q = r?.quad?.takeIf { r.minPeak >= CaptureDetector.MIN_PEAK && PageFrame.plausible(it, f.width, f.height) && !PageFrame.outside(it, f.width, f.height) }
+                if (q != null) PageRead.cut(f, q).page else PageFrame.warp(f, kf, PageRead.PAGE_MAX_SIDE)
+            } catch (e: Exception) {
+                Log.w(TAG, "held picture $i of $name not cut", e)
+                null
+            } finally {
+                f.recycle()
+            }
+            if (page == null) continue
+            val pick = try {
+                readNumber(page, "$name#h$i", spread, fallback = false)
+            } finally {
+                page.recycle()
+            }
+            Log.i(TAG, "number for $name: held picture $i read ${pick.nums}${if (pick.strong) "" else " (weak)"}")
+            if (pick.nums.isNotEmpty()) return pick
+        }
+        return null
     }
 
     /** One analysed frame: stability, re-arming after a turn, auto-capture, the yellow notice. */
@@ -600,6 +696,9 @@ class CaptureActivity : ComponentActivity() {
             }
             seq++
             val name = "$stamp-$seq.jpg"
+            val pageSeq = seq
+            heldSeq = seq
+            val keptInFrame = kept.scaled(frame.width.toFloat() / photo.width, frame.height.toFloat() / photo.height)
             // The kept page is the curvature-corrected one (PageFlatten);
             // the number is still read on the straight cut `page`.
             val tFlat = SystemClock.elapsedRealtime()
@@ -643,7 +742,7 @@ class CaptureActivity : ComponentActivity() {
             }
             pendingReads.incrementAndGet()
             try {
-                readExec.execute { readPage(name, page, second, spread, tShot) }
+                readExec.execute { readPage(name, page, second, spread, tShot, pageSeq, keptInFrame) }
             } catch (e: Exception) {
                 pendingReads.decrementAndGet()
                 Log.w(TAG, "number not read for $name", e)
@@ -664,11 +763,15 @@ class CaptureActivity : ComponentActivity() {
      * session, the banner (newest page, or red for a missing page) and the
      * saved list. `page` and `second` are recycled here.
      */
-    private fun readPage(name: String, page: Bitmap, second: Bitmap?, spread: Boolean, shotAt: Long) {
+    private fun readPage(name: String, page: Bitmap, second: Bitmap?, spread: Boolean, shotAt: Long, pageSeq: Int, keptInFrame: Quad) {
         try {
             if (closed.get()) return
             val t0 = SystemClock.elapsedRealtime()
-            val pick = readNumber(page, name, spread)
+            // Nothing on the shot: the pictures held since (readHeld). The
+            // other renderings of the shot (MarginReader.extraLines) read
+            // none of 8 such pages in run 26, so they are not tried here.
+            var pick = readNumber(page, name, spread, fallback = false)
+            if (pick.nums.isEmpty()) pick = readHeld(name, spread, pageSeq, keptInFrame) ?: pick
             val tRead = SystemClock.elapsedRealtime()
             val (nums, guess) = confirm(pick, spread, name, second)
             val tConfirm = SystemClock.elapsedRealtime()
@@ -1084,5 +1187,12 @@ class CaptureActivity : ComponentActivity() {
         /** A page's banner stays at least this long before yellow may replace it. */
         private const val BANNER_MS = 2500L
         private const val STILL_TIMEOUT_MS = 4000L
+        /** A picture of the page just taken is held at most this often while its number is read. */
+        private const val HELD_EVERY_MS = 1500L
+        private const val HELD_MAX = 3
+        /** PageMatch inliers for "still the page just taken" (re-arming needs < OTHER_PAGE = 40). */
+        private const val HELD_MATCH = 100
+        /** Held pictures read at most, one ML Kit call each. */
+        private const val HELD_READS = 2
     }
 }
