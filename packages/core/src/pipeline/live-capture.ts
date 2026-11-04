@@ -43,6 +43,11 @@ export const LIVE_CAPTURE_DEFAULTS = {
   minConfidence: 0.5,
   /** Quad area floor (fraction of the source frame). */
   minAreaFrac: 0.01,
+  /** Quad area / model box area floor. The model's corners shrink inside
+   *  the page while its box still covers it; a frame whose quad covers
+   *  less than this of the box would crop part of the page, so it is not
+   *  a page frame (no ✓ from it). Frames without `boxAgreement` pass. */
+  minBoxAgreement: 0.6,
   /** Mean corner displacement between consecutive samples, as a fraction
    *  of the frame diagonal, at or below which the page counts as still. */
   maxMotion: 0.07,
@@ -80,6 +85,9 @@ export interface LiveFrame<T = unknown> {
   frameW: number
   frameH: number
   areaFrac: number
+  /** Quad area / detector box area (see `minBoxAgreement`); omit when
+   *  the detector has no box. */
+  boxAgreement?: number
   /** Ranking score within a hold (higher = better). */
   score: number
   /** 256-bit pHash of the warped page; null when not computed. */
@@ -183,11 +191,15 @@ export class LiveCaptureJudge<T = unknown> {
     }))
   }
 
-  isPage(f: Pick<LiveFrame, 'confidence' | 'areaFrac' | 'hash'>): boolean {
+  isPage(
+    f: Pick<LiveFrame, 'confidence' | 'areaFrac' | 'hash' | 'boxAgreement'>,
+  ): boolean {
     return (
       f.hash !== null &&
       f.confidence >= this.opts.minConfidence &&
-      f.areaFrac >= this.opts.minAreaFrac
+      f.areaFrac >= this.opts.minAreaFrac &&
+      (f.boxAgreement === undefined ||
+        f.boxAgreement >= this.opts.minBoxAgreement)
     )
   }
 

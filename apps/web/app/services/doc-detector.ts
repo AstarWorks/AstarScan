@@ -36,6 +36,12 @@
  */
 
 import type { Quad } from '@astarworks/scan-core'
+import {
+  OrientationPicker,
+  detectPageCorners,
+  type CornerRefineResult,
+  type PixelBox,
+} from '@astarworks/scan-core/pipeline'
 
 import { loadOpenCV } from './opencv-loader'
 import { getPipelineOps } from './pipeline-ops'
@@ -58,6 +64,11 @@ export interface DocDetection {
   /** [0, 1]. YOLOv8 (when active): class confidence. OpenCV: 1.0. */
   confidence: number
   source: 'yolo-pose' | 'opencv'
+  /** YOLO only: quad area / model box area (`LiveCaptureJudge` does not
+   *  ✓ a frame below `minBoxAgreement`). */
+  boxAgreement?: number
+  /** YOLO only: the corners were snapped onto the paper edge. */
+  refined?: boolean
 }
 
 type MlState =
@@ -67,6 +78,10 @@ type MlState =
   | { kind: 'unavailable' } // model load failed permanently
 
 let mlState: MlState = { kind: 'uninitialized' }
+
+/** Which way landscape frames are turned for the model (kept across
+ *  frames: probes every turn now and then, runs the leader otherwise). */
+const picker = new OrientationPicker()
 
 async function ensureMlBackend(): Promise<void> {
   if (!ENABLE_ML_DETECTOR) return
@@ -102,12 +117,24 @@ export async function detectDocument(
     await ensureMlBackend()
     if (mlState.kind === 'ready') {
       try {
-        const result = await mlState.backend.detect(frame)
-        if (result && result.confidence >= ML_MIN_CONFIDENCE) {
+        // Model (landscape frames turned per `picker`) → snap the corners,
+        // which shrink inside the page, onto the paper edge found inside
+        // the model's box (scan-core corner-refine / orientation).
+        const backend = mlState.backend
+        const found = await detectPageCorners(
+          frame,
+          (turn) => backend.detect(frame, turn),
+          (quad, box) => refineCorners(frame, quad, box),
+          picker,
+        )
+        const result = found?.detection
+        if (found && result && result.confidence >= ML_MIN_CONFIDENCE) {
           return {
-            quad: result.quad,
+            quad: found.refine.quad,
             confidence: result.confidence,
             source: 'yolo-pose',
+            boxAgreement: found.refine.boxAgreement,
+            refined: found.refine.refined,
           }
         }
         // Low confidence or no detection: skip the frame. Falling through
@@ -129,6 +156,27 @@ export function getDetectorSource(): 'yolo-pose' | 'opencv' | 'pending' {
   if (mlState.kind === 'ready') return 'yolo-pose'
   if (ENABLE_ML_DETECTOR && mlState.kind !== 'unavailable') return 'pending'
   return 'opencv'
+}
+
+/** Corner snap (scan-core corner-refine), or null when OpenCV is not
+ *  loaded or the snap throws — the model's corners are then used as-is. */
+function refineCorners(
+  frame: HTMLCanvasElement,
+  quad: Quad,
+  box: PixelBox,
+): CornerRefineResult | null {
+  const ops = getPipelineOps()
+  if (!ops) return null
+  try {
+    return ops.refineCorners(
+      frame as unknown as Parameters<typeof ops.refineCorners>[0],
+      quad,
+      box,
+    )
+  } catch (err) {
+    console.warn('[doc-detector] corner refine threw, using model corners', err)
+    return null
+  }
 }
 
 // ---------------------------------------------------------------------------

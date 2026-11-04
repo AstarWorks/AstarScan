@@ -72,6 +72,22 @@ describe('LiveCaptureJudge', () => {
     expect(ev.some((e) => e.type === 'hold')).toBe(true)
   })
 
+  it('gives no ✓ while the quad covers too little of the detector box', () => {
+    const low = LIVE_CAPTURE_DEFAULTS.minBoxAgreement - 0.1
+    const ev = run(span(0, 1.5, (t) => frame(t, PAGE_A, { boxAgreement: low })))
+    expect(ev.filter((e) => e.type === 'captured')).toHaveLength(0)
+    const ok = run(
+      span(0, 1.5, (t) =>
+        frame(t, PAGE_A, {
+          boxAgreement: LIVE_CAPTURE_DEFAULTS.minBoxAgreement,
+        }),
+      ),
+    )
+    expect(ok.filter((e) => e.type === 'captured')).toHaveLength(1)
+    const j = new LiveCaptureJudge()
+    expect(j.isPage({ confidence: 0.8, areaFrac: 0.3, hash: 0n })).toBe(true)
+  })
+
   it('does not gate on sharpness: a low-score page is still captured', () => {
     const ev = run(span(0, 1.5, (t) => frame(t, PAGE_A, { score: 0.05 })))
     expect(ev.filter((e) => e.type === 'captured')).toHaveLength(1)

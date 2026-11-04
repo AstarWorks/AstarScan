@@ -10,7 +10,7 @@
  *  - `CanvasLike` / `Context2DLike` / `ImageDataLike` — the common subset of
  *    HTMLCanvasElement and @napi-rs/canvas's Canvas that the pipeline uses.
  *  - `CvLike` — the exact OpenCV API surface the cv-dependent modules call
- *    (sharpness, warp, detect-otsu, orb). Both OpenCV.js builds satisfy it.
+ *    (sharpness, warp, detect-otsu, corner-refine, orb). Both OpenCV.js builds satisfy it.
  *
  * cv-dependent modules are factories taking `PipelineDeps`; pure modules
  * (hash, score, segment-cluster, …) take no deps at all.
@@ -89,6 +89,7 @@ export interface CvMat {
   rows: number
   cols: number
   readonly data: Uint8Array
+  readonly data32S: Int32Array
   readonly data64F: Float64Array
   clone(): CvMat
   roi(rect: CvRect): CvMat
@@ -175,6 +176,19 @@ export interface CvLike {
   ): void
   contourArea(contour: CvMat): number
   minAreaRect(points: CvMat): CvRotatedRect
+  convexHull(
+    points: CvMat,
+    hull: CvMat,
+    clockwise: boolean,
+    returnPoints: boolean,
+  ): void
+  arcLength(curve: CvMat, closed: boolean): number
+  approxPolyDP(
+    curve: CvMat,
+    approxCurve: CvMat,
+    epsilon: number,
+    closed: boolean,
+  ): void
   Laplacian(
     src: CvMat,
     dst: CvMat,

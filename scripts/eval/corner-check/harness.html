@@ -1,0 +1,187 @@
+<!doctype html>
+<html>
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width,initial-scale=1" />
+    <style>
+      /* Same layout rules as apps/web/app/pages/index.vue (.viewport / __video / __overlay) */
+      html,
+      body {
+        margin: 0;
+        height: 100%;
+        background: #000;
+      }
+      .app {
+        display: flex;
+        flex-direction: column;
+        height: 100%;
+      }
+      .top {
+        height: 56px;
+        background: #222;
+      }
+      .viewport {
+        position: relative;
+        flex: 1;
+        min-height: 0;
+        overflow: hidden;
+        background: #000;
+      }
+      .viewport__video {
+        position: absolute;
+        inset: 0;
+        width: 100%;
+        height: 100%;
+        object-fit: contain;
+        z-index: 1;
+      }
+      .viewport__overlay {
+        position: absolute;
+        inset: 0;
+        width: 100%;
+        height: 100%;
+        pointer-events: none;
+        z-index: 2;
+      }
+      .bottom {
+        height: 120px;
+        background: #222;
+      }
+    </style>
+  </head>
+  <body>
+    <div class="app">
+      <div class="top"></div>
+      <section class="viewport">
+        <video id="v" class="viewport__video" playsinline muted></video
+        ><canvas id="o" class="viewport__overlay"></canvas>
+      </section>
+      <div class="bottom"></div>
+    </div>
+    <script>
+      // Pixel-exact page finder (white paper on brown desk) — stands in for the
+      // detector so only the coordinate mapping is under test.
+      function findQuad(work) {
+        const ctx = work.getContext('2d')
+        const { width: w, height: h } = work
+        const d = ctx.getImageData(0, 0, w, h).data
+        let tl = null,
+          tr = null,
+          br = null,
+          bl = null,
+          a = 1e9,
+          b = -1e9,
+          c = 1e9,
+          e = -1e9
+        for (let y = 0; y < h; y += 1)
+          for (let x = 0; x < w; x += 1) {
+            const i = (y * w + x) * 4
+            if (d[i] > 200 && d[i + 1] > 200 && d[i + 2] > 200) {
+              const s = x + y,
+                df = y - x
+              if (s < a) {
+                a = s
+                tl = { x, y }
+              }
+              if (s > b) {
+                b = s
+                br = { x, y }
+              }
+              if (df < c) {
+                c = df
+                tr = { x, y }
+              }
+              if (df > e) {
+                e = df
+                bl = { x, y }
+              }
+            }
+          }
+        return tl ? { tl, tr, br, bl } : null
+      }
+      // renderOverlay() mapping from index.vue, verbatim.
+      function renderOverlay(canvas, video, info) {
+        const rect = video.getBoundingClientRect()
+        canvas.width = Math.round(rect.width)
+        canvas.height = Math.round(rect.height)
+        const ctx = canvas.getContext('2d')
+        ctx.clearRect(0, 0, canvas.width, canvas.height)
+        const scale = Math.min(
+          canvas.width / info.srcW,
+          canvas.height / info.srcH,
+        )
+        const offX = (canvas.width - info.srcW * scale) / 2,
+          offY = (canvas.height - info.srcH * scale) / 2
+        const toScreen = (p) => ({
+          x: offX + p.x * scale,
+          y: offY + p.y * scale,
+        })
+        ctx.strokeStyle = '#22c55e'
+        ctx.lineWidth = 3
+        ctx.beginPath()
+        ;[info.quad.tl, info.quad.tr, info.quad.br, info.quad.bl].forEach(
+          (p, i) => {
+            const s = toScreen(p)
+            i ? ctx.lineTo(s.x, s.y) : ctx.moveTo(s.x, s.y)
+          },
+        )
+        ctx.closePath()
+        ctx.stroke()
+      }
+      window.snap = async () => {
+        const v = document.getElementById('v')
+        const work = document.createElement('canvas')
+        work.width = v.videoWidth
+        work.height = v.videoHeight
+        work.getContext('2d').drawImage(v, 0, 0)
+        const quad = findQuad(work)
+        if (quad)
+          renderOverlay(document.getElementById('o'), v, {
+            quad,
+            srcW: work.width,
+            srcH: work.height,
+          })
+        const raw = document.createElement('canvas')
+        raw.width = work.width
+        raw.height = work.height
+        const rc = raw.getContext('2d')
+        rc.drawImage(work, 0, 0)
+        if (quad) {
+          rc.strokeStyle = '#22c55e'
+          rc.lineWidth = 4
+          rc.beginPath()
+          ;[quad.tl, quad.tr, quad.br, quad.bl].forEach((p, i) =>
+            i ? rc.lineTo(p.x, p.y) : rc.moveTo(p.x, p.y),
+          )
+          rc.closePath()
+          rc.stroke()
+        }
+        return {
+          raw: raw.toDataURL('image/png'),
+          quad,
+          videoW: v.videoWidth,
+          videoH: v.videoHeight,
+          rect: v.getBoundingClientRect().toJSON(),
+          track: document
+            .getElementById('v')
+            .srcObject.getVideoTracks()[0]
+            .getSettings(),
+        }
+      }
+      ;(async () => {
+        const s = await navigator.mediaDevices.getUserMedia({
+          video: {
+            facingMode: { ideal: 'environment' },
+            width: { ideal: 1920 },
+            height: { ideal: 1080 },
+          },
+          audio: false,
+        })
+        const v = document.getElementById('v')
+        v.srcObject = s
+        await v.play()
+        window.ready = true
+      })()
+    </script>
+  </body>
+</html>
