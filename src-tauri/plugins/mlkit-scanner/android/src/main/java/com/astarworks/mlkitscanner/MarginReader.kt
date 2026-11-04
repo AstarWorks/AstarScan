@@ -40,7 +40,14 @@ object MarginReader {
     private const val FOLIO_TEXT_PX = 48
     /** Grey the darkest ink of a folio piece is mapped to (see [levels]). */
     private const val INK_LEVEL = 96f
-    private const val MAX_FOLIO_SEGMENTS = 4
+    /**
+     * Pieces of print per band in the first picture, most isolated first.
+     * Run 25: up to 4 a band with the extra renderings made pictures of
+     * 11–15 tiles (~1000x2100–3300 px), one call ~10.7 s next to the camera
+     * and 9 calls over the 20 s timeout; run 23's 5–7 tiles took ~6.8 s.
+     */
+    private const val MAX_FOLIO_SEGMENTS = 3
+    /** Pieces from the top band (running head), fewer: every tile makes the picture taller. */
     private const val MAX_FOLIO_SEGMENTS_TOP = 2
     /** Height of the top / bottom centre strips (share of the page height). */
     private const val CENTER_STRIP_FRAC = 0.07
@@ -117,8 +124,20 @@ object MarginReader {
      * the second read). Lines keep their pass ("band" / "folio"), so the
      * caller still prefers the band's number (PageNumbers.pickNative).
      */
-    fun marginLines(page: Bitmap, bandFrac: Double, folioFrac: Double, minWidth: Int): List<PageNumbers.Line> =
-        recognizeTiles(page, bandTiles(page, bandFrac, minWidth) + folioTiles(page, folioFrac), "margins")
+    fun marginLines(page: Bitmap, bandFrac: Double, folioFrac: Double, minWidth: Int, what: String = "margins"): List<PageNumbers.Line> =
+        recognizeTiles(page, bandTiles(page, bandFrac, minWidth) + folioTiles(page, folioFrac), what)
+
+    /**
+     * The other renderings of where a single page's folio sits (see
+     * [extraTiles]), in ONE more call: only when the first picture
+     * ([marginLines]) gave no number, so a page whose number reads at
+     * once costs one call. Empty for a spread (no call).
+     */
+    fun extraLines(page: Bitmap, what: String = "extra"): List<PageNumbers.Line> {
+        val tiles = extraTiles(page)
+        if (tiles.isEmpty()) return emptyList()
+        return recognizeTiles(page, tiles, what)
+    }
 
     private fun bandTiles(page: Bitmap, marginFrac: Double, minWidth: Int): List<Tile> {
         val w = page.width
@@ -187,8 +206,8 @@ object MarginReader {
                 tiles.add(Tile(Rect(x0, ry0, x1, ry1), up, "folio"))
             }
         }
-        // Where a folio usually sits: the middle of the top and bottom
-        // margins, cut out whether or not a piece was found there (run 22:
+        // Where a folio usually sits: the middle of the bottom margin, cut
+        // out whether or not a piece was found there (run 22:
         // single-land-white's "— 33 —" next to a thumb was found on 1 page
         // of 10). On a spread (wider than tall) the middle of each page's
         // bottom margin and the outer bottom corners instead, enlarged more:
@@ -205,35 +224,44 @@ object MarginReader {
                 tiles.add(Tile(Rect((w * fr[0]).toInt(), y0, (w * fr[1]).toInt(), h), upS, "folio"))
             }
         } else {
-            // (Up to 4×: at 2.5× run 24 read single-land-white's "— 33 —"
-            // on 2 pages of 10.)
+            // The bottom centre strip, up to 4× (at 2.5× run 24 read
+            // single-land-white's "— 33 —" on 2 pages of 10). The top strip
+            // and the other renderings are in [extraTiles].
             val upC = (FOLIO_TEXT_PX / textPx).toFloat().coerceIn(1f, 4f)
-            for (top in listOf(true, false)) {
-                val ry0 = if (top) 0 else h - strip
-                val r = Rect((w * 0.33).toInt(), ry0, (w * 0.67).toInt(), ry0 + strip)
-                tiles.add(Tile(r, upC, "folio"))
-                // The bottom strip once more, without the level stretch:
-                // run 24 read a "— N —" folio on 4 of 10 pages, a different
-                // one from picture to picture of the same page, so another
-                // rendering is another chance. (A third, at 3×, made the
-                // picture too slow in run 25.)
-                if (!top) tiles.add(Tile(r, upC, "folio", stretch = false))
-            }
-            // The bottom outer corners, as drawn (no level stretch: a thumb
-            // in the corner would set the levels). Run 24, single-port-wood
-            // p7, p9, p11: the folio ("7", "9", "11") touches the thumb on
-            // the bottom margin, so its ink joins the thumb's blob, which is
-            // too big for a character and dropped by printSegments; the
-            // band alone (at ~1.3×) read nothing on either camera picture.
-            // At 2×-ish: these folios are body size (~12 px on the CI
-            // emulator), larger than "— N —" read in the centre strip.
-            val cw = (w * CORNER_FRAC).toInt().coerceAtLeast(4)
-            val ry0 = h - strip
-            val upK = (upC * 0.55f).coerceAtLeast(1f)
-            tiles.add(Tile(Rect(0, ry0, cw, h), upK, "folio", stretch = false))
-            tiles.add(Tile(Rect(w - cw, ry0, w, h), upK, "folio", stretch = false))
+            tiles.add(Tile(Rect((w * 0.33).toInt(), h - strip, (w * 0.67).toInt(), h), upC, "folio"))
         }
         return tiles
+    }
+
+    /**
+     * A single page's second chance, for [extraLines]: the bottom centre
+     * strip twice more, drawn differently (3×; 4× without the level
+     * stretch — run 24 read a "— N —" folio on 4 of 10 pages, a different
+     * one from picture to picture of the same page), the bottom outer
+     * corners as drawn (no level stretch: a thumb in the corner would set
+     * the levels; run 24, single-port-wood p7, p9, p11: the folio touches
+     * the thumb, its ink joins the thumb's blob, which is too big for a
+     * character and dropped by printSegments) and the top centre strip.
+     * None for a spread.
+     */
+    private fun extraTiles(page: Bitmap): List<Tile> {
+        val w = page.width
+        val h = page.height
+        if (w > h) return emptyList()
+        val strip = (h * CENTER_STRIP_FRAC).toInt().coerceAtLeast(4)
+        val upC = (FOLIO_TEXT_PX / (h * FOLIO_TEXT_FRAC)).toFloat().coerceIn(1f, 4f)
+        val bottom = Rect((w * 0.33).toInt(), h - strip, (w * 0.67).toInt(), h)
+        val cw = (w * CORNER_FRAC).toInt().coerceAtLeast(4)
+        val upK = (upC * 0.55f).coerceAtLeast(1f)
+        return listOf(
+            Tile(bottom, (upC * 0.75f).coerceAtLeast(1f), "folio"),
+            Tile(bottom, upC, "folio", stretch = false),
+            // At ~2.2× (c7a9b3d): these folios are body size (~12 px on the
+            // CI emulator), larger than "— N —" read in the centre strip.
+            Tile(Rect(0, h - strip, cw, h), upK, "folio", stretch = false),
+            Tile(Rect(w - cw, h - strip, w, h), upK, "folio", stretch = false),
+            Tile(Rect((w * 0.33).toInt(), 0, (w * 0.67).toInt(), strip), upC, "folio"),
+        )
     }
 
     /**
@@ -294,7 +322,7 @@ object MarginReader {
                         text = line.text,
                         cx = ((t.src.left + bx / t.up) / page.width).toDouble(),
                         cy = ((t.src.top + (by - t.top) / t.up) / page.height).toDouble(),
-                        pass = if (pass == "margins") t.pass else pass,
+                        pass = t.pass,
                         conf = line.confidence.toDouble(),
                     ),
                 )

@@ -9,6 +9,8 @@ import android.graphics.Canvas
 import android.graphics.Color
 import android.graphics.Matrix
 import android.graphics.Paint
+import android.graphics.Rect
+import android.graphics.RectF
 import java.nio.FloatBuffer
 import kotlin.math.max
 import kotlin.math.min
@@ -51,13 +53,23 @@ class CaptureDetector(context: Context) : AutoCloseable {
         inputName = session.inputNames.first()
     }
 
-    /** Corners of the document in `img` (its pixels), or null when the model gives nothing. */
+    /**
+     * Corners of the document in `img` (its pixels), or null when the model
+     * gives nothing. `pad` > 0: the picture is first widened by `pad` of its
+     * width / height on every side with its edge pixels repeated outward
+     * (the desk carried on), so paper that fills the picture has desk
+     * around it as in the model's training pictures. The corners are in
+     * `img`'s pixels either way.
+     */
     @Synchronized
-    fun detect(img: Bitmap): Result? {
+    fun detect(img: Bitmap, pad: Float = 0f): Result? {
         val w = img.width
         val h = img.height
-        val s = max(w, h)
+        val pw = w * pad
+        val ph = h * pad
+        val s = max(w + 2 * pw, h + 2 * ph)
         val scale = SIZE.toFloat() / s
+        // Where `img`'s (0, 0) sits in the square.
         val ox = (s - w) / 2f
         val oy = (s - h) / 2f
         val canvas = Canvas(square)
@@ -67,6 +79,28 @@ class CaptureDetector(context: Context) : AutoCloseable {
             postScale(scale, scale)
         }
         canvas.drawBitmap(img, m, paint)
+        if (pad > 0f) {
+            // Edge rows / columns stretched over the margins, corner pixels
+            // over the corners (cv2.BORDER_REPLICATE).
+            val l = (ox - pw) * scale
+            val t = (oy - ph) * scale
+            val x0 = ox * scale
+            val y0 = oy * scale
+            val x1 = (ox + w) * scale
+            val y1 = (oy + h) * scale
+            val r = (ox + w + pw) * scale
+            val b = (oy + h + ph) * scale
+            fun put(sx0: Int, sy0: Int, sx1: Int, sy1: Int, dl: Float, dt: Float, dr: Float, db: Float) =
+                canvas.drawBitmap(img, Rect(sx0, sy0, sx1, sy1), RectF(dl, dt, dr, db), paint)
+            put(0, 0, 1, h, l, y0, x0, y1)
+            put(w - 1, 0, w, h, x1, y0, r, y1)
+            put(0, 0, w, 1, x0, t, x1, y0)
+            put(0, h - 1, w, h, x0, y1, x1, b)
+            put(0, 0, 1, 1, l, t, x0, y0)
+            put(w - 1, 0, w, 1, x1, t, r, y0)
+            put(w - 1, h - 1, w, h, x1, y1, r, b)
+            put(0, h - 1, 1, h, l, y1, x0, b)
+        }
         square.getPixels(px, 0, SIZE, 0, 0, SIZE, SIZE)
         val plane = SIZE * SIZE
         for (i in 0 until plane) {
@@ -126,5 +160,13 @@ class CaptureDetector(context: Context) : AutoCloseable {
         const val SIZE = 256
         /** A corner the model is less sure of than this is not taken (corner-compare.py MIN_PEAK). */
         const val MIN_PEAK = 0.3f
+        /**
+         * Margin for [detect]'s second try (share of the picture's width /
+         * height on every side). Phone-resolution stills of the thick
+         * spread (4000x3000, the spread across ~80 % of it on a white desk):
+         * 3 of 6 framed as is (min peak 0.00–0.84), 6 of 6 with 15 % of the
+         * edges repeated outward (min peak 0.68–0.92, corners within 41 px).
+         */
+        const val CONTEXT_PAD = 0.15f
     }
 }

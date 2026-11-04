@@ -50,14 +50,28 @@ object PageRead {
 
     /**
      * The page's number: the margin bands and the folio pieces in ONE ML Kit
-     * call (MarginReader.marginLines), then PageNumbers.pickNative. Both
-     * passes are logged ("margins <name> … pass=band|folio") for the check.
+     * call (MarginReader.marginLines), then PageNumbers.pickNative. Only
+     * when that gives no number, and `fallback`: one more call on the other
+     * renderings of a single page's folio (MarginReader.extraLines; none for
+     * a spread). Run 25 put all of them in the first picture (11–15 tiles,
+     * ~10.7 s a call next to the camera on the CI emulator, 9 timeouts);
+     * on a phone the first call reads the number and stays the only one.
+     * Every pass is logged ("margins <name> … pass=band|folio|extra").
+     * `what` names the calls in the "ocr …" log lines (the stills check
+     * uses its own, so its calls are not counted with the capture screen's).
      */
-    fun read(page: Bitmap, name: String, spread: Boolean): PageNumbers.Pick =
-        PageNumbers.pickNative(lines(page, name), spread)
+    fun read(page: Bitmap, name: String, spread: Boolean, fallback: Boolean = true, what: String = "margins"): PageNumbers.Pick {
+        val first = lines(page, name, what)
+        val pick = PageNumbers.pickNative(first, spread)
+        if (!fallback || spread || pick.nums.isNotEmpty()) return pick
+        val extra = MarginReader.extraLines(page, if (what == "margins") "extra" else "$what-extra")
+        Log.i(MLKIT_TAG, "margins $name ${page.width}x${page.height} pass=extra ${MarginReader.json(extra)}")
+        if (extra.isEmpty()) return pick
+        return PageNumbers.pickNative(first + extra, spread)
+    }
 
-    fun lines(page: Bitmap, name: String): List<PageNumbers.Line> {
-        val lines = MarginReader.marginLines(page, BAND_FRAC, PageNumbers.MARGIN_FRAC, BAND_WIDTH)
+    fun lines(page: Bitmap, name: String, what: String = "margins"): List<PageNumbers.Line> {
+        val lines = MarginReader.marginLines(page, BAND_FRAC, PageNumbers.MARGIN_FRAC, BAND_WIDTH, what)
         Log.i(MLKIT_TAG, "margins $name ${page.width}x${page.height} pass=band ${MarginReader.json(lines.filter { it.pass == "band" })}")
         Log.i(MLKIT_TAG, "margins $name ${page.width}x${page.height} pass=folio ${MarginReader.json(lines.filter { it.pass == "folio" })}")
         return lines

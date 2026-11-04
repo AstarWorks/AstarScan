@@ -49,6 +49,7 @@ import java.util.concurrent.Executors
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicInteger
+import kotlin.math.hypot
 import kotlin.math.max
 import kotlin.math.min
 import kotlin.math.roundToInt
@@ -548,11 +549,29 @@ class CaptureActivity : ComponentActivity() {
             var q = frameQuad.scaled(photo.width.toFloat() / frame.width, photo.height.toFloat() / frame.height)
             var source = "analysis"
             if (photo !== frame) {
-                val r = det.detect(photo)
-                if (r != null && r.minPeak >= CaptureDetector.MIN_PEAK && PageFrame.plausible(r.quad, photo.width, photo.height)) {
+                val ph: Bitmap = photo
+                fun sure(r: CaptureDetector.Result?) =
+                    r != null && r.minPeak >= CaptureDetector.MIN_PEAK && PageFrame.plausible(r.quad, ph.width, ph.height)
+                var r = det.detect(photo)
+                var how = "still"
+                if (!sure(r)) {
+                    // The model wants desk around the paper (phone-resolution
+                    // stills of the thick spread: 3–4 of 6 found as is, 6 of
+                    // 6 with the edges repeated outward).
+                    r = det.detect(photo, CaptureDetector.CONTEXT_PAD)
+                    how = "still-padded"
+                }
+                // How far the still's frame is from the frame held still on
+                // the analysed pictures (share of the picture's diagonal).
+                // Run 25, single-land-white p39: the still came mid-change
+                // (ghost of another page), DocAligner put its top-left
+                // corner 300 px low and the page was cut 253 clip px off.
+                val off = if (r != null && sure(r)) (r.quad.maxMove(q) / hypot(ph.width.toDouble(), ph.height.toDouble())).toFloat() else -1f
+                if (r != null && sure(r) && off <= STILL_AGREE) {
                     q = r.quad
-                    source = "still"
+                    source = how
                 } else if (photo.width == frame.width && photo.height == frame.height) {
+                    if (off > STILL_AGREE) Log.i(TAG, "still frame ${r?.quad} is %.1f %% of the diagonal from the held frame $q; the analysed picture is cut".format(off * 100))
                     // Not sure on the still: the page is cut from the
                     // analysed frame its frame was found on (run 26: that
                     // frame laid over the still, taken a moment later by a
@@ -768,8 +787,10 @@ class CaptureActivity : ComponentActivity() {
         return out
     }
 
-    private fun readNumber(page: Bitmap, name: String, spread: Boolean): PageNumbers.Pick {
-        if (evalDir != null && !name.contains('#')) {
+    private fun readNumber(page: Bitmap, name: String, spread: Boolean, fallback: Boolean = true): PageNumbers.Pick {
+        // One sample picture for the "solo" call on close (emulator check):
+        // composed once, not on every page (CPU the read shares).
+        if (evalDir != null && !name.contains('#') && synchronized(this) { soloSample == null }) {
             try {
                 val pic = MarginReader.marginPicture(page, PageRead.BAND_FRAC, PageNumbers.MARGIN_FRAC, PageRead.BAND_WIDTH)
                 synchronized(this) {
@@ -779,8 +800,9 @@ class CaptureActivity : ComponentActivity() {
             } catch (_: Exception) {
             }
         }
-        // One ML Kit call: the bands and the folio pieces in one picture.
-        return PageRead.read(page, name, spread)
+        // One ML Kit call: the bands and the folio pieces in one picture;
+        // a second, smaller one only when that read no number (`fallback`).
+        return PageRead.read(page, name, spread, fallback)
     }
 
     /**
@@ -811,7 +833,8 @@ class CaptureActivity : ComponentActivity() {
         // A number read once (first page, a jump) is the page's guess: the
         // session keeps it when a neighbour confirms it.
         fun once(n: List<Int>, r: String, strong: Boolean) = if (strong && (r == "first" || r == "jump")) n else none
-        val again = second?.let { readNumber(it, "$name#2", spread) }
+        // The other camera picture: the first picture only (no extra call).
+        val again = second?.let { readNumber(it, "$name#2", spread, fallback = false) }
         // Printed as a folio ("— 41 —" at the bottom / top centre,
         // PageNumbers.framedFor): the page number, not body text — kept
         // read once, unless the other camera picture reads another number.
@@ -1030,6 +1053,14 @@ class CaptureActivity : ComponentActivity() {
         private const val READING_ANALYSIS_MS = 600L
         /** The frame finder pauses at most this long after a page is taken while its number is read. */
         private const val READ_PAUSE_MS = 15_000L
+        /**
+         * Largest corner move (share of the picture's diagonal, ~80 px on
+         * the emulator's 960x1280) between the still's frame and the frame
+         * held still on the analysed pictures for the still's frame to be
+         * used; beyond it the still caught something else (a page turning,
+         * the hand) and the analysed picture's frame is used.
+         */
+        private const val STILL_AGREE = 0.05f
         /** After a page is taken, the "another page?" match runs at most this often. */
         private const val MATCH_EVERY_MS = 400L
         /** Done waits this long for numbers still being read. */

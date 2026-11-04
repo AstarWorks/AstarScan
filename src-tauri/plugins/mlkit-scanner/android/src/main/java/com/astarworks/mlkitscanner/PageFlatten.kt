@@ -46,6 +46,18 @@ object PageFlatten {
     private const val COLUMNS = 60
     /** Share of the columns that must agree with the fitted curve. */
     private const val MIN_INLIERS = 0.45
+    /**
+     * The edge step is measured from STEP_SPAN rows outside to STEP_SPAN
+     * rows inside, and counts from MIN_STEP grey levels. Run 25: a step
+     * over ±1 row from 12 found the thick spread's top edge (light paper on
+     * a light grey desk, edge blurred over ~4 px in the 960x1280 picture)
+     * in 5–15 of 60 columns and none of its 6 holds was flattened; over
+     * ±3 rows from 10 (measured on run 25's camera pictures) 5 of 6 are,
+     * the other 35 pages still are, and the sixth stays straight (its
+     * frame sits ~25 px low on the left: the edge is outside the margin).
+     */
+    private const val STEP_SPAN = 3
+    private const val MIN_STEP = 10.0
 
     class Result(
         val image: Bitmap,
@@ -160,13 +172,13 @@ object PageFlatten {
             val x = (x0 + u * pw).roundToInt().coerceIn(2, w - 3)
             var best = 0.0
             var bestY = -1
-            var y = from + dir * 2
-            while ((to - y) * dir > 0) {
+            var y = from + dir * (STEP_SPAN + 1)
+            while ((to - y) * dir > 0 && y + STEP_SPAN < h && y - STEP_SPAN >= 0) {
                 // Step into brighter paper going inward, averaged over 5
                 // columns (desk → dark cover board is a step the other way).
                 var g = 0.0
                 for (dx in -2..2) {
-                    g += lum[(y + dir) * w + x + dx] - lum[(y - dir) * w + x + dx]
+                    g += lum[(y + dir * STEP_SPAN) * w + x + dx] - lum[(y - dir * STEP_SPAN) * w + x + dx]
                 }
                 val v = g / 5
                 if (v > best + 1e-6) {
@@ -175,7 +187,7 @@ object PageFlatten {
                 }
                 y += dir
             }
-            if (bestY >= 0 && best >= 12) {
+            if (bestY >= 0 && best >= MIN_STEP) {
                 us.add(u)
                 ys.add(bestY.toDouble())
             }

@@ -17,8 +17,10 @@ import java.io.File
  * or 4000x3000 (a spread); emulator-check.sh pushes them into the app's
  * external files dir `stills/` (with `<name>.quad`, the page's true
  * corners) and restarts the app. Each still then goes through the capture
- * screen's own steps: DocAligner frame (CaptureDetector; the true corners
- * only when the model gives no plausible frame, logged as source=truth),
+ * screen's own steps: DocAligner frame (CaptureDetector, again on the
+ * picture with its edges repeated outward when the first try gives no
+ * plausible frame, source=detector-padded; the true corners only when
+ * neither does, logged as source=truth),
  * PageRead.cut (gutter cut / edge fit, page warp) and PageRead.read (bands
  * + folio pieces in one ML Kit call, PageNumbers.pickNative). One "still"
  * log line per image; the image is deleted after it. Nothing happens
@@ -56,9 +58,19 @@ object StillsCheck {
             photo = img
             val w = img.width
             val h = img.height
-            val r = det?.detect(img)
+            fun ok(r: CaptureDetector.Result?) =
+                r?.quad?.takeIf { r.minPeak >= CaptureDetector.MIN_PEAK && PageFrame.plausible(it, w, h) && !PageFrame.outside(it, w, h) }
+            var r = det?.detect(img)
             var source = "detector"
-            var q = r?.quad?.takeIf { r.minPeak >= CaptureDetector.MIN_PEAK && PageFrame.plausible(it, w, h) && !PageFrame.outside(it, w, h) }
+            var q = ok(r)
+            if (q == null && det != null) {
+                // As the capture screen does on its still: the picture's
+                // edges repeated outward, so the paper has desk around it
+                // (run 25: the thick spread at 4000x3000, 3 of 6 not framed).
+                r = det.detect(img, CaptureDetector.CONTEXT_PAD)
+                q = ok(r)
+                source = "detector-padded"
+            }
             if (q == null) {
                 q = truthQuad(quadFile)
                 source = "truth"
@@ -76,7 +88,7 @@ object StillsCheck {
             val spread = pc.kept.isSpread
             val t1 = SystemClock.elapsedRealtime()
             val pick = try {
-                PageRead.read(page, "still:${f.name}", spread)
+                PageRead.read(page, "still:${f.name}", spread, what = "still")
             } finally {
                 page.recycle()
             }

@@ -447,7 +447,8 @@ def save_report(out, caps=()):
             m = re.search(r"AstarScanCapture\s*:\s*flatten (\S+) (\S+) none(?: \((.*?)\))?(?: spread=(\S+))?", line)
             if m:
                 # The same page logged again (opened from the list) counts once.
-                not_flat[m.group(1)] = {"size": m.group(2), "why": m.group(3) or "edges not found", "spread": m.group(4)}
+                not_flat[m.group(1)] = {"size": m.group(2), "why": re.sub(r"^straight cut kept:\s*", "", m.group(3) or "edges not found"),
+                                        "spread": m.group(4)}
     except OSError:
         pass
     flat_names = {n for n, _, _ in flat}
@@ -479,7 +480,7 @@ def save_report(out, caps=()):
     for x in res["flatten_none"]:
         md.append(f"| not flattened: {x['clip'] or '?'} hold {x['hold'] if x['hold'] is not None else '?'} ({x['page']}, "
                   f"{'spread' if x['spread'] == 'true' else 'page' if x['spread'] == 'false' else ''} {x['size']}) | "
-                  f"{x['why']} |")
+                  f"straight cut kept: {x['why']}; camera picture eval/{x['page'][:-4]}-frame.jpg |")
     opened = [r[1] for r in rows if r and r[0] == "page-open" and len(r) > 1]
     md.append(f"| one page opened from the list (screenshot) | {opened[0] + '.png' if opened else 'not opened'} |")
     for kind in ("pdf", "markdown"):
@@ -720,9 +721,11 @@ def main():
     fast = [c for c in kept if c["nums"] and c.get("shot_ms", 0) + c.get("number_ms", 10**9) <= 30000]
     md.append(f"| pages whose number was up within 30 s of the shot (「✓ N ページ」) | {len(fast)} of {len(kept)} |")
     label = {"margins": "bands + folio pieces, one picture (while taking pages)", "band": "band (while taking pages)",
-             "folio": "folio (while taking pages)", "warmup": "warmup (screen opening)",
+             "folio": "folio (while taking pages)",
+             "extra": "other folio renderings, only when the first picture gave no number (single pages)",
+             "warmup": "warmup (screen opening)",
              "solo": "margin picture alone (camera stopped, on close)"}
-    for ps in ("margins", "band", "folio", "warmup", "solo"):
+    for ps in ("margins", "extra", "band", "folio", "warmup", "solo"):
         calls = [o for o in ocr if o["pass"] == ps]
         if not calls and ps in ("band", "folio"):
             continue
