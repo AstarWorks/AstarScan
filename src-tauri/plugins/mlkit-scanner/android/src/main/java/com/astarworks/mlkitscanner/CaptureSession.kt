@@ -348,7 +348,11 @@ class CaptureSession(known: Collection<Int> = emptyList(), step: Int = 0) {
         // are most likely the first of those pages (taken in book order),
         // the rest are missing (31, 33, 35 unread, 39 → 37 missing, not 35).
         val unread = unreadSince
-        unreadSince = 0
+        // The first numbered page keeps the count of pages taken unread
+        // before it: they may be the pages after it (run 27,
+        // single-land-white: 31, 33, 35, 39 unread, then 37 read, then 41
+        // — 39 was red although it had been taken).
+        unreadSince = if (l == null) unreadSince else 0
         val miss = gap.drop(unread)
         if (miss.isEmpty()) {
             fillBetween(pages.indexOfFirst { it.name == name }, l)

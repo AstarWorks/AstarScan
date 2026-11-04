@@ -698,7 +698,7 @@ class CaptureActivity : ComponentActivity() {
             val name = "$stamp-$seq.jpg"
             val pageSeq = seq
             // Held pictures only for a single page (readHeld is not used for spreads).
-            heldSeq = if (kept.isSpread) 0 else seq
+            heldSeq = if (kept.isSpread || HELD_READS == 0) 0 else seq
             val keptInFrame = kept.scaled(frame.width.toFloat() / photo.width, frame.height.toFloat() / photo.height)
             // The kept page is the curvature-corrected one (PageFlatten);
             // the number is still read on the straight cut `page`.
@@ -775,7 +775,7 @@ class CaptureActivity : ComponentActivity() {
             // Single pages only, one held picture: at most one more call, as
             // the extra renderings were (spreads: none; at 960x1280 none of
             // run 26's 19 spread pages read a number on any picture).
-            if (pick.nums.isEmpty() && !spread) pick = readHeld(name, spread, pageSeq, keptInFrame) ?: pick
+            if (pick.nums.isEmpty() && !spread && HELD_READS > 0) pick = readHeld(name, spread, pageSeq, keptInFrame) ?: pick
             val tRead = SystemClock.elapsedRealtime()
             val (nums, guess) = confirm(pick, spread, name, second)
             val tConfirm = SystemClock.elapsedRealtime()
@@ -1110,6 +1110,14 @@ class CaptureActivity : ComponentActivity() {
         /** PageMatch inliers for "still the page just taken" (re-arming needs < OTHER_PAGE = 40). */
         private const val HELD_MATCH = 100
         /** Held pictures read at most, one ML Kit call each. */
-        private const val HELD_READS = 1
+        /**
+         * Off (0): run 27 read a held picture on 13 unread single pages,
+         * ~15–20 s each next to the camera; it gave 4 numbers on
+         * single-port-wood (12/12 also without it, run 26, by the step) and
+         * none on single-land-white, and the median time to a number went
+         * 13.7 → 14.2 s. Held pictures are not grabbed either (PageMatch on
+         * the analysis thread shares the CPU with ML Kit).
+         */
+        private const val HELD_READS = 0
     }
 }

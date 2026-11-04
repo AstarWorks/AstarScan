@@ -28,7 +28,13 @@ object PageNumbers {
      * running-head edge), and whether every number was printed as a folio
      * ("— 39 —" at the bottom or top centre of its page, see [framedFor]).
      */
-    data class Pick(val nums: List<Int>, val strong: Boolean, val framed: Boolean = false)
+    data class Pick(
+        val nums: List<Int>,
+        val strong: Boolean,
+        val framed: Boolean = false,
+        /** A spread's second number not read but inferred from the side the read one sits on. */
+        val inferred: Boolean = false,
+    )
 
     const val MARGIN_FRAC = 0.15
     private const val MAX_PAGE_NUMBER = 3000
@@ -126,7 +132,7 @@ object PageNumbers {
         // left thumb not. Only a clearly one-sided, whole-line number.
         if (spread && strong && Math.abs(best.cx - 0.5) >= 0.1) {
             val pair = if (best.cx < 0.5) listOf(best.value, best.value + 1) else listOf(best.value - 1, best.value)
-            if (pair.all { valid(it) }) return Pick(pair, true)
+            if (pair.all { valid(it) }) return Pick(pair, true, inferred = true)
         }
         return Pick(listOf(best.value), strong)
     }
@@ -148,6 +154,10 @@ object PageNumbers {
         val folio = pick(lines.filter { it.pass == "folio" }, spread = spread)
         if (band.nums.isEmpty()) return folio
         if (folio.nums.isEmpty() || folio.nums == band.nums) return band
+        // A spread's two folios both read beat a band number whose partner
+        // was only inferred (run 27 stills, thick spread h00: band "50"
+        // (conf 0.61) and "、61" → 50・51; folio "60", "61" at 0.90).
+        if (spread && band.inferred && folio.strong && !folio.inferred && folio.nums.size == 2) return folio
         if (folio.strong && !band.strong) return folio
         if (folio.strong && lostDigits(band.nums, folio.nums)) return folio
         return band
