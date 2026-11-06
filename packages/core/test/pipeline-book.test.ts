@@ -248,11 +248,17 @@ describe('bookCoverage (the mock ideal-capture.html flow)', () => {
     // Both halves read tall: sure on its own (1920×1080).
     const big = [sheet(tall(160), tall(161))]
     expect(settleBookNumbers(big).get(big[0]!.id)).toBe('ok')
-    // One half alone, but the next spread confirms it: sure, both of them.
+    // One half alone at 5 px, and the next spread's at 5 px too: two small
+    // reads agreeing are not enough (book 2 720×960: 94・95 read as 98・99
+    // beside a right 96・97); a tall read on the next spread is.
     const two = [sheet(small(96), inferred(97)), sheet(small(98), inferred(99))]
     const v = settleBookNumbers(two)
-    expect(v.get(two[0]!.id)).toBe('ok')
-    expect(v.get(two[1]!.id)).toBe('ok')
+    expect(v.get(two[0]!.id)).toBe('unsure')
+    expect(v.get(two[1]!.id)).toBe('unsure')
+    const withTall = [sheet(small(96), inferred(97)), sheet(tall(98), tall(99))]
+    const vt = settleBookNumbers(withTall)
+    expect(vt.get(withTall[0]!.id)).toBe('ok')
+    expect(vt.get(withTall[1]!.id)).toBe('ok')
     // The same number taken twice does not confirm itself.
     const twice = [
       sheet(small(328), inferred(329)),
