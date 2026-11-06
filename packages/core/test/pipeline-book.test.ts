@@ -84,6 +84,28 @@ describe('bookCoverage (the mock ideal-capture.html flow)', () => {
     expect(c.pageCount).toBe(6)
   })
 
+  it('a spread with one half read confirms through its inferred half (book 2: 50・51 skipped after a half-read 48・49)', () => {
+    // 48 unread (inferred from 49) next to 47; 52・53 a pair.
+    const a = [
+      sheet(read(44), read(45)),
+      sheet(read(46), read(47)),
+      sheet(none, none),
+      sheet(none, read(49)),
+      sheet(read(52), read(53)),
+    ]
+    expect(bookCoverage(a).gaps).toEqual([{ from: 50, to: 51, step: 1 }])
+    // 53 unread (inferred from 52), confirmed once 54・55 follow.
+    const b = [
+      sheet(read(46), read(47)),
+      sheet(read(48), read(49)),
+      sheet(read(52), none),
+    ]
+    expect(bookCoverage(b).gaps).toEqual([])
+    expect(bookCoverage([...b, sheet(read(54), read(55))]).gaps).toEqual([
+      { from: 50, to: 51, step: 1 },
+    ])
+  })
+
   it('one side of the book only (every right page) is not a gap; a skipped one is', () => {
     const s = [
       sheet(read(31)),

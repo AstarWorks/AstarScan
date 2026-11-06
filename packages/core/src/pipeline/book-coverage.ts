@@ -139,13 +139,25 @@ export function bookCoverage(
       : 1
   const parity = odd >= even ? 1 : 0
 
-  /** n is followed / preceded by a number of ANOTHER capture. */
+  /**
+   * x's capture is followed / preceded by a number of ANOTHER capture: x
+   * itself, or the inferred half of its spread (49 read, 48 inferred, next to
+   * the 47 taken before). Without the inferred half, a spread with one half
+   * read confirmed nothing until a pair came 1 away, and the gap after it
+   * stayed silent (book 2 1920×1080: 48・49 with one half read, then 52・53,
+   * 54・55 — 50・51 skipped, never red).
+   */
   const neighbour = (x: NumberedAt) =>
     numbered.some(
-      (y) =>
-        y.seq !== x.seq &&
-        !y.inferred &&
-        Math.abs(y.number - x.number) === step,
+      (z) =>
+        z.seq === x.seq &&
+        (z === x || z.inferred) &&
+        numbered.some(
+          (y) =>
+            y.seq !== x.seq &&
+            !y.inferred &&
+            Math.abs(y.number - z.number) === step,
+        ),
     )
   const trusted = new Map<number, { seq: number; byNeighbour: boolean }>()
   for (const x of numbered) {
