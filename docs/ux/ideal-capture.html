@@ -59,6 +59,7 @@
         <tr><td>抜けたとき</td><td>次を撮った瞬間に赤と振動 2 回。戻れば自動で埋まる</td><td>赤の案内。実機では未確認</td></tr>
         <tr><td>撮影済みの見開きに戻ったとき</td><td>撮り直さず、撮影済みと出す</td><td>未確認</td></tr>
         <tr><td>図版など番号の無いページ</td><td>灰色で「番号なし」。抜けとは扱わない</td><td>一覧で灰色</td></tr>
+        <tr><td>見開きの保存</td><td>1 回で撮り、綴じ目で 2 ページに分ける。一覧も PDF も 1 ページずつ</td><td>見開きのまま 1 枚</td></tr>
         <tr><td>見開きと片ページ</td><td>本の寄せ方で自動で切り替わる</td><td>未確認</td></tr>
         <tr><td>「— 44 —」型の番号</td><td>普通の番号と同じように読む</td><td>スマホと同じ解像度の画像で読めた</td></tr>
       </tbody>
@@ -280,18 +281,18 @@ function renderCamera(t,scene,lt){
 }
 
 function renderList(lt){
-  const rows=[[34,'ok'],[36,'ok'],[38,'ok'],[40,'ok'],[42,'nonum'],[44,'ok'],[46,'single'],[47,'single']];
+  const rows=[34,35,36,37,38,39,40,41].map(n=>[n,'ok']).concat([[42,'nonum'],[43,'nonum'],[44,'ok'],[45,'ok'],[46,'ok'],[47,'ok']]);
   let o=`<rect width="370" height="760" fill="#fff"/>`;
-  o+=`<text x="18" y="46" font-size="18" font-weight="700" fill="#111827">撮影結果</text><text x="352" y="46" font-size="14" font-weight="700" fill="#15803d" text-anchor="end">8 枚・抜け 0</text>`;
+  o+=`<text x="18" y="46" font-size="18" font-weight="700" fill="#111827">撮影結果</text><text x="352" y="46" font-size="14" font-weight="700" fill="#15803d" text-anchor="end">14 ページ・抜け 0</text>`;
   o+=`<line x1="0" y1="62" x2="370" y2="62" stroke="#e5e7eb"/>`;
-  const sel=lt>1.2?2:-1;
-  rows.forEach(([sp,st],i)=>{ const y=62+i*31;
-    if(i===sel) o+=`<rect x="0" y="${y}" width="370" height="31" fill="#f3f4f6"/>`;
-    o+=`<rect x="16" y="${y+5}" width="${st==='single'?16:30}" height="21" fill="#f6f1e4" stroke="#d1d5db"/>`+(st==='single'?'':`<rect x="30.5" y="${y+5}" width="1" height="21" fill="#bbb"/>`);
-    o+=`<text x="62" y="${y+21}" font-size="14" font-weight="600" fill="#111827">${st==='nonum'?'番号なし':st==='single'?sp:sp+'・'+(sp+1)}</text>`;
-    o+=`<text x="200" y="${y+21}" font-size="13" font-weight="700" fill="${st!=='nonum'?'#15803d':'#6b7280'}">${st!=='nonum'?'✓ 撮れた':'撮れた'}</text>`;
-    o+=`<text x="352" y="${y+21}" font-size="12" fill="#6b7280" text-anchor="end">補正済み</text>`;
-    o+=`<line x1="0" y1="${y+31}" x2="370" y2="${y+31}" stroke="#e5e7eb"/>`; });
+  const sel=lt>1.2?4:-1;
+  rows.forEach(([sp,st],i)=>{ const y=62+i*18;
+    if(sel>=0&&(i===sel||i===sel+1)) o+=`<rect x="0" y="${y}" width="370" height="18" fill="#f3f4f6"/>`;
+    o+=`<rect x="16" y="${y+3}" width="9" height="12" fill="#f6f1e4" stroke="#d1d5db"/>`;
+    o+=`<text x="38" y="${y+13.5}" font-size="12" font-weight="600" fill="#111827">${sp}${st==='nonum'?'（番号なし）':''}</text>`;
+    o+=`<text x="200" y="${y+13.5}" font-size="12" font-weight="700" fill="${st!=='nonum'?'#15803d':'#6b7280'}">${st!=='nonum'?'✓ 撮れた':'撮れた'}</text>`;
+    o+=`<text x="352" y="${y+13.5}" font-size="11" fill="#6b7280" text-anchor="end">補正済み</text>`;
+    o+=`<line x1="0" y1="${y+18}" x2="370" y2="${y+18}" stroke="#e5e7eb"/>`; });
   // 補正の前後
   const py=318;
   o+=`<text x="18" y="${py+16}" font-size="13" font-weight="700" fill="#374151">38・39 ページ</text>`;
@@ -299,10 +300,10 @@ function renderList(lt){
   const px=18,pw=334,ph=204,yy=py+26;
   const curved=`<rect x="${px}" y="${yy}" width="${pw}" height="${ph}" fill="#4b3a2b"/><g transform="translate(${px+pw/2},${yy+ph/2}) scale(.92)">${book(38,39,null)}</g>`;
   const lines=(x,w)=>{let s='';for(let i=0;i<14;i++)s+=`<rect x="${x+12}" y="${yy+14+i*13}" width="${w-26-rnd(i+x)*18}" height="4" fill="#4b5563" opacity=".6"/>`;return s};
-  const flat=`<rect x="${px}" y="${yy}" width="${pw}" height="${ph}" fill="#faf7ee"/>${lines(px,pw/2)}${lines(px+pw/2,pw/2)}<rect x="${px+pw/2}" y="${yy}" width="1" height="${ph}" fill="#ddd"/>`;
+  const flat=`<rect x="${px}" y="${yy}" width="${pw}" height="${ph}" fill="#ffffff"/><rect x="${px}" y="${yy}" width="${pw/2-5}" height="${ph}" fill="#faf7ee" stroke="#d1d5db"/><rect x="${px+pw/2+5}" y="${yy}" width="${pw/2-5}" height="${ph}" fill="#faf7ee" stroke="#d1d5db"/>${lines(px,pw/2-5)}${lines(px+pw/2+5,pw/2-5)}`;
   o+=`<clipPath id="cpAll"><rect x="${px}" y="${yy}" width="${pw}" height="${ph}"/></clipPath><clipPath id="cp"><rect x="${px}" y="${yy}" width="${pw*wipe}" height="${ph}"/></clipPath><g clip-path="url(#cpAll)">${curved}</g><g clip-path="url(#cp)">${flat}</g>`;
   if(wipe>0&&wipe<1) o+=`<rect x="${px+pw*wipe-1}" y="${yy}" width="2" height="${ph}" fill="#22c55e"/>`;
-  o+=`<text x="${px+8}" y="${yy+ph+18}" font-size="12" fill="#6b7280">${wipe>=1?'曲がりを直した結果':wipe>0?'曲がりを補正中':'撮影したまま'}</text>`;
+  o+=`<text x="${px+8}" y="${yy+ph+18}" font-size="12" fill="#6b7280">${wipe>=1?'曲がりを直し、38 と 39 の 2 ページに分けた結果':wipe>0?'曲がりを補正中':'撮影したまま'}</text>`;
   // 保存
   const by=590;
   const saved=lt>4.4, md=lt>5.2, sent=lt>6.0;
