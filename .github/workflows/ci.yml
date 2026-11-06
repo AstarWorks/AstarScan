@@ -465,6 +465,9 @@ jobs:
           python3 -I scripts/eval/book-clips/stills.py /tmp/stills $STILLS_CLIPS --jobs 3 | grep -v ' / ' | tail -n 50
           ls -la /tmp/stills | head -n 5
           du -sh /tmp/stills
+          # Book 6's run 42308619390 lost its stills session to a missing font
+          # (stills.py died, the pipe above stayed green): no stills, no step.
+          test -s /tmp/stills/stills.json
 
       - name: Run the app on a Google Play emulator
         timeout-minutes: 80
