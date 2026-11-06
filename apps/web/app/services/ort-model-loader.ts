@@ -79,12 +79,25 @@ export async function loadFastOrtSession(
 ): Promise<FastOrtSession> {
   ensureOrtInitialized()
   const bytes = await fetchModel(url)
-  const gpu = (navigator as { gpu?: { requestAdapter(): Promise<unknown> } })
-    .gpu
+  const gpu = (
+    navigator as {
+      gpu?: {
+        requestAdapter(): Promise<{
+          isFallbackAdapter?: boolean
+          info?: { isFallbackAdapter?: boolean }
+        } | null>
+      }
+    }
+  ).gpu
   if (prefer === 'webgpu' && gpu) {
     try {
       const adapter = await gpu.requestAdapter()
-      if (adapter) {
+      // A software adapter (SwiftShader, CPU) is far slower than WASM:
+      // 5.5 s per corner-model run in headless Chromium vs ~0.1 s on WASM.
+      const software =
+        adapter?.isFallbackAdapter === true ||
+        adapter?.info?.isFallbackAdapter === true
+      if (adapter && !software) {
         const session = await ort.InferenceSession.create(bytes.slice(0), {
           executionProviders: ['webgpu'],
           graphOptimizationLevel: 'all',

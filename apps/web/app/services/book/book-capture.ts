@@ -61,9 +61,11 @@ import type { FolioIn, FolioLine, FolioOut } from './folio.worker'
 
 // --- timing (docs/ux/ideal-capture.html: "撮れた" within 1 s of stillness) ---
 /** Frame and print must hold still this long before the green sweep starts. */
-export const STILL_MS = 300
+export const STILL_MS = 250
 /** The green line's one lap round the frame; the shot is taken at its end. */
-export const SWEEP_MS = 450
+export const SWEEP_MS = 400
+/** Corners are compared with the frame this long ago. */
+const STILL_WINDOW_MS = 250
 /** Corner movement allowed while "still" (share of the frame's diagonal). */
 const STILL_CORNER = 0.025
 /** Mean grey change of the 32×24 view allowed while still (0..255). */
@@ -237,6 +239,11 @@ export class BookCapture {
     this.#onChange()
   }
 
+  /** Resolves once the page-number reader has its model. */
+  whenNumbersReady(): Promise<void> {
+    return this.#workerReady ?? Promise.resolve()
+  }
+
   #startWorker(): void {
     if (this.#worker) return
     const w = new Worker(new URL('./folio.worker.ts', import.meta.url), {
@@ -275,6 +282,10 @@ export class BookCapture {
         }
       }
     })
+    w.onerror = (e) => {
+      console.warn('[book] number reader failed to start', e.message)
+      probe({ type: 'numberError', message: e.message || 'worker error' })
+    }
     w.postMessage({ type: 'init' } satisfies FolioIn)
   }
 
@@ -405,8 +416,12 @@ export class BookCapture {
         dist(ref.br, q.br),
         dist(ref.bl, q.bl),
       ) / diag
-    const still = inside && moved <= STILL_CORNER && viewDiff <= STILL_VIEW
+    // Once the green line runs, hand shake twice as large keeps it running
+    // (hysteresis: book-clip spread-land-wood's 1.6 s hold was lost to it).
+    const k = this.#sweepStart > 0 || this.#stillSince > 0 ? 2 : 1
+    const still = inside && moved <= STILL_CORNER * k && viewDiff <= STILL_VIEW * k
     if (!still) {
+      if (this.#stillSince > 0) probe({ type: 'unstill', t: now, moved, viewDiff, inside })
       this.#resetStill()
       this.state.tone = 'search'
       this.state.pill = inside ? '止めてください' : '本全体を入れてください'

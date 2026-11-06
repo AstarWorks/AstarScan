@@ -36,14 +36,13 @@ const tick = ref(0)
 let engine: BookCapture | null = null
 let stream: MediaStream | null = null
 
-const st = computed<BookState | null>(() => {
-  void tick.value
-  return engine?.state ?? null
-})
+/** Snapshot of the engine's state (a fresh object per change, so Vue re-renders). */
+const st = shallowRef<BookState | null>(null)
 const vw = ref(1920)
 const vh = ref(1080)
 
 function bump(): void {
+  st.value = engine ? { ...engine.state } : null
   tick.value++
 }
 
@@ -148,6 +147,14 @@ onMounted(() => {
         : null
     },
     finish: () => finish(),
+    /** Load the models before the camera opens (the check starts the clip warm). */
+    preload: async () => {
+      engine ??= new BookCapture(bump, preferWasm ? 'wasm' : 'webgpu')
+      if (!engine.state.ready) await engine.load()
+      await engine.whenNumbersReady()
+      return { backend: engine.state.backend, threads: engine.state.threads }
+    },
+    probeState: () => engine?.state ?? null,
   }
 })
 
