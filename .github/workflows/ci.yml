@@ -333,7 +333,7 @@ jobs:
       BOOK_PLAN: book2-single-top book2-spread-center-1440
       BOOK_LAST: book2-spread-dash 0 1 2 4 3 5 6
       BOOK_STILLS_SEQ: book2-spread-dash 0 1 2 4 5 6
-      STILLS_BOOK2: "1"
+      STILLS_BOOK2: '1'
 
     steps:
       - uses: actions/checkout@v4
