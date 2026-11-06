@@ -88,6 +88,17 @@ const STILL_VIEW_CALM = 4.5
  * grey levels.
  */
 const BLINK_MS = 700
+/**
+ * The shot's frame is the per-corner median of the detections of the still
+ * spell within this long before the shot. While the picture is calm the
+ * spell goes on whatever the corners do (STILL_VIEW_CALM), and the model can
+ * switch to another reading of the page for a few frames: book 1's framed
+ * single-land-white p39 had its top-left corner at (−2, 48) for 12 frames of
+ * the spell and at (101, 318) for the 3 frames before the shot, on a picture
+ * changing by about 1 grey level; the median of the last frames took the
+ * wrong one and the frame covered 80 % of the page (無表示).
+ */
+const SPELL_QUAD_MS = 1000
 /** The view drifted this far from the one taken: maybe a new page, judge again. */
 const TURNED_VIEW = 14
 /** The frame must cover this share of the picture to be a page. */
@@ -244,6 +255,8 @@ export class BookCapture {
   // stillness
   #history: { t: number; quad: Quad }[] = []
   #raw: Quad[] = []
+  /** Detections of the still spell now (time, quad), for the shot's frame. */
+  #spell: { t: number; quad: Quad }[] = []
   /** 32×24 grey view when the last page was taken. */
   #takenView: Uint8ClampedArray | null = null
   #view: Uint8ClampedArray | null = null
@@ -541,6 +554,8 @@ export class BookCapture {
       return
     }
     if (this.#stillSince === 0) this.#stillSince = now
+    this.#spell.push({ t: now, quad: q })
+    while (now - this.#spell[0]!.t > SPELL_QUAD_MS) this.#spell.shift()
 
     // Once per still spell: is this the page just taken, or one taken before?
     if (
@@ -597,7 +612,18 @@ export class BookCapture {
     this.state.pill = 'そのまま'
     this.state.sweep = Math.min(1, (now - this.#sweepStart) / SWEEP_MS)
     if (this.state.sweep >= 1) {
-      this.#capture(video, mq, now)
+      // The frame of the shot: the corners' median over the still spell,
+      // not over the last few frames (see SPELL_QUAD_MS).
+      const sq =
+        this.#spell.length > 0 ? medianQuad(this.#spell.map((x) => x.quad)) : mq
+      probe({
+        type: 'shotQuad',
+        t: now,
+        last: mq,
+        spell: sq,
+        n: this.#spell.length,
+      })
+      this.#capture(video, sq, now)
       this.#holdVerdict = 'last'
       this.#takenView = view
       this.state.tone = 'done'
@@ -608,6 +634,7 @@ export class BookCapture {
 
   #resetStill(): void {
     this.#stillSince = 0
+    this.#spell = []
     this.#sweepStart = 0
     this.#holdVerdict = null
     this.#holdOrb?.descriptors.delete()
