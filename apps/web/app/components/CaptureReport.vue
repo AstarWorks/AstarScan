@@ -7,6 +7,21 @@
  */
 export type ReportKind = 'captured' | 'duplicate' | 'recovered' | 'missed'
 
+/** Printed page number check (Android app). `missing` / `suspect` /
+ *  `missingOrUnread` rows are gaps in the number sequence (`missingOrUnread`:
+ *  pages whose number could not be read lie inside the gap, so some of it
+ *  may be those pages); `failed` means OCR could not run. */
+export type PrintedNoState =
+  | 'reading'
+  | 'ok'
+  | 'duplicate'
+  | 'outOfOrder'
+  | 'unread'
+  | 'failed'
+  | 'missing'
+  | 'suspect'
+  | 'missingOrUnread'
+
 export interface ReportViewRow {
   id: string
   kind: ReportKind
@@ -18,11 +33,16 @@ export interface ReportViewRow {
   canRetake: boolean
   /** Output page behind the row (for removal). */
   pageId: string | null
+  /** Printed page number(s) read from the page, or the missing range. */
+  printedNo?: string | null
+  printedState?: PrintedNoState
 }
 
 defineProps<{
   rows: ReportViewRow[]
   retakeBusy: boolean
+  /** Show the printed page number column. */
+  showPrinted?: boolean
 }>()
 
 const emit = defineEmits<{
@@ -37,6 +57,36 @@ const KIND_LABEL: Record<ReportKind, string> = {
   missed: '抜け',
 }
 const SOURCE_LABEL = { photo: '静止画', video: '動画' } as const
+
+/** How each printed-number state looks: its label and its tone. The one
+ *  place both are defined. Red (`alert`) is kept for what may be a missed
+ *  page — gaps in the number sequence (欠番) and repeated numbers — so a
+ *  red row means "check for a page you did not capture". A page whose
+ *  number could not be read is still captured, so it is a quiet grey
+ *  番号なし; `failed` (OCR could not run) shows the same, since for the user
+ *  the outcome is identical: the page is there, its number is not. */
+type PrintedTone = 'alert' | 'warn' | 'muted' | 'plain'
+const PRINTED_STYLE: Record<
+  PrintedNoState,
+  { label: string; tone: PrintedTone }
+> = {
+  reading: { label: '読み取り中…', tone: 'muted' },
+  ok: { label: '', tone: 'plain' },
+  duplicate: { label: '重複', tone: 'alert' },
+  outOfOrder: { label: '順番が前後', tone: 'warn' },
+  unread: { label: '番号なし', tone: 'muted' },
+  failed: { label: '番号なし', tone: 'muted' },
+  missing: { label: '欠番', tone: 'alert' },
+  suspect: { label: '欠番（読み違いかも）', tone: 'alert' },
+  // A gap with unnumbered pages inside: some of it may be those pages.
+  missingOrUnread: { label: '欠番？', tone: 'alert' },
+}
+function isAlert(r: ReportViewRow): boolean {
+  return (
+    r.printedState !== undefined &&
+    PRINTED_STYLE[r.printedState].tone === 'alert'
+  )
+}
 </script>
 
 <template>
@@ -47,7 +97,8 @@ const SOURCE_LABEL = { photo: '静止画', video: '動画' } as const
           <th>#</th>
           <th></th>
           <th>状態</th>
-          <th>画像</th>
+          <th v-if="showPrinted">ページ番号</th>
+          <th v-else>画像</th>
           <th></th>
         </tr>
       </thead>
@@ -55,7 +106,10 @@ const SOURCE_LABEL = { photo: '静止画', video: '動画' } as const
         <tr
           v-for="r in rows"
           :key="r.id"
-          :class="`report__row report__row--${r.kind}`"
+          :class="[
+            `report__row report__row--${r.kind}`,
+            { 'report__row--alert': isAlert(r) },
+          ]"
         >
           <td class="report__no">{{ r.no ?? '—' }}</td>
           <td class="report__thumb">
@@ -70,7 +124,23 @@ const SOURCE_LABEL = { photo: '静止画', video: '動画' } as const
               >= {{ r.duplicateOfNo }}</span
             >
           </td>
-          <td class="report__source">
+          <td
+            v-if="showPrinted"
+            :class="[
+              'report__printed',
+              r.printedState
+                ? `report__printed--${PRINTED_STYLE[r.printedState].tone}`
+                : '',
+            ]"
+          >
+            <span v-if="r.printedNo" class="report__printed-no">{{
+              r.printedNo
+            }}</span>
+            <span v-if="r.printedState" class="report__printed-state">{{
+              PRINTED_STYLE[r.printedState].label
+            }}</span>
+          </td>
+          <td v-else class="report__source">
             {{ r.source ? SOURCE_LABEL[r.source] : '' }}
           </td>
           <td class="report__actions">
@@ -153,6 +223,36 @@ const SOURCE_LABEL = { photo: '静止画', video: '動画' } as const
 }
 .report__row--missed td {
   background: rgba(254, 226, 226, 0.35);
+}
+.report__row--alert td {
+  background: rgba(254, 202, 202, 0.55);
+}
+.report__printed {
+  font-size: 13px;
+  white-space: nowrap;
+}
+.report__printed-no {
+  font-variant-numeric: tabular-nums;
+  font-weight: 600;
+  margin-right: 6px;
+}
+.report__printed-state {
+  font-size: 12px;
+  color: #64748b;
+}
+.report__printed--alert {
+  color: #b91c1c;
+}
+.report__printed--alert .report__printed-state {
+  color: #b91c1c;
+  font-weight: 700;
+}
+.report__printed--warn .report__printed-state {
+  color: #b45309;
+  font-weight: 600;
+}
+.report__printed--muted .report__printed-state {
+  color: #94a3b8;
 }
 .report__dup {
   margin-left: 6px;

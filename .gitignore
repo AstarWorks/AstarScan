@@ -84,6 +84,7 @@ apps/web/public/fonts/*.ttf
 !scripts/eval/book-clips/clips/*.mp4
 # Screen recording of the book-clip check (5 MB, PR evidence).
 !docs/images/book-eval/*.mp4
+!scripts/eval/book-clips/framed/*.mp4
 
 # Tauri
 src-tauri/target/
@@ -107,3 +108,4 @@ scripts/dataset/scene-reps.json
 # External datasets (SmartDoc etc.) — downloaded, not committed
 scripts/dataset/external/
 apps/web/public/ort/
+__pycache__/

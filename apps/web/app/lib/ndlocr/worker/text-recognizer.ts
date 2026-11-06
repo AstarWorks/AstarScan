@@ -309,16 +309,17 @@ export class TextRecognizer {
         }
       }
 
-      // 連続重複を除去してテキスト生成
+      // AstarScan: PARSeq decodes one character per step (autoregressive,
+      // not CTC), so a repeated character is real text. Upstream collapsed
+      // repeats like CTC blanks, which turned page "11" into "1" and "33"
+      // into "3" (scripts/android/page-number-ocr.py, docs/android-book-eval.md).
       const resultChars: string[] = []
       const filteredConfidences: number[] = []
-      let prevId = -1
       for (let i = 0; i < resultClassIds.length; i++) {
         const id = resultClassIds[i] ?? -1
-        if (id !== prevId && id >= 0 && id < this.config.charList.length) {
+        if (id >= 0 && id < this.config.charList.length) {
           resultChars.push(this.config.charList[id] ?? '')
           filteredConfidences.push(charConfidences[i] ?? 0)
-          prevId = id
         }
       }
 

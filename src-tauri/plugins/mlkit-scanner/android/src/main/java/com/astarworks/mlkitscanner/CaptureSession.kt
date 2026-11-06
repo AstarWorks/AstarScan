@@ -1,0 +1,435 @@
+package com.astarworks.mlkitscanner
+
+import java.util.TreeSet
+
+/**
+ * The pages one capture screen has taken, in book order, and what the
+ * printed numbers say about them. Pure logic (no Android types).
+ *
+ * Rules (the screen shows one banner per page):
+ * - no number read → kept, "番号なし" (grey);
+ * - a number already taken → not kept again ("撮影済み"): the user did not
+ *   turn the page;
+ * - a number on the missing list → kept in its place, "抜けを埋めました";
+ * - the next number(s) → kept, "撮れた" (green);
+ * - a jump → kept, and the pages in between go on the missing list
+ *   ("… ページが抜けています", red) until they are taken.
+ * "Next" depends on how the book is being taken: a spread holds two
+ * numbers; single pages either go one by one (both sides of every leaf,
+ * step 1) or one side only — every right page, the camera never on the
+ * left one (step 2: 31, 33, 35 is not a gap). The step is learnt from the
+ * first two single pages that follow each other (+1 or +2).
+ *
+ * A number read only once (the page's two reads did not agree, or there
+ * was nothing yet to compare it with) is kept as the page's `guess`, the
+ * page staying "番号なし", until the book confirms it: the next page's
+ * number follows it by the step (31?, 33 → 31, 33), or a later jump would
+ * call it missing (35, 39?, 37, 41 → 39 is that page). Run 23,
+ * single-land-white: 31, 39 and 41 were read once each and dropped, so no
+ * page had a number to go on and the skipped p37 never turned red.
+ *
+ * The screen keeps a page the moment it is taken (`addPending`, "reading")
+ * and reads its number afterwards, while the user turns on (`resolve`, in
+ * the order the pages were taken). Not thread-safe: callers lock it.
+ */
+class CaptureSession(known: Collection<Int> = emptyList(), step: Int = 0) {
+    class Page(
+        val name: String,
+        val width: Int,
+        val height: Int,
+        val nums: List<Int>,
+        val spread: Boolean,
+        /** "ok", "unread", or "reading" (taken, number not read yet). */
+        val numberState: String,
+        /**
+         * An unread page's number read once but not confirmed (a first page,
+         * a jump): kept when a neighbour confirms it (see `add`).
+         */
+        val guess: List<Int> = emptyList(),
+    )
+
+    sealed class Outcome {
+        data class Taken(val nums: List<Int>) : Outcome()
+        object Unread : Outcome()
+        data class Gap(val nums: List<Int>, val missing: List<Int>) : Outcome()
+        data class Filled(val nums: List<Int>) : Outcome()
+        data class Duplicate(val nums: List<Int>) : Outcome()
+    }
+
+    val pages = ArrayList<Page>()
+    val missing = TreeSet<Int>()
+    private val taken = TreeSet<Int>(known)
+    /** 0 unknown, 1 every page, 2 one side only (single pages). */
+    var step: Int = step
+        private set
+    private var lastSingle: Int? = null
+    /** Pages kept without a number since the last numbered one: they may be the pages a jump skips. */
+    private var unreadSince = 0
+
+    /** Highest number taken so far (this screen or the list before it). */
+    val last: Int? get() = if (taken.isEmpty()) null else taken.last()
+
+    /** The number(s) the next page should carry, for a page / a spread. */
+    fun expected(spread: Boolean): Int? {
+        val l = last ?: return null
+        return if (!spread && step == 2) l + 2 else l + 1
+    }
+
+    /**
+     * How `nums` (read on a page, not yet added) relates to what was taken:
+     * "expected" (the next page, or a missing one), "duplicate", "jump",
+     * "lower" (below the last page but not missing: a misread or a page
+     * taken before), "far" (more than MAX_JUMP pages ahead: likely a
+     * misread), or "first" (nothing to compare with).
+     */
+    fun relation(nums: List<Int>, spread: Boolean): String {
+        if (nums.isEmpty()) return "none"
+        if (nums.any { it in taken }) return "duplicate"
+        if (nums.all { it in missing }) return "expected"
+        val l = last ?: return "first"
+        val lo = nums.min()
+        if (lo <= l) return "lower"
+        val next = if (!spread && step == 2) l + 2 else l + 1
+        if (lo == next) return "expected"
+        // Step not learnt yet: +1 and +2 are both "next" for a single page.
+        if (!spread && step == 0 && lo == l + 2) return "expected"
+        // One side only, pages in between taken without a number: still the
+        // next page as far as the step goes (no second read needed).
+        if (!spread && step == 2 && (lo - l) % 2 == 0 && (lo - l) / 2 - 1 <= unreadSince) return "expected"
+        if (!spread && step == 1 && lo - l - 1 <= unreadSince) return "expected"
+        // Step not learnt yet: either way, as long as pages taken without a
+        // number cover the pages in between (run 24: 31, (33 unread), 35
+        // was a "jump" and 35, read once, was dropped).
+        if (!spread && step == 0 && unreadSince > 0 &&
+            ((lo - l) % 2 == 0 && (lo - l) / 2 - 1 <= unreadSince || lo - l - 1 <= unreadSince)
+        ) return "expected"
+        if (lo - l > MAX_JUMP) return "far"
+        return "jump"
+    }
+
+    /**
+     * Whether a jump read only once (the other read found nothing) may be
+     * kept: a single page, exactly ONE page missing by the step, and no page
+     * without a number taken after the one before the missing page — that
+     * page could be the missing one (then the jump would be a false red).
+     * Run 25: p39 was read once ("ー39") after 35; it was dropped as an
+     * unconfirmed jump, so the skipped p37 never turned red.
+     */
+    fun singleReadJumpOk(nums: List<Int>, spread: Boolean, name: String): Boolean {
+        if (spread || nums.size != 1) return false
+        val l = last ?: return false
+        val lo = nums[0]
+        val s = if (step == 2 || (step == 0 && (lo - l) % 2 == 0)) 2 else 1
+        if (lo - l != 2 * s) return false
+        // The page before the missing one, or (that one taken without a
+        // number, run 24: 31, (33), 35, 39 read once) the page of `l`.
+        val ref = pages.indexOfFirst { (l - s) in it.nums }.takeIf { it >= 0 }
+            ?: pages.indexOfFirst { l in it.nums }
+        if (ref < 0) return false
+        return pages.drop(ref + 1).none { it.name != name && it.numberState != "ok" }
+    }
+
+    /** A page just taken, its number still to be read: kept at the end, "reading". */
+    fun addPending(name: String, width: Int, height: Int, spread: Boolean) {
+        pages.add(Page(name, width, height, emptyList(), spread, "reading"))
+    }
+
+    /** Pages taken whose number is still being read. */
+    val reading: Int get() = pages.count { it.numberState == "reading" }
+
+    /**
+     * The number(s) read on a page added with `addPending`: the same rules
+     * as `add`, the page staying where it was taken (a missing page moves to
+     * its place; a page already taken leaves the list). Null when the page
+     * is not (or no longer) waiting for its number.
+     */
+    fun resolve(name: String, nums: List<Int>, guess: List<Int> = emptyList()): Outcome? {
+        val i = pages.indexOfFirst { it.name == name && it.numberState == "reading" }
+        if (i < 0) return null
+        val p = pages.removeAt(i)
+        return add(p.name, p.width, p.height, nums, p.spread, i, guess)
+    }
+
+    /** `next` is the page after `prev` by the step (a spread: the next two numbers). */
+    private fun follows(prev: List<Int>, next: List<Int>, spread: Boolean): Boolean {
+        if (prev.isEmpty() || next.isEmpty()) return false
+        val d = next.min() - prev.max()
+        if (spread || prev.size > 1 || next.size > 1) return d == 1
+        return when (step) {
+            1 -> d == 1
+            2 -> d == 2
+            else -> d == 1 || d == 2
+        }
+    }
+
+    /** A guess that may still be a page's number (not taken, not below or far above the book so far). */
+    private fun guessOk(g: List<Int>, spread: Boolean): Boolean {
+        val r = relation(g, spread)
+        return r == "first" || r == "expected" || r == "jump"
+    }
+
+    /** Page `i` (unread, with a guess) gets its guessed number. */
+    private fun promote(i: Int) {
+        val p = pages[i]
+        pages[i] = Page(p.name, p.width, p.height, p.guess.sorted(), p.spread, "ok")
+        taken.addAll(p.guess)
+        missing.removeAll(p.guess.toSet())
+        if (unreadSince > 0) unreadSince--
+    }
+
+    /**
+     * Pages taken without a number between two numbered ones get their
+     * numbers when they fit exactly: page `i` (just numbered) and the
+     * numbered page before the unread run, which carried the highest number
+     * taken until then (`prevLast`), leave room for exactly as many pages
+     * as were taken unread — by the step (not learnt yet: +2); a spread by
+     * pairs. Nothing is filled when a page in
+     * the run guessed another number, is still being read, or is of the
+     * other kind (spread / page). Run 24: single-port-wood 5, (7, 9, 11
+     * unread), 13 with step 2 — three pages for three numbers.
+     */
+    private fun fillBetween(i: Int, prevLast: Int?) {
+        if (i <= 0 || prevLast == null) return
+        val cur = pages[i]
+        var j = i - 1
+        val run = ArrayList<Int>()
+        while (j >= 0 && pages[j].numberState == "unread") {
+            if (pages[j].spread != cur.spread) return
+            run.add(0, j)
+            j--
+        }
+        if (run.isEmpty() || j < 0) return
+        val prev = pages[j]
+        if (prev.numberState != "ok" || prev.spread != cur.spread || prev.nums.isEmpty() || prev.nums.max() != prevLast) return
+        val d = cur.nums.min() - prev.nums.max()
+        val n = run.size
+        // No room between the two (this page follows that one by the step)
+        // and as many unread pages as are missing, all before them: the
+        // user went back as the red notice said (35, 39 → "37 missing",
+        // a page without a number, 41 → that page is 37).
+        val by = if (cur.spread) 1 else if (step == 0) 2 else step
+        if (d == by && missing.isNotEmpty() && missing.size == (if (cur.spread) 2 * n else n) && missing.last() < prev.nums.min()) {
+            val ms = missing.toList()
+            val fills = if (cur.spread) List(n) { k -> listOf(ms[2 * k], ms[2 * k + 1]) } else List(n) { k -> listOf(ms[k]) }
+            if (cur.spread && fills.any { it[1] != it[0] + 1 }) return
+            for ((k, idx) in run.withIndex()) {
+                val g = pages[idx].guess
+                if (g.isNotEmpty() && g.sorted() != fills[k]) return
+            }
+            val moved = run.map { pages[it] }
+            for (idx in run.reversed()) pages.removeAt(idx)
+            for ((k, p) in moved.withIndex()) {
+                val at = pages.indexOfFirst { o -> o.nums.isNotEmpty() && o.nums.min() > fills[k].first() }
+                val page = Page(p.name, p.width, p.height, fills[k], p.spread, "ok")
+                if (at < 0) pages.add(page) else pages.add(at, page)
+                taken.addAll(fills[k])
+                missing.removeAll(fills[k].toSet())
+            }
+            return
+        }
+        val fill: List<List<Int>> = if (cur.spread) {
+            if (d - 1 != 2 * n) return
+            List(n) { k -> listOf(prev.nums.max() + 1 + 2 * k, prev.nums.max() + 2 + 2 * k) }
+        } else {
+            // Step not learnt yet: one side only, as `add` reads an even
+            // jump (31, (33), 35); +1 would also fit a page taken twice.
+            val steps = (if (step == 0) listOf(2) else listOf(step)).filter { s -> d % s == 0 && d / s - 1 == n }
+            if (steps.size != 1) return
+            List(n) { k -> listOf(prev.nums.max() + steps[0] * (k + 1)) }
+        }
+        if (fill.flatten().any { it in taken }) return
+        for ((k, idx) in run.withIndex()) {
+            val g = pages[idx].guess
+            if (g.isNotEmpty() && g.sorted() != fill[k]) return
+        }
+        for ((k, idx) in run.withIndex()) {
+            val p = pages[idx]
+            pages[idx] = Page(p.name, p.width, p.height, fill[k], p.spread, "ok")
+            taken.addAll(fill[k])
+            missing.removeAll(fill[k].toSet())
+        }
+    }
+
+    /** Pages still "reading" when the screen closes: kept without a number. */
+    fun giveUpReading() {
+        for (i in pages.indices) {
+            val p = pages[i]
+            if (p.numberState == "reading") pages[i] = Page(p.name, p.width, p.height, emptyList(), p.spread, "unread")
+        }
+    }
+
+    fun add(
+        name: String,
+        width: Int,
+        height: Int,
+        nums0: List<Int>,
+        spread: Boolean,
+        at: Int = pages.size,
+        guess0: List<Int> = emptyList(),
+    ): Outcome {
+        val pos = at.coerceIn(0, pages.size)
+        var nums = nums0
+        val guess = guess0.sorted().takeIf { nums.isEmpty() && it.isNotEmpty() && guessOk(it, spread) } ?: emptyList()
+        // Two pages in a row read once each, by the step: both are right.
+        if (guess.isNotEmpty() && pos > 0) {
+            val prev = pages[pos - 1]
+            if (prev.numberState == "unread" && prev.spread == spread && follows(prev.guess, guess, spread)) nums = guess
+        }
+        if (nums.isEmpty()) {
+            pages.add(pos, Page(name, width, height, nums, spread, "unread", guess))
+            lastSingle = null
+            unreadSince += if (spread) 2 else 1
+            return Outcome.Unread
+        }
+        val sorted = nums.sorted()
+        if (sorted.any { it in taken }) return Outcome.Duplicate(sorted)
+        if (sorted.all { it in missing }) {
+            val at2 = pages.indexOfFirst { p -> p.nums.isNotEmpty() && p.nums.min() > sorted.first() }
+            val page = Page(name, width, height, sorted, spread, "ok")
+            if (at2 < 0) pages.add(pos, page) else pages.add(at2, page)
+            missing.removeAll(sorted.toSet())
+            taken.addAll(sorted)
+            settlePending()
+            return Outcome.Filled(sorted)
+        }
+        // Pages just before, read once each, that this number confirms (by
+        // the step, back from here).
+        var j = pos - 1
+        var after = sorted
+        val chain = ArrayList<Int>()
+        while (j >= 0) {
+            val p = pages[j]
+            if (p.numberState != "unread" || p.spread != spread || !follows(p.guess, after, spread) || !guessOk(p.guess, spread)) break
+            chain.add(j)
+            after = p.guess.sorted()
+            j--
+        }
+        val l = last
+        val lo = sorted.first()
+        for (k in chain.reversed()) promote(k)
+        if (!spread && sorted.size == 1 && step == 0 && chain.isNotEmpty()) {
+            val d = lo - pages[chain.first()].nums.max()
+            if (d == 1 || d == 2) step = d
+        }
+        if (!spread && sorted.size == 1) {
+            val prev = lastSingle
+            if (step == 0 && prev != null && prev == l) {
+                if (lo == prev + 1) step = 1 else if (lo == prev + 2) step = 2
+            }
+            lastSingle = lo
+        } else {
+            lastSingle = null
+        }
+        val gap = ArrayList<Int>()
+        if (l != null && lo > l + 1) {
+            // Step not learnt yet (no two numbered single pages in a row): an
+            // even jump is read as one side only — 3, (5 unread), 7 is not a
+            // gap; 35 → 39 still leaves 37 missing (run 22: 4, 6, 8 … red on
+            // a right-pages-only book).
+            val oneSide = step == 2 || (step == 0 && (lo - l) % 2 == 0)
+            val s = if (!spread && sorted.size == 1 && oneSide) 2 else 1
+            var n = l + s
+            while (n < lo) {
+                if (n !in taken) gap.add(n)
+                n += s
+            }
+        }
+        pages.add(pos, Page(name, width, height, sorted, spread, "ok"))
+        taken.addAll(sorted)
+        // A page read once whose guess this jump skips over: that page is
+        // the "missing" one, not a gap.
+        for (i in pages.indices) {
+            val p = pages[i]
+            if (p.numberState == "unread" && p.guess.isNotEmpty() && p.guess.all { it in gap } && p.guess.none { it in taken }) {
+                promote(i)
+                gap.removeAll(p.guess.toSet())
+            }
+        }
+        // As many pages as were skipped were taken without a number: they
+        // are most likely the first of those pages (taken in book order),
+        // the rest are missing (31, 33, 35 unread, 39 → 37 missing, not 35).
+        val unread = unreadSince
+        // The first numbered page keeps the count of pages taken unread
+        // before it: they may be the pages after it (run 27,
+        // single-land-white: 31, 33, 35, 39 unread, then 37 read, then 41
+        // — 39 was red although it had been taken).
+        unreadSince = if (l == null) unreadSince else 0
+        val miss = gap.drop(unread)
+        if (miss.isEmpty()) {
+            fillBetween(pages.indexOfFirst { it.name == name }, l)
+            val now = settlePending()
+            return if (now.isEmpty()) Outcome.Taken(sorted) else Outcome.Gap(sorted, now)
+        }
+        // One read alone does not paint a run of red: the page before the
+        // gap must be confirmed by a neighbour (a taken page one step away),
+        // and a gap of more than one page (spread: one pair) also needs this
+        // page confirmed. Until then the gap waits (run 27 stills, thick
+        // spread: the first page misread 60・61 as 50・51, then 62・63 … →
+        // red 53–61 on pages that were never skipped).
+        val anchor = l?.let { a -> pages.firstOrNull { it.numberState == "ok" && a in it.nums }?.nums } ?: emptyList()
+        pending.add(Pending(anchor, sorted, spread, miss))
+        val now = settlePending()
+        return if (now.isEmpty()) Outcome.Taken(sorted) else Outcome.Gap(sorted, now)
+    }
+
+    /** A gap seen between two numbered pages, not yet red (see `add`). */
+    private class Pending(val before: List<Int>, val after: List<Int>, val spread: Boolean, val nums: List<Int>)
+
+    private val pending = ArrayList<Pending>()
+
+    /** Gaps waiting for their pages to be confirmed (not red yet). */
+    val unconfirmedGaps: List<Int> get() = pending.flatMap { it.nums }.filter { it !in taken }.sorted()
+
+    /**
+     * Another taken page sits one step from `nums` (below its lowest or
+     * above its highest number): the read agrees with its neighbours. A
+     * spread's neighbour is the next pair; a single page's the step (not
+     * learnt yet: 1 or 2).
+     */
+    private fun confirmed(nums: List<Int>, spread: Boolean): Boolean {
+        if (nums.isEmpty()) return false
+        val lo = nums.min()
+        val hi = nums.max()
+        val steps = if (spread || nums.size > 1) listOf(1) else when (step) {
+            1 -> listOf(1)
+            2 -> listOf(2)
+            else -> listOf(1, 2)
+        }
+        return steps.any { s -> (lo - s) in taken || (hi + s) in taken }
+    }
+
+    /** Pending gaps whose pages are now confirmed go red; returns the numbers newly missing. */
+    private fun settlePending(): List<Int> {
+        val now = ArrayList<Int>()
+        val iter = pending.iterator()
+        while (iter.hasNext()) {
+            val p = iter.next()
+            val left = p.nums.filter { it !in taken }
+            if (left.isEmpty()) {
+                iter.remove()
+                continue
+            }
+            val small = left.size <= (if (p.spread) 2 else 1)
+            if (confirmed(p.before, p.spread) && (small || confirmed(p.after, p.spread))) {
+                iter.remove()
+                val fresh = left.filter { it !in missing }
+                missing.addAll(fresh)
+                now.addAll(fresh)
+            }
+        }
+        return now.sorted()
+    }
+
+    companion object {
+        /** A jump wider than this is taken as a misread, not as missing pages (checkPageSequence maxGap). */
+        const val MAX_JUMP = 20
+
+        /** "37", "37・39", "37〜41" (≥ 3 in a row). */
+        fun label(nums: List<Int>): String {
+            if (nums.isEmpty()) return ""
+            val s = nums.sorted()
+            if (s.size >= 3 && s.last() - s.first() == s.size - 1) return "${s.first()}〜${s.last()}"
+            return s.joinToString("・")
+        }
+    }
+}
