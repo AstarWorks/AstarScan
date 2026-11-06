@@ -1039,7 +1039,9 @@ export class BookCapture {
     )
     if (twin) {
       const twinSheet = this.sheets.find((s) => s.id === twin.id)
-      if (this.#inliers(sheet.orb, twinSheet?.orb ?? null) >= SAME_PAGE_INLIERS) {
+      if (
+        this.#inliers(sheet.orb, twinSheet?.orb ?? null) >= SAME_PAGE_INLIERS
+      ) {
         this.#removeSheet(sheet.id)
         this.state.coverage = bookCoverage(this.sheets)
         this.#say('mute', [
