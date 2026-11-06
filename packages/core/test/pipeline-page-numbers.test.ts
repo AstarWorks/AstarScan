@@ -102,6 +102,21 @@ describe('parsePageNumberToken', () => {
     })
   })
 
+  it('reads the head number joined to the head (book 6 "202LOGOFTHE …")', () => {
+    expect(parsePageNumberToken('202LOGOFTHE HARBOUR SURVEY')).toEqual({
+      value: 202,
+      kind: 'edge',
+    })
+    expect(parsePageNumberToken('LOGOFTHE HARBOUR SURVEY205')).toEqual({
+      value: 205,
+      kind: 'edge',
+    })
+    // Words of the body with a short letter run are not a head's number.
+    expect(parsePageNumberToken('3rd')).toBeNull()
+    expect(parsePageNumberToken('10th')).toBeNull()
+    expect(parsePageNumberToken('100ml')).toBeNull()
+  })
+
   it('rejects body text, chapter numbers and zero', () => {
     expect(parsePageNumberToken('第3章 契約')).toBeNull()
     expect(parsePageNumberToken('証拠書類は提出の順に')).toBeNull()
@@ -131,6 +146,22 @@ describe('pickPageNumbers', () => {
         { text: '25', cx: 0.9, cy: 0.96 },
       ]),
     ).toEqual([24, 25])
+  })
+
+  it('pairs two running-head numbers of a spread (book 6 "202  TITLE")', () => {
+    expect(
+      pickPageNumbers([
+        { text: '202LOGOFTHE HARBOUR SURVEY', cx: 0.3, cy: 0.05 },
+        { text: 'LOG OF THE HARBOUR SURVEY 203', cx: 0.7, cy: 0.05 },
+      ]),
+    ).toEqual([202, 203])
+    // Two heads 2 apart (a chapter number on both pages) do not pair.
+    expect(
+      pickPageNumbers([
+        { text: 'CHAPTER 12', cx: 0.3, cy: 0.05 },
+        { text: 'CHAPTER 14', cx: 0.7, cy: 0.05 },
+      ]),
+    ).toEqual([12])
   })
 })
 
