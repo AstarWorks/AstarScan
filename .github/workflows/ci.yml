@@ -330,7 +330,10 @@ jobs:
       # Branch book3-android-eval: the third untuned book of PR #12
       # (scripts/eval/book-clips/book3.py, framed into book3-framed/).
       BOOK_CLIPS_REL: scripts/eval/book-clips/book3-framed
-      BOOK_PLAN: book3-single-p book3-spread-paren-port
+      # Run 42262395484: the app stopped answering after the second clip
+      # ("isn't responding"), so book3-spread-topnum never opened the
+      # capture screen; it now comes second.
+      BOOK_PLAN: book3-single-p
       BOOK_LAST: book3-spread-topnum 0 1 2 4 3 5 6
       BOOK_STILLS_SEQ: book3-spread-topnum 0 1 2 4 5 6
       STILLS_BOOK: book3
