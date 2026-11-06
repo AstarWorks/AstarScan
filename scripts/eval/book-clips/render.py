@@ -124,6 +124,13 @@ FONTS_EXTRA = {
     'courier': ('/usr/share/fonts/X11/Type1/c0419bt_.pfb',
                 '/usr/share/fonts/X11/Type1/c0583bt_.pfb',
                 '/usr/share/fonts/X11/Type1/c0582bt_.pfb'),
+    # book 7 (book7.py): fonts-ebgaramond (old-style figures), fonts-lato
+    'ebgaramond': ('/usr/share/fonts/opentype/ebgaramond/EBGaramond12-Regular.otf',
+                   '/usr/share/fonts/opentype/ebgaramond/EBGaramond12-Bold.otf',
+                   '/usr/share/fonts/opentype/ebgaramond/EBGaramond08-Italic.otf'),
+    'lato': ('/usr/share/fonts/truetype/lato/Lato-Regular.ttf',
+             '/usr/share/fonts/truetype/lato/Lato-Bold.ttf',
+             '/usr/share/fonts/truetype/lato/Lato-Italic.ttf'),
 }
 # Japanese body fonts other than IPAGothic (book 4: fonts-wqy-zenhei).
 FONTS_JA_EXTRA = {
@@ -132,6 +139,8 @@ FONTS_JA_EXTRA = {
     'ipap-gothic': '/usr/share/fonts/opentype/ipafont-gothic/ipagp.ttf',
     # book 6: IPA Mincho (a serif; fonts-ipafont-mincho)
     'ipa-mincho': '/usr/share/fonts/opentype/ipafont-mincho/ipam.ttf',
+    # book 7: Noto Serif CJK JP (fonts-noto-cjk; face 0 of the collection is JP)
+    'noto-serif-cjk': '/usr/share/fonts/opentype/noto/NotoSerifCJK-Regular.ttc',
 }
 
 KANJI_DIGITS = '〇一二三四五六七八九'
@@ -319,8 +328,14 @@ class Typesetter:
             hx = x0 + fw + gap if verso else x0 + self.tw - fw - gap - hw
             if not with_folio:
                 hx = x0 if verso else x0 + self.tw - hw
-        d.text((hx, hy + (int(5 * PX_MM) if folio_style == 'top-center' else 0)), head,
-               font=self.fs, fill=(70, 66, 60))
+        hy_draw = hy + (int(5 * PX_MM) if folio_style == 'top-center' else 0)
+        if folio_style == 'foot-outer':  # book 7: head and number together at the bottom outer corner
+            gap = self.f.getlength('　')
+            hy_draw = h - int(13 * PX_MM)
+            hx = x0 + fw + gap if verso else x0 + self.tw - fw - gap - hw
+            if not with_folio:
+                hx = x0 if verso else x0 + self.tw - hw
+        d.text((hx, hy_draw), head, font=self.fs, fill=(70, 66, 60))
         if rule:  # book 6: a thin rule under the running head, across the text width
             ry = hy + self.lh + int(1.0 * PX_MM)
             d.line((x0, ry, x0 + self.tw, ry), fill=(70, 66, 60), width=max(1, int(0.25 * PX_MM)))
@@ -343,6 +358,8 @@ class Typesetter:
             fx = x0 if verso else x0 + self.tw - fw
         if folio_style == 'head-outer':  # book 6: "77  TITLE" / "TITLE  78" on the head's line
             fy = hy
+            fx = x0 if verso else x0 + self.tw - fw
+        if folio_style == 'foot-outer':  # book 7: "60　柱" / "柱　61" at the bottom outer corner
             fx = x0 if verso else x0 + self.tw - fw
         if with_folio:
             d.text((fx, fy), folio, font=self.f, fill=ink)
@@ -468,6 +485,23 @@ def desk_texture(kind, r, mm=1400, ppm=2.0):
         base = np.array([120, 100, 85], np.float32)  # BGR
         loops = cv2.GaussianBlur(r.normal(0, 1, (n, n)).astype(np.float32), (0, 0), 1.0) * 14
         img = base[None, None, :] + loops[..., None] + low(7, 5)[..., None] + r.normal(0, 3.0, (n, n, 1)).astype(np.float32)
+    elif kind == 'granite':  # book 7: dark speckled granite
+        base = np.array([62, 60, 58], np.float32)
+        sp = cv2.GaussianBlur(r.normal(0, 1, (n, n)).astype(np.float32), (0, 0), 0.7)
+        img = base[None, None, :] + sp[..., None] * 22 + (sp > 1.8)[..., None] * 90 + low(6, 6)[..., None] \
+            + r.normal(0, 3.0, (n, n, 1)).astype(np.float32)
+    elif kind == 'kraft':  # book 7: brown kraft paper spread over the desk, with folds
+        base = np.array([95, 135, 170], np.float32)  # BGR
+        fold = np.abs(np.sin((yy * 0.7 + xx * 0.2) / ppm * 0.03 + low(5, 2.0)))
+        img = base[None, None, :] * (0.9 + 0.18 * np.exp(-(fold / 0.08) ** 2)[..., None]) + low(9, 6)[..., None] \
+            + r.normal(0, 2.5, (n, n, 1)).astype(np.float32)
+    elif kind == 'terrazzo':  # book 7: light terrazzo with coloured chips
+        base = np.array([200, 200, 196], np.float32)
+        img = base[None, None, :] + low(8, 5)[..., None] + r.normal(0, 2.5, (n, n, 1)).astype(np.float32)
+        chips = cv2.GaussianBlur(r.normal(0, 1, (n, n)).astype(np.float32), (0, 0), 2.2)
+        for thr, col in ((2.1, (70, 80, 120)), (-2.1, (120, 90, 60)), (1.6, (60, 60, 60))):
+            m = chips > thr if thr > 0 else chips < thr
+            img[m] = np.array(col, np.float32) + r.normal(0, 4.0, (int(m.sum()), 1)).astype(np.float32)
     elif kind == 'rust':  # book 4: rust-red felt desk pad
         base = np.array([45, 70, 150], np.float32)  # BGR
         fuzz = cv2.GaussianBlur(r.normal(0, 1, (n, n)).astype(np.float32), (0, 0), 0.8) * 9
