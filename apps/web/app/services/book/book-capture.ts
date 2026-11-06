@@ -912,15 +912,12 @@ export class BookCapture {
     // A number that does not fit the order the book was taken in (below
     // every page taken before: book 2's 98・99 read as 88・89) is not taken
     // as read — it would mark 88・89 taken and hide the pages missing.
-    if (!numbersFitOrder(this.sheets, sheet.id)) {
-      probe({
-        type: 'numberOutOfOrder',
-        sheetId: sheet.id,
-        numbers: sheet.pages.map((p) => p.number ?? null),
-      })
-      sheet.pages.forEach((_, i) => (sheet.pages[i] = { state: 'none' }))
-      made.forEach((p, i) => (p.read = sheet.pages[i]!))
-    }
+    if (!numbersFitOrder(this.sheets, sheet.id)) this.#dropNumbers(sheet)
+    // The captures after a page judge it too (the first page 31 read as 40
+    // is out of order only once 33, 35 follow it).
+    for (const o of this.sheets)
+      if (o !== sheet && !numbersFitOrder(this.sheets, o.id))
+        this.#dropNumbers(o)
     const numbers = sheet.pages
       .filter((p) => p.state === 'read')
       .map((p) => p.number!)
@@ -1152,6 +1149,18 @@ export class BookCapture {
       to: g.to,
       step: g.step,
     })
+  }
+
+  /** Keep the capture, without its numbers (読めず): they did not fit. */
+  #dropNumbers(sheet: Sheet): void {
+    probe({
+      type: 'numberOutOfOrder',
+      sheetId: sheet.id,
+      numbers: sheet.pages.map((p) => p.number ?? null),
+    })
+    sheet.pages.forEach((_, i) => (sheet.pages[i] = { state: 'none' }))
+    for (const p of this.pages)
+      if (p.sheetId === sheet.id) p.read = sheet.pages[p.side === 'R' ? 1 : 0]!
   }
 
   #removeSheet(id: string): void {
