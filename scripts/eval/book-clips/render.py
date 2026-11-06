@@ -83,6 +83,17 @@ CLIPS = {
         tint=(1.06, 0.98, 0.90)),  # R, G, B
 }
 EXTRA_CLIPS = {'other-sans-top'}
+FONTS_EXTRA = {
+    'caladea': ('/usr/share/fonts/truetype/crosextra/Caladea-Regular.ttf',
+                '/usr/share/fonts/truetype/crosextra/Caladea-Bold.ttf',
+                '/usr/share/fonts/truetype/crosextra/Caladea-Italic.ttf'),
+    'carlito': ('/usr/share/fonts/truetype/crosextra/Carlito-Regular.ttf',
+                '/usr/share/fonts/truetype/crosextra/Carlito-Bold.ttf',
+                '/usr/share/fonts/truetype/crosextra/Carlito-Italic.ttf'),
+    'freeserif': ('/usr/share/fonts/truetype/freefont/FreeSerif.ttf',
+                  '/usr/share/fonts/truetype/freefont/FreeSerifBold.ttf',
+                  '/usr/share/fonts/truetype/freefont/FreeSerifItalic.ttf'),
+}
 
 # ---------------------------------------------------------------- text → page textures
 
@@ -129,7 +140,14 @@ class Typesetter:
     def __init__(self, lang, font='serif'):
         self.lang = lang
         s = int(3.5 * PX_MM)  # ~10 pt body text
-        if font == 'sans' and lang != 'ja':
+        self.italic = None
+        if font in FONTS_EXTRA and lang != 'ja':
+            fr, fbp, fi = FONTS_EXTRA[font]
+            self.f = ImageFont.truetype(fr, s + 1)
+            self.fb = ImageFont.truetype(fbp, s + 1)
+            self.fh = ImageFont.truetype(fbp, int(s * 1.4))
+            self.italic = fi
+        elif font == 'sans' and lang != 'ja':
             self.f = ImageFont.truetype(FONT_SANS, s)
             self.fb = ImageFont.truetype(FONT_SANS_B, s)
             self.fh = ImageFont.truetype(FONT_SANS_B, int(s * 1.35))
@@ -141,7 +159,7 @@ class Typesetter:
             self.f = ImageFont.truetype(FONT_SERIF, s + 1)
             self.fb = ImageFont.truetype(FONT_SERIF_B, s + 1)
             self.fh = ImageFont.truetype(FONT_SERIF_B, int(s * 1.4))
-        self.fs = ImageFont.truetype(FONT_JA if lang == 'ja' else FONT_SERIF_I, int(s * 0.8))
+        self.fs = ImageFont.truetype(FONT_JA if lang == 'ja' else (self.italic or FONT_SERIF_I), int(s * 0.8))
         self.lh = int(s * (1.75 if lang == 'ja' else 1.45))
         self.mt, self.mb, self.mi, self.mo = 20, 22, 19, 15  # margins (mm)
         self.tw = int((PW - self.mi - self.mo) * PX_MM)
@@ -184,10 +202,11 @@ class Typesetter:
         if cur: pages.append(cur)
         return pages
 
-    def draw(self, items, page_no, verso, title, seed, folio_style='default', with_folio=True):
+    def draw(self, items, page_no, verso, title, seed, folio_style='default', with_folio=True,
+             paper=(246, 242, 232)):
         w, h = int(PW * PX_MM), int(PH * PX_MM)
         r = np.random.default_rng(seed)
-        img = Image.new('RGB', (w, h), (246, 242, 232))
+        img = Image.new('RGB', (w, h), tuple(paper))
         d = ImageDraw.Draw(img)
         x0 = int((self.mo if verso else self.mi) * PX_MM)
         y = int(self.mt * PX_MM)
@@ -237,10 +256,12 @@ class Typesetter:
         head = title if verso else (title.split('；')[0].split(';')[0])
         hw = self.fs.getlength(head)
         d.text(((w - hw) / 2, hy), head, font=self.fs, fill=(70, 66, 60))
-        folio = f'— {page_no} —' if self.lang == 'ja' else str(page_no)
+        folio = f'— {page_no} —' if self.lang == 'ja' or folio_style == 'dash-center' else str(page_no)
         fw = self.f.getlength(folio)
         fy = h - int(13 * PX_MM)
         fx = (w - fw) / 2 if self.lang == 'ja' else (x0 if verso else x0 + self.tw - fw)
+        if folio_style in ('dash-center', 'center'):  # bottom centre
+            fx = (w - fw) / 2
         if folio_style == 'top-outer':  # beside the running head, outer corner
             fy = hy
             fx = x0 if verso else x0 + self.tw - fw
@@ -265,13 +286,15 @@ def page_textures(cfg):
         verso = (k % 2 == 0)
         items = laid[(cfg['offset'] + k) % len(laid)]
         out[no] = ts.draw(items, no, verso, cfg['title'], cfg['seed'] * 1000 + no,
-                          cfg.get('folio', 'default'), no not in cfg.get('no_folio', ()))
+                          cfg.get('folio', 'default'), no not in cfg.get('no_folio', ()),
+                          cfg.get('paper', (246, 242, 232)))
     # show-through of the other side of the leaf (mirrored, faint)
     final = {}
+    base = float(np.mean(cfg.get('paper', (246, 242, 232)))) if 'paper' in cfg else 246.0
     for no, a in out.items():
         back = no - 1 if (no - cfg['first_page']) % 2 == 0 else no + 1
         if back in out:
-            ink = 246.0 - out[back][:, ::-1].mean(axis=2, keepdims=True)
+            ink = base - out[back][:, ::-1].mean(axis=2, keepdims=True)
             a = a - 0.05 * np.clip(ink, 0, 255)
         final[no] = np.clip(a, 0, 255).astype(np.uint8)
     return final
@@ -294,6 +317,21 @@ def desk_texture(kind, r, mm=1400, ppm=2.0):
         img[plank < 1.2] *= 0.55
         # varnish: slight sheen
         img += r.normal(0, 3, (n, n, 1)).astype(np.float32)
+    elif kind == 'walnut':  # dark wood, fine grain
+        warp = low(9, 10.0) + low(31, 2.0)
+        t = (xx / ppm) * 1.4 + warp
+        rings = np.sin(t * 0.9) * 0.5 + 0.5
+        base = np.array([28, 45, 70], np.float32)  # BGR dark walnut
+        img = base[None, None, :] * (0.8 + 0.3 * rings[..., None]) + low(13, 4)[..., None]
+        img += r.normal(0, 2.5, (n, n, 1)).astype(np.float32)
+    elif kind == 'navy':  # woven navy cloth
+        base = np.array([95, 55, 35], np.float32)  # BGR
+        weave = (np.sin(xx * 2.2) * np.sin(yy * 2.2))[..., None] * 6
+        img = base[None, None, :] + weave + low(8, 5)[..., None] + r.normal(0, 3.0, (n, n, 1)).astype(np.float32)
+    elif kind == 'cork':  # speckled cork board
+        base = np.array([110, 150, 185], np.float32)  # BGR
+        speck = cv2.GaussianBlur(r.normal(0, 1, (n, n)).astype(np.float32), (0, 0), 1.2) * 40
+        img = base[None, None, :] + speck[..., None] + low(11, 6)[..., None]
     elif kind == 'slate':  # matte grey-green desk mat
         base = np.array([96, 112, 98], np.float32)
         img = base[None, None, :] + low(9, 7)[..., None] + r.normal(0, 3.0, (n, n, 1)).astype(np.float32)
@@ -539,6 +577,10 @@ def render(name, out_dir, max_frames=None, dump_png=False, only=None, sink=None)
     if dump_png: os.makedirs(os.path.join(out_dir, name + '-frames'), exist_ok=True)
     gt_frames = []
     hold_tip_R = np.array([0.80 * PW, PH / 2 - 7.0])
+    hold_out_R = np.array([0.45, 1.0, 0.8])
+    if 'thumb_R' in cfg:  # another grip: x as a share of the page width, y offset (mm) from the bottom-margin grip
+        hold_tip_R = np.array([cfg['thumb_R'][0] * PW, PH / 2 - 7.0 + cfg['thumb_R'][1]])
+        hold_out_R = np.array(cfg['thumb_out'], float)
     hold_tip_L = np.array([-0.72 * PW, PH / 2 - 6.0])
     for fi in range(n_frames):
         if only is not None and fi not in only:
@@ -632,7 +674,7 @@ def render(name, out_dir, max_frames=None, dump_png=False, only=None, sink=None)
                 tip = np.array([xx, yy, zr + 25 * math.sin(math.pi * a)])
             else:
                 tip = np.array([hold_tip_R[0], hold_tip_R[1], zr])
-            hands.append((tip, np.array([0.45, 1.0, 0.8])))
+            hands.append((tip, hold_out_R))
         if cfg['left_thumb']:
             zl = BOARD + float(rest_z(np.array([0.72 * PW]), TL)[0]) + 3.0
             hands.append((np.array([hold_tip_L[0], hold_tip_L[1], zl]), np.array([-0.4, 1.0, 0.8])))
