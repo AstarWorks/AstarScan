@@ -268,6 +268,12 @@ describe('findEdgeGutter', () => {
         if (edge) img[y * w + x] = 30
       }
     expect(findEdgeGutter(img, w, h)).toEqual({ left: 0, right: 0 })
+    // p5: a figure in each half, their borders in line — a printed line,
+    // not a fold's shadow.
+    for (let y = Math.round(0.12 * h); y < Math.round(0.38 * h); y++)
+      for (let x = x0; x <= x1; x++)
+        if (x - x0 < 3 || x1 - x < 3) img[y * w + x] = 30
+    expect(findEdgeGutter(img, w, h)).toEqual({ left: 0, right: 0 })
   })
 })
 

@@ -45,6 +45,12 @@ export const GUTTER_DEFAULTS = {
   edgeMinDepth: 0.2,
   /** ...with the facing page's paper (bright again) beyond it. */
   edgeBeyondRise: 0.3,
+  /**
+   * ...and as wide as a shadow, not a printed line: at half its depth the
+   * folds of the book clips are 8–12 % of the width, a figure's frame or a
+   * rule 1.4–1.7 % (single-port-wood p5 / p7).
+   */
+  edgeMinWidth: 0.025,
 } as const
 
 /** Mean luminance of every column of rows [y0, y1), box-smoothed by `win`. */
@@ -181,10 +187,11 @@ export function findSpreadGutter(
  *
  * The fold runs across the page, so it must show in the upper and in the
  * lower band (`bands`, as the spread's fold) at about the same place. A
- * figure's frame or a text column's edge is dark in one half only: book
- * clip single-port-wood p7's figure border (lower half 31 % darker than the
- * paper, upper half 9 %) was cut as a fold and took 13 % of the page with
- * its number.
+ * figure's frame is dark in one half only: book clip single-port-wood p7's
+ * figure border (lower half 31 % darker than the paper, upper half 9 %) was
+ * cut as a fold and took 13 % of the page with its number. And a fold is a
+ * shadow, wider than a printed line (`edgeMinWidth`): p5 has a figure in
+ * each half, their borders in line.
  */
 export function findEdgeGutter(
   lum: ArrayLike<number>,
@@ -220,6 +227,14 @@ export function findEdgeGutter(
       beyond = Math.max(beyond, prof[x]!)
     }
     if (beyond - bestV < o.edgeBeyondRise * (paper - bestV)) return 0
+    // Width of the dip at half its depth.
+    const half = (paper + bestV) / 2
+    const at = (k: number) => prof[fromLeft ? k : w - 1 - k]!
+    let l = best
+    while (l > 0 && at(l - 1) < half) l--
+    let r = best
+    while (r < w - 1 && at(r + 1) < half) r++
+    if ((r - l + 1) / w < o.edgeMinWidth) return 0
     return best / w
   }
   const side = (fromLeft: boolean): number => {
