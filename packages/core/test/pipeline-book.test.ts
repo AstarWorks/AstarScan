@@ -20,6 +20,7 @@ import {
 } from '../src/pipeline/gutter.js'
 import { paperViewChange, paperViewMask } from '../src/pipeline/turn-watch.js'
 import { shotFrameQuad } from '../src/pipeline/shot-frame.js'
+import { completeHiddenCorner } from '../src/pipeline/hidden-corner.js'
 
 const read = (n: number): BookPageRead => ({ state: 'read', number: n })
 const none: BookPageRead = { state: 'none' }
@@ -745,5 +746,32 @@ describe('shotFrameQuad (the frame of the shot)', () => {
       y: 320,
     })
     expect(shotFrameQuad([])).toBeNull()
+  })
+})
+
+describe('completeHiddenCorner (a corner under a thumb)', () => {
+  // Book 6's spread at 1440×1080: the left thumb over the bottom-left
+  // corner; the model read it at the foot of the gutter (650, 940) at
+  // 0.03–0.4, the others at 0.85–0.93. The true corner was (143, 996).
+  const quad = {
+    tl: { x: 108, y: 174 },
+    tr: { x: 1243, y: 127 },
+    br: { x: 1301, y: 916 },
+    bl: { x: 650, y: 940 },
+  }
+  it('completes one hidden corner from three sure ones', () => {
+    const r = completeHiddenCorner(quad, [0.91, 0.93, 0.92, 0.12])!
+    expect(r.hidden).toBe('bl')
+    expect(r.quad.bl).toEqual({ x: 108 + 1301 - 1243, y: 174 + 916 - 127 })
+    expect(r.peaks).toEqual([0.91, 0.93, 0.92, 0.91])
+    expect(r.quad.tl).toEqual(quad.tl)
+  })
+  it('leaves other mixes alone', () => {
+    // Two weak corners: the paper is not found.
+    expect(completeHiddenCorner(quad, [0.91, 0.2, 0.92, 0.12])).toBeNull()
+    // One weak, but the others not very sure.
+    expect(completeHiddenCorner(quad, [0.5, 0.93, 0.92, 0.12])).toBeNull()
+    // Nothing weak.
+    expect(completeHiddenCorner(quad, [0.9, 0.9, 0.9, 0.4])).toBeNull()
   })
 })

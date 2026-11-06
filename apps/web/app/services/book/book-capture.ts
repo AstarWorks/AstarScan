@@ -25,6 +25,7 @@
 import {
   applyHomography,
   bookCoverage,
+  completeHiddenCorner,
   completeSpread,
   curveAt,
   facingHalfNumber,
@@ -66,6 +67,13 @@ import { loadOpenCV } from '../opencv-loader'
 import { getPipelineOps } from '../pipeline-ops'
 import type { OrtBackend } from '../ort-model-loader'
 import { MIN_PEAK, PageDetector } from './page-detector'
+
+/**
+ * A corner the model is this sure of (and above) backs the completion of
+ * one hidden corner (scan-core completeHiddenCorner): the three corners
+ * not under the thumb were read at 0.85–0.93 on book 6's spread.
+ */
+const SURE_PEAK = 0.6
 import type { FolioIn, FolioLine, FolioOut } from './folio.worker'
 
 // --- timing (docs/ux/ideal-capture.html: "撮れた" within 1 s of stillness) ---
@@ -467,8 +475,25 @@ export class BookCapture {
     const now = performance.now()
     const vw = video.videoWidth
     const vh = video.videoHeight
-    const det = await this.#detector.detect(video)
-    if (!det) return
+    const raw = await this.#detector.detect(video)
+    if (!raw) return
+    // One corner under a thumb (book 6: the left thumb on the bottom-left
+    // corner, read at the gutter's foot at 0.03–0.4 all hold long while
+    // the other three corners were 0.85+): the three sure corners fix it
+    // (scan-core completeHiddenCorner); the frame is then found.
+    const hidden = completeHiddenCorner(raw.quad, raw.peaks, {
+      minPeak: MIN_PEAK,
+      surePeak: SURE_PEAK,
+    })
+    const det = hidden
+      ? {
+          ...raw,
+          quad: hidden.quad,
+          peaks: hidden.peaks,
+          minPeak: Math.min(...hidden.peaks),
+        }
+      : raw
+    if (hidden) probe({ type: 'hiddenCorner', t: now, corner: hidden.hidden })
     this.#frameTimes.push(now)
     while (this.#frameTimes.length > 0 && now - this.#frameTimes[0]! > 2000)
       this.#frameTimes.shift()
