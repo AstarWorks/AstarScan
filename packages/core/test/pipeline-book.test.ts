@@ -301,6 +301,67 @@ describe('bookCoverage (the mock ideal-capture.html flow)', () => {
     expect(settleBookNumbers(apart).get(apart[0]!.id)).toBe('unsure')
   })
 
+  it('two small reads agreeing are not enough; a tall one or two partners are (book 2 720×960: 94・95 as 98・99)', () => {
+    const small = (n: number): BookPageRead => ({
+      state: 'read',
+      number: n,
+      px: 6,
+    })
+    const tall = (n: number): BookPageRead => ({
+      state: 'read',
+      number: n,
+      px: 12,
+    })
+    const inferred = (n: number): BookPageRead => ({
+      state: 'read',
+      number: n,
+      inferred: true,
+    })
+    // 92・93 tall, then 94・95 read "98・99" at 6 px (right half), then
+    // 96・97 read at 6 px (left half): the two small reads touch, nothing
+    // else backs them — both held, no 94・95 red.
+    const two = [
+      sheet(tall(92), tall(93)),
+      sheet(inferred(98), small(99)),
+      sheet(small(96), inferred(97)),
+    ]
+    const v = two.map((s) => settleBookNumbers(two).get(s.id))
+    expect(v).toEqual(['ok', 'unsure', 'unsure'])
+    const settled = two.map((s, i) =>
+      v[i] === 'ok' ? s : { ...s, pages: s.pages.map(() => none) },
+    )
+    expect(bookCoverage(settled).gaps).toEqual([])
+    // A tall read touching a small one makes it sure.
+    const withTall = [sheet(tall(94), tall(95)), sheet(small(96), inferred(97))]
+    expect(settleBookNumbers(withTall).get(withTall[1]!.id)).toBe('ok')
+    // Two small captures on either side of a small one make it sure.
+    const three = [
+      sheet(small(94), inferred(95)),
+      sheet(small(96), inferred(97)),
+      sheet(small(98), inferred(99)),
+    ]
+    expect(settleBookNumbers(three).get(three[1]!.id)).toBe('ok')
+  })
+
+  it('of two captures holding the same page, the one in sequence counts', () => {
+    const t = (n: number): BookPageRead => ({
+      state: 'read',
+      number: n,
+      px: 12,
+    })
+    // 92・93, then 94・95 misread as "98・99", then 96・97, then the real
+    // 98・99, then 100・101 (tall reads: every one is "sure" on its own).
+    const s = [
+      sheet(t(92), t(93)),
+      sheet(t(98), t(99)),
+      sheet(t(96), t(97)),
+      sheet(t(98), t(99)),
+      sheet(t(100), t(101)),
+    ]
+    const v = s.map((x) => settleBookNumbers(s).get(x.id))
+    expect(v).toEqual(['ok', 'unsure', 'ok', 'ok', 'ok'])
+  })
+
   it('a spread whose left page has the wrong parity for the book is unsure', () => {
     const t = (n: number): BookPageRead => ({
       state: 'read',

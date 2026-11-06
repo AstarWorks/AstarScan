@@ -408,12 +408,15 @@ export const BOOK_NUMBER_DEFAULTS = {
  *    (`numbersFitOrder`);
  *  - `unsure`: a spread whose number nothing makes sure of. A spread's
  *    number is sure when
- *      · another capture confirms it (its numbers touch, 1–2 pages off:
- *        the next / previous spread, whichever half of each was read), or
+ *      · other captures confirm it (their numbers touch, 1–2 pages off:
+ *        the next / previous spread, whichever half of each was read) —
+ *        one of them read at `surePx` or more, or two of them, or
  *      · both halves were read on their own (not one inferred from the
  *        other), follow each other, and are at least `surePx` tall;
  *    and its left page has the parity the book's confirmed spreads have
- *    (left even, right odd — or the other way round, per book).
+ *    (left even, right odd — or the other way round, per book). Of two
+ *    captures holding the same page only the one in sequence with its
+ *    neighbours in capture order counts.
  *    Book 1 4・5 read as 1・2 (the right half "第二" from the body text,
  *    the left inferred), book 3 318・319 as 328・329 (the left half
  *    alone) and 324・325 as 824・825, book 2 96・97 as 8・9 — all at
@@ -448,7 +451,25 @@ export function settleBookNumbers(
     )
   }
 
-  const confirmed = (s: BookSheet) => touchesAnother(s, work, [1, 2])
+  const tall = (p: BookPageRead) => p.px === undefined || p.px >= o.surePx
+  /** A capture with a number read at `surePx` or more. */
+  const tallRead = (s: BookSheet) =>
+    s.pages.some((p) => p.state === 'read' && !p.inferred && tall(p))
+  /** The other captures whose numbers touch this one's, 1–2 pages off. */
+  const partners = (s: BookSheet) => {
+    const own = countedNumbers(s)
+    return work.filter(
+      (x) => x.id !== s.id && touching(own, countedNumbers(x), [1, 2]),
+    )
+  }
+  // A read under surePx is wrong as often as right; one such read agreeing
+  // with another is weak evidence (book 2 720×960: 94・95 read as 98・99
+  // at 6 px beside a right 96・97 at 6 px, both shown, 94・95 red). It
+  // counts when a tall read touches it, or two captures do.
+  const confirmed = (s: BookSheet) => {
+    const ps = partners(s)
+    return ps.length >= 2 || ps.some(tallRead)
+  }
   const spreads = work.filter(
     (s) => s.pages.length === 2 && directNumbers([s]).length > 0,
   )
@@ -477,7 +498,6 @@ export function settleBookNumbers(
     const parityOk =
       parity === null || left === undefined || left % 2 === parity
     const [l, r] = s.pages as [BookPageRead, BookPageRead]
-    const tall = (p: BookPageRead) => p.px === undefined || p.px >= o.surePx
     const pair =
       l.state === 'read' &&
       r.state === 'read' &&
@@ -488,6 +508,39 @@ export function settleBookNumbers(
       tall(r)
     out.set(s.id, parityOk && (confirmed(s) || pair) ? 'ok' : 'unsure')
   }
+
+  // Two captures holding the same page (a retake the picture test let
+  // through, or one of them misread onto the other's number): at most one
+  // counts — the one in sequence with the captures just before and after
+  // it (pages are turned forward: 96・97 then 98・99 then 100・101), the
+  // earlier one on a tie. The other is held.
+  const shown = work.filter(
+    (s) => out.get(s.id) === 'ok' && countedNumbers(s).length > 0,
+  )
+  const bySeq = [...work].sort((a, b) => a.seq - b.seq)
+  const inSequence = (s: BookSheet) => {
+    const i = bySeq.findIndex((x) => x.id === s.id)
+    const own = countedNumbers(s)
+    let n = 0
+    for (const j of [i - 1, i + 1]) {
+      const x = bySeq[j]
+      if (x && touching(own, countedNumbers(x), [1, 2])) n++
+    }
+    return n
+  }
+  for (let i = 0; i < shown.length; i++)
+    for (let j = i + 1; j < shown.length; j++) {
+      const a = shown[i]!
+      const b = shown[j]!
+      if (out.get(a.id) !== 'ok' || out.get(b.id) !== 'ok') continue
+      const na = countedNumbers(a)
+      const nb = countedNumbers(b)
+      if (!na.some((n) => nb.includes(n))) continue
+      const sa = inSequence(a)
+      const sb = inSequence(b)
+      const loser = sa > sb ? b : sb > sa ? a : a.seq < b.seq ? b : a
+      out.set(loser.id, 'unsure')
+    }
   return out
 }
 

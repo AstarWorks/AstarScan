@@ -1025,6 +1025,43 @@ export class BookCapture {
       made.forEach((p, i) => (p.read = sheet.pages[i]!))
     }
     sheet.readPages = [...sheet.pages]
+
+    // The same page taken again (the picture differed enough to pass ORB
+    // at the hold): drop it and say so. Judged on the numbers as read: a
+    // capture whose number is held back still holds its page.
+    const readNums = sheet.readPages
+      .filter((p) => p.state === 'read')
+      .map((p) => p.number!)
+    const twin = sheetWithNumbers(
+      this.sheets.map((s) => ({ id: s.id, seq: s.seq, pages: s.readPages })),
+      readNums,
+      sheet.id,
+    )
+    if (twin) {
+      const twinSheet = this.sheets.find((s) => s.id === twin.id)
+      if (this.#inliers(sheet.orb, twinSheet?.orb ?? null) >= SAME_PAGE_INLIERS) {
+        this.#removeSheet(sheet.id)
+        this.state.coverage = bookCoverage(this.sheets)
+        this.#say('mute', [
+          `${pageRangeLabel(Math.min(...readNums), Math.max(...readNums))} は撮影済みです`,
+          'めくってください',
+        ])
+        probe({ type: 'dupByNumber', sheetId: sheet.id, numbers: readNums })
+        this.#onChange()
+        return
+      }
+      // Same number, different picture: one of the two is a misread (book
+      // clip spread-land-wood framed: 14・15 read as 4・5). Both keep their
+      // pages; settleBookNumbers lets only the one in sequence with its
+      // neighbours count.
+      probe({
+        type: 'numberConflict',
+        sheetId: sheet.id,
+        numbers: readNums,
+        twin: twin.id,
+      })
+    }
+
     // Numbers that do not fit the order the book was taken in (below every
     // page taken before: book 2's 98・99 read as 88・89), or a spread's that
     // nothing makes sure of (one half read at 4–5 px and the other inferred:
@@ -1045,38 +1082,6 @@ export class BookCapture {
       numbers,
       sinceShot: Math.round(performance.now() - t),
     })
-
-    // The same page taken again (the picture differed enough to pass ORB):
-    // drop it and say so.
-    const twin = sheetWithNumbers(this.sheets, numbers, sheet.id)
-    if (
-      twin &&
-      this.#inliers(sheet.orb, (twin as Sheet).orb) < SAME_PAGE_INLIERS
-    ) {
-      // Same number, different picture: the number is a misread (book clip
-      // spread-land-wood framed: 14・15 read as 4・5). Keep the page, drop
-      // the number.
-      probe({
-        type: 'numberConflict',
-        sheetId: sheet.id,
-        numbers,
-        twin: twin.id,
-      })
-      sheet.pages.forEach((_, i) => (sheet.pages[i] = { state: 'none' }))
-      sheet.readPages = [...sheet.pages]
-      made.forEach((p, i) => (p.read = sheet.pages[i]!))
-      numbers.splice(0)
-    } else if (twin) {
-      this.#removeSheet(sheet.id)
-      this.state.coverage = bookCoverage(this.sheets)
-      this.#say('mute', [
-        `${pageRangeLabel(Math.min(...numbers), Math.max(...numbers))} は撮影済みです`,
-        'めくってください',
-      ])
-      probe({ type: 'dupByNumber', sheetId: sheet.id, numbers })
-      this.#onChange()
-      return
-    }
 
     // A number another capture's number follows / precedes is right; its
     // place on the page teaches where this book prints its numbers.
