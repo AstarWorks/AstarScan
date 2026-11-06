@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest'
 import {
   bookCoverage,
   newGaps,
+  numbersFitOrder,
   pageRangeLabel,
   sheetWithNumbers,
   type BookPageRead,
@@ -126,6 +127,48 @@ describe('bookCoverage (the mock ideal-capture.html flow)', () => {
     ])
     expect(d.step).toBe(2)
     expect(d.gaps).toEqual([])
+  })
+
+  it('a number below every page taken before is not taken (book 2: 98・99 read as 88・89)', () => {
+    const s = [
+      sheet(read(90), read(91)),
+      sheet(read(92), read(93)),
+      sheet(read(94), read(95)),
+    ]
+    const misread = sheet(read(88), read(89))
+    expect(numbersFitOrder([...s, misread], misread.id)).toBe(false)
+    // 96・97 read as 8・9 is the same.
+    const short = sheet(read(8), read(9))
+    expect(numbersFitOrder([...s, short], short.id)).toBe(false)
+    // Going back to fill a skipped spread, or a page taken already, fits.
+    const s2 = [
+      sheet(read(44), read(45)),
+      sheet(read(46), read(47)),
+      sheet(read(48), read(49)),
+      sheet(read(52), read(53)),
+    ]
+    const back = sheet(read(50), read(51))
+    expect(numbersFitOrder([...s2, back], back.id)).toBe(true)
+    const again = sheet(read(44), read(45))
+    expect(numbersFitOrder([...s2, again], again.id)).toBe(true)
+    // Forward, and the first captures, fit.
+    const next = sheet(read(54), read(55))
+    expect(numbersFitOrder([...s2, next], next.id)).toBe(true)
+    expect(numbersFitOrder([s2[0]!], s2[0]!.id)).toBe(true)
+  })
+
+  it('one misread capture does not lock out the right numbers after it', () => {
+    // 12・13 read as 72・73 first: nothing confirms 72, so 14・15 fits.
+    const wrong = sheet(read(72), read(73))
+    const right = sheet(read(14), read(15))
+    expect(numbersFitOrder([wrong, right], right.id)).toBe(true)
+    // Single pages, every right one: 31, 33 confirm each other; 21 is back
+    // before them; a page without a number never fails.
+    const r = [sheet(read(31)), sheet(read(33))]
+    const low = sheet(read(21))
+    expect(numbersFitOrder([...r, low], low.id)).toBe(false)
+    const blank = sheet(none)
+    expect(numbersFitOrder([...r, blank], blank.id)).toBe(true)
   })
 
   it('a far jump is a misread, not a gap', () => {

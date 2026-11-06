@@ -35,6 +35,7 @@ import {
   findEdgeGutter,
   findSpreadGutter,
   newGaps,
+  numbersFitOrder,
   folioZone,
   learnedFolioZone,
   pageRangeLabel,
@@ -879,6 +880,18 @@ export class BookCapture {
       }
       const full = completeSpread(sheet.pages)
       sheet.pages.splice(0, 2, ...full)
+      made.forEach((p, i) => (p.read = sheet.pages[i]!))
+    }
+    // A number that does not fit the order the book was taken in (below
+    // every page taken before: book 2's 98・99 read as 88・89) is not taken
+    // as read — it would mark 88・89 taken and hide the pages missing.
+    if (!numbersFitOrder(this.sheets, sheet.id)) {
+      probe({
+        type: 'numberOutOfOrder',
+        sheetId: sheet.id,
+        numbers: sheet.pages.map((p) => p.number ?? null),
+      })
+      sheet.pages.forEach((_, i) => (sheet.pages[i] = { state: 'none' }))
       made.forEach((p, i) => (p.read = sheet.pages[i]!))
     }
     const numbers = sheet.pages

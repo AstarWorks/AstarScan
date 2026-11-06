@@ -278,6 +278,57 @@ export function sheetWithNumbers(
   return null
 }
 
+/**
+ * Numbers read directly (not inferred) on `sheets` that another of them
+ * confirms: a number of another capture within 2 (34 next to 35, the next
+ * spread's 36, or every right page 31, 33). One capture alone, even a spread
+ * whose halves follow each other, confirms nothing.
+ */
+function confirmedNumbers(sheets: readonly BookSheet[]): number[] {
+  const direct = sheets.flatMap((s) =>
+    s.pages
+      .filter((p) => p.state === 'read' && !p.inferred && p.number !== undefined)
+      .map((p) => ({ seq: s.seq, n: p.number! })),
+  )
+  return direct
+    .filter((x) =>
+      direct.some((y) => y.seq !== x.seq && Math.abs(y.n - x.n) <= 2),
+    )
+    .map((x) => x.n)
+}
+
+/**
+ * Whether the numbers read on the capture `sheetId` fit the order the book
+ * has been taken in, so that they may count as pages taken.
+ *
+ * Pages are turned forward. Going back is to fill a gap or to a page taken
+ * already — both at or above the lowest page taken so far. A number below
+ * every number the earlier captures confirm among themselves (90〜95 taken,
+ * then "88・89") is a misread far more often than a user going back before
+ * the first page: book 2 (FreeSerif) read 98・99 as 88・89 and 96・97 as
+ * 8・9, and taking them as read showed "✓ 88・89 撮れた" and hid the real
+ * 88・89 / 96・97 that were missing. Such a capture is kept, without a
+ * number (読めず): no ✓ with a number, never a page marked taken.
+ *
+ * Only numbers confirmed by another capture set the bar, so one misread
+ * capture (a lone "72・73" read for 12・13) does not lock out the right
+ * numbers after it.
+ */
+export function numbersFitOrder(
+  sheets: readonly BookSheet[],
+  sheetId: string,
+): boolean {
+  const s = sheets.find((x) => x.id === sheetId)
+  if (!s) return true
+  const own = s.pages
+    .filter((p) => p.state === 'read' && !p.inferred && p.number !== undefined)
+    .map((p) => p.number!)
+  if (own.length === 0) return true
+  const before = confirmedNumbers(sheets.filter((x) => x.seq < s.seq))
+  if (before.length === 0) return true
+  return Math.min(...own) >= Math.min(...before)
+}
+
 /** Gaps in `after` that were not in `before` (a page was just skipped). */
 export function newGaps(
   before: readonly BookGap[],
