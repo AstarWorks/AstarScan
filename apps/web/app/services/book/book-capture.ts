@@ -35,14 +35,16 @@ import {
   findEdgeGutter,
   findSpreadGutter,
   newGaps,
-  numbersFitOrder,
   folioZone,
   learnedFolioZone,
   pageRangeLabel,
+  paperViewChange,
+  paperViewMask,
   parsePageNumberToken,
   pickPageNumbers,
   type FolioZone,
   quadAspect,
+  settleBookNumbers,
   sheetWithNumbers,
   splitSpreadQuad,
   SPREAD_MIN_ASPECT,
@@ -167,7 +169,10 @@ export interface BookState {
 }
 
 interface Sheet extends BookSheet {
+  /** As shown and counted (settleBookNumbers may hold the read back). */
   pages: BookPageRead[]
+  /** As read (both halves of a spread completed), before judging. */
+  readPages: BookPageRead[]
   orb: OrbResult | null
   takenAt: number
   /** Spread / single, to show "34・35" or "46". */
@@ -263,6 +268,8 @@ export class BookCapture {
   #spell: { t: number; quad: Quad }[] = []
   /** 32×24 grey view when the last page was taken. */
   #takenView: Uint8ClampedArray | null = null
+  /** View cells on the paper of the page taken (scan-core paperViewMask). */
+  #takenMask: Uint8Array | null = null
   #view: Uint8ClampedArray | null = null
   #viewCanvas = canvas(32, 24)
   #stillSince = 0
@@ -567,25 +574,35 @@ export class BookCapture {
       now - this.#stillSince >= STILL_MS * 0.5
     ) {
       this.#holdVerdict = this.#judgeHold(video, q)
-      if (this.#holdVerdict === 'last') this.#takenView = view
+      if (this.#holdVerdict === 'last') this.#setTaken(view, mq, vw, vh)
       probe({ type: 'hold', t: now, verdict: this.#holdVerdict })
     }
     // Waiting for the page to be turned: a turn that never broke the
     // stillness (framed spread: the frame stays put, each frame changes a
-    // little) shows as the picture having drifted from the one taken; the
-    // page is then judged again.
-    if (
-      this.#holdVerdict === 'last' &&
-      this.#takenView &&
-      viewChange(view, this.#takenView) > TURNED_VIEW
-    ) {
+    // little) shows as the paper having drifted from the one taken; the
+    // page is then judged again (ORB decides whether it is a new page, so
+    // a drift on the same page costs one more look, nothing else). The
+    // change is measured on the paper of the shot, not on the whole view:
+    // see scan-core turn-watch.ts (an upright spread is ~40 % of the view
+    // and a whole turn barely moved the whole view's mean past TURNED_VIEW).
+    if (this.#holdVerdict === 'last' && this.#takenView) {
+      const change = paperViewChange(view, this.#takenView, this.#takenMask)
       probe({
-        type: 'drift',
+        type: 'turnWatch',
         t: now,
-        change: viewChange(view, this.#takenView),
+        paper: Math.round(change * 10) / 10,
+        whole: Math.round(viewChange(view, this.#takenView) * 10) / 10,
       })
-      this.#resetStill()
-      this.#stillSince = now
+      if (change > TURNED_VIEW) {
+        probe({
+          type: 'drift',
+          t: now,
+          change,
+          whole: viewChange(view, this.#takenView),
+        })
+        this.#resetStill()
+        this.#stillSince = now
+      }
     }
     if (this.#holdVerdict === 'last') {
       this.state.tone = 'done'
@@ -637,11 +654,17 @@ export class BookCapture {
       })
       this.#capture(video, sq, now)
       this.#holdVerdict = 'last'
-      this.#takenView = view
+      this.#setTaken(view, sq, vw, vh)
       this.state.tone = 'done'
       this.state.sweep = 0
     }
     this.#onChange()
+  }
+
+  /** The view and the paper of the page taken (or recognised as taken). */
+  #setTaken(view: Uint8ClampedArray, q: Quad, vw: number, vh: number): void {
+    this.#takenView = view
+    this.#takenMask = paperViewMask(q, vw, vh)
   }
 
   #resetStill(): void {
@@ -748,6 +771,9 @@ export class BookCapture {
       id,
       seq: this.#seq,
       pages: spread
+        ? [{ state: 'pending' }, { state: 'pending' }]
+        : [{ state: 'pending' }],
+      readPages: spread
         ? [{ state: 'pending' }, { state: 'pending' }]
         : [{ state: 'pending' }],
       orb: this.#holdOrb,
@@ -901,7 +927,16 @@ export class BookCapture {
           : undefined
       chosen.push(line ? folioZone(line.cx, line.cy, side) : null)
       const r: BookPageRead =
-        n !== undefined ? { state: 'read', number: n } : { state: 'none' }
+        n !== undefined && line
+          ? {
+              state: 'read',
+              number: n,
+              px:
+                Math.round(
+                  (line.box[3] - line.box[1]) * p.straight.height * 10,
+                ) / 10,
+            }
+          : { state: 'none' }
       sheet.pages[i] = r
       p.read = r
     })
@@ -921,15 +956,17 @@ export class BookCapture {
       sheet.pages.splice(0, 2, ...full)
       made.forEach((p, i) => (p.read = sheet.pages[i]!))
     }
-    // A number that does not fit the order the book was taken in (below
-    // every page taken before: book 2's 98・99 read as 88・89) is not taken
-    // as read — it would mark 88・89 taken and hide the pages missing.
-    if (!numbersFitOrder(this.sheets, sheet.id)) this.#dropNumbers(sheet)
-    // The captures after a page judge it too (the first page 31 read as 40
-    // is out of order only once 33, 35 follow it).
-    for (const o of this.sheets)
-      if (o !== sheet && !numbersFitOrder(this.sheets, o.id))
-        this.#dropNumbers(o)
+    sheet.readPages = [...sheet.pages]
+    // Numbers that do not fit the order the book was taken in (below every
+    // page taken before: book 2's 98・99 read as 88・89), or a spread's that
+    // nothing makes sure of (one half read at 4–5 px and the other inferred:
+    // book 3's 318・319 as 328・329), are not taken as read — they would
+    // show "✓ 328・329" and mark those pages taken. Every capture is judged
+    // again: the captures after a page judge it too (the first page 31
+    // read as 40 is out of order only once 33, 35 follow it; a held spread
+    // is shown once the next spread confirms it). scan-core
+    // settleBookNumbers.
+    this.#settleNumbers(sheet)
     const numbers = sheet.pages
       .filter((p) => p.state === 'read')
       .map((p) => p.number!)
@@ -958,6 +995,7 @@ export class BookCapture {
         twin: twin.id,
       })
       sheet.pages.forEach((_, i) => (sheet.pages[i] = { state: 'none' }))
+      sheet.readPages = [...sheet.pages]
       made.forEach((p, i) => (p.read = sheet.pages[i]!))
       numbers.splice(0)
     } else if (twin) {
@@ -1163,16 +1201,58 @@ export class BookCapture {
     })
   }
 
-  /** Keep the capture, without its numbers (読めず): they did not fit. */
-  #dropNumbers(sheet: Sheet): void {
-    probe({
-      type: 'numberOutOfOrder',
-      sheetId: sheet.id,
-      numbers: sheet.pages.map((p) => p.number ?? null),
-    })
-    sheet.pages.forEach((_, i) => (sheet.pages[i] = { state: 'none' }))
-    for (const p of this.pages)
-      if (p.sheetId === sheet.id) p.read = sheet.pages[p.side === 'R' ? 1 : 0]!
+  /**
+   * Show each capture's numbers as read, or keep the capture without them
+   * (読めず) while they do not fit the order or nothing makes a spread's
+   * sure (scan-core settleBookNumbers). `current` is the capture just read.
+   */
+  #settleNumbers(current: Sheet): void {
+    const verdicts = settleBookNumbers(
+      this.sheets.map((s) => ({ id: s.id, seq: s.seq, pages: s.readPages })),
+    )
+    const now = performance.now()
+    for (const s of this.sheets) {
+      if (s.readPages.some((p) => p.state === 'pending')) continue
+      const verdict = verdicts.get(s.id) ?? 'ok'
+      const rawNums = s.readPages.map((p) => p.number ?? null)
+      const had = rawNums.some((n) => n !== null)
+      const shownBefore = s.pages.some((p) => p.state === 'read')
+      const next: BookPageRead[] =
+        verdict === 'ok'
+          ? [...s.readPages]
+          : s.readPages.map(() => ({ state: 'none' }))
+      s.pages.splice(0, s.pages.length, ...next)
+      for (const p of this.pages)
+        if (p.sheetId === s.id)
+          p.read = s.pages[p.side === 'R' && s.pages.length > 1 ? 1 : 0]!
+      const shownNow = verdict === 'ok' && had
+      const why = verdict === 'order' ? 'numberOutOfOrder' : 'numberUnsure'
+      if (s === current) {
+        if (!shownNow && had)
+          probe({
+            type: why,
+            sheetId: s.id,
+            numbers: rawNums,
+            px: this.#pxOf(s),
+          })
+      } else if (shownBefore && !shownNow) {
+        probe({ type: why, sheetId: s.id, numbers: rawNums, px: this.#pxOf(s) })
+      } else if (!shownBefore && shownNow) {
+        // Held back until now (a later capture confirmed it).
+        probe({
+          type: 'number',
+          t: now,
+          sheetId: s.id,
+          numbers: rawNums.filter((n): n is number => n !== null),
+          sinceShot: Math.round(now - s.takenAt),
+          late: true,
+        })
+      }
+    }
+  }
+
+  #pxOf(s: Sheet): (number | null)[] {
+    return s.readPages.map((p) => p.px ?? null)
   }
 
   #removeSheet(id: string): void {
@@ -1209,6 +1289,7 @@ export class BookCapture {
     else if (s) {
       const idx = p.side === 'R' ? 1 : 0
       s.pages.splice(idx, 1)
+      s.readPages.splice(idx, 1)
       s.spread = false
       this.pages.splice(this.pages.indexOf(p), 1)
     }

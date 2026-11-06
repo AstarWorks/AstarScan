@@ -4,6 +4,7 @@ import {
   newGaps,
   numbersFitOrder,
   pageRangeLabel,
+  settleBookNumbers,
   sheetWithNumbers,
   type BookPageRead,
   type BookSheet,
@@ -17,6 +18,7 @@ import {
   trimQuadSides,
   unitToQuad,
 } from '../src/pipeline/gutter.js'
+import { paperViewChange, paperViewMask } from '../src/pipeline/turn-watch.js'
 
 const read = (n: number): BookPageRead => ({ state: 'read', number: n })
 const none: BookPageRead = { state: 'none' }
@@ -209,6 +211,81 @@ describe('bookCoverage (the mock ideal-capture.html flow)', () => {
     expect(
       bookCoverage([sheet(read(4), read(5)), sheet(read(94), read(95))]).gaps,
     ).toEqual([])
+  })
+
+  it('a spread nothing makes sure of is not taken as read (settleBookNumbers)', () => {
+    const small = (n: number): BookPageRead => ({
+      state: 'read',
+      number: n,
+      px: 5,
+    })
+    const tall = (n: number): BookPageRead => ({
+      state: 'read',
+      number: n,
+      px: 12,
+    })
+    const inferred = (n: number): BookPageRead => ({
+      state: 'read',
+      number: n,
+      inferred: true,
+    })
+    // Book 3 720×960: 318・319 read as 328・329 (left half alone, 5 px),
+    // the other spreads unread.
+    const b3 = [
+      sheet(none, none),
+      sheet(none, none),
+      sheet(small(328), inferred(329)),
+      sheet(none, none),
+    ]
+    expect(settleBookNumbers(b3).get(b3[2]!.id)).toBe('unsure')
+    // Book 1: 4・5 read as 1・2 (right half "第二", left inferred).
+    const b1 = [sheet(none, none), sheet(inferred(1), small(2))]
+    expect(settleBookNumbers(b1).get(b1[1]!.id)).toBe('unsure')
+    // Both halves read at 5 px and following each other: still unsure.
+    const b2 = [sheet(small(8), small(9))]
+    expect(settleBookNumbers(b2).get(b2[0]!.id)).toBe('unsure')
+    // Both halves read tall: sure on its own (1920×1080).
+    const big = [sheet(tall(160), tall(161))]
+    expect(settleBookNumbers(big).get(big[0]!.id)).toBe('ok')
+    // One half alone, but the next spread confirms it: sure, both of them.
+    const two = [sheet(small(96), inferred(97)), sheet(small(98), inferred(99))]
+    const v = settleBookNumbers(two)
+    expect(v.get(two[0]!.id)).toBe('ok')
+    expect(v.get(two[1]!.id)).toBe('ok')
+    // The same number taken twice does not confirm itself.
+    const twice = [
+      sheet(small(328), inferred(329)),
+      sheet(small(328), inferred(329)),
+    ]
+    expect(settleBookNumbers(twice).get(twice[1]!.id)).toBe('unsure')
+    // Single pages: the order rule only.
+    const single = [sheet(small(133))]
+    expect(settleBookNumbers(single).get(single[0]!.id)).toBe('ok')
+  })
+
+  it('a spread whose left page has the wrong parity for the book is unsure', () => {
+    const t = (n: number): BookPageRead => ({
+      state: 'read',
+      number: n,
+      px: 12,
+    })
+    // Left even in this book (2・3, 4・5 confirm each other); "7・8" read
+    // tall on both halves breaks it.
+    const s = [sheet(t(2), t(3)), sheet(t(4), t(5)), sheet(t(7), t(8))]
+    const v = settleBookNumbers(s)
+    expect(v.get(s[0]!.id)).toBe('ok')
+    expect(v.get(s[2]!.id)).toBe('unsure')
+  })
+
+  it('out of order wins over sure (settleBookNumbers)', () => {
+    const t = (n: number): BookPageRead => ({
+      state: 'read',
+      number: n,
+      px: 12,
+    })
+    const s = [90, 92, 94].map((n) => sheet(t(n), t(n + 1)))
+    const low = sheet(t(88), t(89))
+    expect(settleBookNumbers([...s, low]).get(low.id)).toBe('order')
   })
 
   it('finds the sheet that already holds a page', () => {
@@ -404,5 +481,36 @@ describe('folioZone', () => {
         ]),
       ),
     ).toBe('bo')
+  })
+})
+
+describe('paperViewChange (has the page been turned?)', () => {
+  // An upright spread: the paper is the middle 40 % of a 1080×1920 view.
+  const quad = {
+    tl: { x: 40, y: 576 },
+    tr: { x: 1040, y: 576 },
+    br: { x: 1040, y: 1344 },
+    bl: { x: 40, y: 1344 },
+  }
+  it('measures the change on the paper, not on the desk', () => {
+    const mask = paperViewMask(quad, 1080, 1920)
+    expect(mask).not.toBeNull()
+    const cells = mask!.reduce((s, v) => s + v, 0)
+    expect(cells / (32 * 24)).toBeGreaterThan(0.3)
+    expect(cells / (32 * 24)).toBeLessThan(0.5)
+    // A turn changes the paper by 30 grey levels, the desk not at all.
+    const a = new Uint8ClampedArray(32 * 24).fill(100)
+    const b = a.map((v, i) => (mask![i] ? v + 30 : v))
+    expect(paperViewChange(a, b, null)).toBeLessThan(14)
+    expect(paperViewChange(a, b, mask)).toBe(30)
+  })
+  it('a frame too small for the view falls back to the whole view', () => {
+    const tiny = {
+      tl: { x: 0, y: 0 },
+      tr: { x: 30, y: 0 },
+      br: { x: 30, y: 30 },
+      bl: { x: 0, y: 30 },
+    }
+    expect(paperViewMask(tiny, 1080, 1920)).toBeNull()
   })
 })
