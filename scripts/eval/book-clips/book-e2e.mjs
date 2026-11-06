@@ -292,6 +292,25 @@ await page.evaluate(() => window.__astarBook.finish())
 // Let the last pages finish their numbers and flattening.
 await page.waitForTimeout(2500)
 await page.screenshot({ path: path.join(outDir, 'list.png'), fullPage: true })
+// --save pdf,md: press the list's save buttons and keep what they download
+// (saved.pdf / saved.md), as a person would. The Markdown save reads every
+// page with NDLOCR (scripts/download-ocr-models.sh must have fetched the
+// models into apps/web/public/models/ocr): minutes, not seconds.
+const saveKinds = (opt('--save', '') || '').split(',').filter(Boolean)
+for (const kind of saveKinds) {
+  const label = kind === 'pdf' ? /PDF 保存/ : /Markdown 保存/
+  const t0 = Date.now()
+  const [dl] = await Promise.all([
+    page.waitForEvent('download', { timeout: 15 * 60 * 1000 }),
+    page.getByRole('button', { name: label }).click(),
+  ])
+  await dl.saveAs(path.join(outDir, `saved.${kind}`))
+  console.error(`saved.${kind} in ${((Date.now() - t0) / 1000).toFixed(0)} s`)
+  await page.screenshot({
+    path: path.join(outDir, `list-after-${kind}.png`),
+    fullPage: true,
+  })
+}
 const firstRow = page.locator('.list__row').first()
 if (await firstRow.count()) {
   await firstRow.click()
