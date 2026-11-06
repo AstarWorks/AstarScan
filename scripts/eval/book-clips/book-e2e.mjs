@@ -200,6 +200,31 @@ if (gt.H > gt.W)
       return orig(c)
     }
   })
+// Book 4's 3:4 / 4:3 clips (1440×1920, 1080×1440, 1920×1440): the fake
+// camera SCALES the clip to the size asked for, so the app's 1920×1080
+// ideal squeezed them (book 4's first run: 1440×1920 reached the app as
+// 1080×1920 and the corner model never found the paper). A phone asked
+// for 1920×1080 crops instead; here the camera is asked for the clip's own
+// size (--own-size). Without it the old request stays, so earlier runs
+// stay comparable (book 2's 1440×1080 was squeezed to 1920×1080 in every
+// run; the 720×960 framed clips the same way, as the app's view of them).
+if (args.includes('--own-size'))
+  await page.addInitScript(
+    ([w, h]) => {
+      const md = navigator.mediaDevices
+      const orig = md.getUserMedia.bind(md)
+      md.getUserMedia = (c) => {
+        const v = c?.video
+        if (v && typeof v === 'object')
+          c = {
+            ...c,
+            video: { ...v, width: { exact: w }, height: { exact: h } },
+          }
+        return orig(c)
+      }
+    },
+    [gt.W, gt.H],
+  )
 await page.addInitScript(() => {
   window.__probe = []
   window.__astarProbe = (e) =>
