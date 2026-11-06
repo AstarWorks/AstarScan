@@ -178,6 +178,13 @@ export function findSpreadGutter(
  * the fold near the left or right side (dark across the page, with the
  * facing page's bright paper beyond it). Returns the cut as shares of the
  * width from each side (0 = nothing to cut).
+ *
+ * The fold runs across the page, so it must show in the upper and in the
+ * lower band (`bands`, as the spread's fold) at about the same place. A
+ * figure's frame or a text column's edge is dark in one half only: book
+ * clip single-port-wood p7's figure border (lower half 31 % darker than the
+ * paper, upper half 9 %) was cut as a fold and took 13 % of the page with
+ * its number.
  */
 export function findEdgeGutter(
   lum: ArrayLike<number>,
@@ -187,10 +194,13 @@ export function findEdgeGutter(
 ): { left: number; right: number } {
   const o = { ...GUTTER_DEFAULTS, ...opts }
   const win = Math.max(1, Math.round(w / 150))
-  const prof = columnProfile(lum, w, h, 0.1 * h, 0.9 * h, win)
-  const paper = percentile(prof, 0, w, 0.8)
-  if (paper <= 0) return { left: 0, right: 0 }
-  const side = (fromLeft: boolean): number => {
+  const whole = columnProfile(lum, w, h, 0.1 * h, 0.9 * h, win)
+  const bands = o.bands.map(([a, b]) =>
+    columnProfile(lum, w, h, a * h, b * h, win),
+  )
+  const fold = (prof: Float64Array, fromLeft: boolean): number => {
+    const paper = percentile(prof, 0, w, 0.8)
+    if (paper <= 0) return 0
     const a = Math.floor(o.edgeFrom * w)
     const b = Math.ceil(o.edgeTo * w)
     let best = -1
@@ -211,6 +221,15 @@ export function findEdgeGutter(
     }
     if (beyond - bestV < o.edgeBeyondRise * (paper - bestV)) return 0
     return best / w
+  }
+  const side = (fromLeft: boolean): number => {
+    const cut = fold(whole, fromLeft)
+    if (cut === 0) return 0
+    for (const band of bands) {
+      const c = fold(band, fromLeft)
+      if (c === 0 || Math.abs(c - cut) > 0.1) return 0
+    }
+    return cut
   }
   return { left: side(true), right: side(false) }
 }

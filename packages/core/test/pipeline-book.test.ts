@@ -253,6 +253,22 @@ describe('findEdgeGutter', () => {
     const img = spreadImage(w, h, () => 2) // fold outside the page
     expect(findEdgeGutter(img, w, h)).toEqual({ left: 0, right: 0 })
   })
+
+  it('a dark line in one half only (a figure frame) is not a fold (single-port-wood p7)', () => {
+    const w = 300
+    const h = 420
+    const img = spreadImage(w, h, () => 2)
+    // A figure's frame in the lower half, its right border 14 % in from
+    // the right side, paper beyond it.
+    const x0 = Math.round(0.1 * w)
+    const x1 = Math.round(0.86 * w)
+    for (let y = Math.round(0.55 * h); y < Math.round(0.85 * h); y++)
+      for (let x = x0; x <= x1; x++) {
+        const edge = x - x0 < 3 || x1 - x < 3
+        if (edge) img[y * w + x] = 30
+      }
+    expect(findEdgeGutter(img, w, h)).toEqual({ left: 0, right: 0 })
+  })
 })
 
 describe('splitSpreadQuad', () => {
