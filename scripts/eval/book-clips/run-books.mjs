@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 /**
- * Runs book-e2e.mjs over the clips of books 1–6 (720x960 framed and the
+ * Runs book-e2e.mjs over the clips of books 1–7 (720x960 framed and the
  * original sizes, the skipped-page variants) one after another and
  * appends one JSON line per run to a results file — the raw results kept
  * in docs/book4-eval/*.jsonl.
@@ -161,6 +161,27 @@ const RUNS = {
       '92,93',
       '--own-size',
     ],
+  ],
+  7: [
+    [
+      'b7-f-garamond-skip',
+      'book7-framed',
+      'book7-spread-garamond',
+      '--skip-hold',
+      '2',
+    ],
+    ['b7-f-single-lato', 'book7-framed', 'book7-single-lato'],
+    ['b7-f-ja-noto', 'book7-framed', 'book7-spread-ja-noto'],
+    [
+      'b7-o-garamond-skip',
+      'book7',
+      'book7-spread-garamond',
+      '--skip-hold',
+      '2',
+      '--own-size',
+    ],
+    ['b7-o-single-lato', 'book7', 'book7-single-lato', '--own-size'],
+    ['b7-o-ja-noto', 'book7', 'book7-spread-ja-noto', '--own-size'],
   ],
 }
 
