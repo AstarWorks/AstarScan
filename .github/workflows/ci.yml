@@ -377,9 +377,20 @@ jobs:
           step 'apt-get update'
           $APT update -q || { echo "::error::apt-get update failed or timed out (rc $?)"; exit 1; }
           echo '::endgroup::'
-          step 'apt-get install ffmpeg python3-opencv python3-numpy v4l-utils'
-          $APT install -y -q --no-install-recommends ffmpeg python3-opencv python3-numpy v4l-utils | tail -n 20
+          step 'apt-get install ffmpeg v4l-utils'
+          $APT install -y -q --no-install-recommends ffmpeg v4l-utils | tail -n 20
           [ "${PIPESTATUS[0]}" -eq 0 ] || { echo "::error::apt-get install failed or timed out"; exit 1; }
+          echo '::endgroup::'
+          # OpenCV from pip (it carries its own FFmpeg): ubuntu-26.04's
+          # python3-opencv has no FFmpeg video backend, so VideoCapture fell
+          # to GStreamer, read the clip path as a pipeline ("no element
+          # scripts") and camera-feed.py got 0 frames (run 42287531434).
+          step 'pip install opencv-python-headless numpy'
+          sudo -H timeout 600 python3 -m pip install --quiet --break-system-packages opencv-python-headless numpy \
+            || { echo "::error::pip install opencv-python-headless failed or timed out"; exit 1; }
+          clip=$(ls "${BOOK_CLIPS_REL:-scripts/eval/book-clips/framed}"/*.mp4 | head -n 1)
+          python3 -I -c 'import cv2, sys; c = cv2.VideoCapture(sys.argv[1]); ok = c.read()[0]; print("cv2", cv2.__version__, "reads", sys.argv[1], ok); sys.exit(0 if ok else 1)' "$clip" \
+            || { echo "::error::OpenCV cannot decode the book clips"; exit 1; }
           echo '::endgroup::'
           # udev would reset the node to root:video 0660 after a plain chmod.
           echo 'KERNEL=="video[0-9]*", MODE="0666"' | sudo tee /etc/udev/rules.d/99-video4all.rules

@@ -135,6 +135,40 @@ if (order) {
     '3',
     mjpeg,
   ])
+// --own-size (book 4's 1440×1920 / 1920×1440): the fake camera SCALES a
+// clip larger than the app's 1920×1080 request to that size, squeezing a
+// 3:4 / 4:3 picture (book 4's first run: 1440×1920 reached the app as
+// 1080×1920 and the corner model never found the paper; asking for the
+// clip's own size gave 1440×1440 or 1440×1080). A phone keeps the aspect.
+// The clip is scaled here, aspect kept, to fit inside the request (a clip
+// that fits — the 720×960 framed ones, 1440×1080, 1080×1440 — comes at its
+// own size); the ground truth is mapped by the size the app got.
+if (args.includes('--own-size')) {
+  const [fw, fh] = gt.H > gt.W ? [1080, 1920] : [1920, 1080]
+  const k = Math.min(1, fw / gt.W, fh / gt.H)
+  if (k < 1) {
+    const w = Math.round((gt.W * k) / 2) * 2
+    const h = Math.round((gt.H * k) / 2) * 2
+    const tmp = `${mjpeg}.scaled`
+    execFileSync('ffmpeg', [
+      '-y',
+      '-loglevel',
+      'error',
+      '-f',
+      'mjpeg',
+      '-i',
+      mjpeg,
+      '-vf',
+      `scale=${w}:${h}:flags=area`,
+      '-q:v',
+      '3',
+      '-f',
+      'mjpeg',
+      tmp,
+    ])
+    fs.renameSync(tmp, mjpeg)
+  }
+}
 const N = gt.frames.length
 const clipS = N / fps
 const SW = 32
