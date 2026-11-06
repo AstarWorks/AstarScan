@@ -54,7 +54,10 @@ describe('parsePageNumberToken', () => {
       value: 58,
       kind: 'arabic',
     })
-    expect(parsePageNumberToken('pg. 12')).toEqual({ value: 12, kind: 'arabic' })
+    expect(parsePageNumberToken('pg. 12')).toEqual({
+      value: 12,
+      kind: 'arabic',
+    })
     expect(parsePageNumberToken('P58')).toEqual({ value: 58, kind: 'arabic' })
     expect(parsePageNumberToken('S. 12')).toEqual({ value: 12, kind: 'arabic' })
     // An unknown word, or the word alone, is not a page number.

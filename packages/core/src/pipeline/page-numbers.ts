@@ -96,7 +96,8 @@ export function parsePageNumberToken(text: string): PageNumberToken | null {
   // the Chinese PP-OCR model writes it: "124页" (simplified), or a
   // look-alike of 頁 (book 4's Japanese book: every page came back as 页,
   // one as "125真", at 0.9+ confidence, and no page got its number).
-  if (!m) m = /^第?(\d{1,4})(?:頁|页|真|貢|頂|ページ|[ぺペ][ー一-]ジ)$/.exec(core)
+  if (!m)
+    m = /^第?(\d{1,4})(?:頁|页|真|貢|頂|ページ|[ぺペ][ー一-]ジ)$/.exec(core)
   if (m) {
     const v = Number(m[1])
     return valid(v) ? { value: v, kind: 'arabic' } : null
