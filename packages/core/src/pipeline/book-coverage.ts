@@ -83,21 +83,69 @@ export function completeSpread(pages: readonly BookPageRead[]): BookPageRead[] {
   return [l, r]
 }
 
-interface NumberedAt {
-  number: number
-  seq: number
-  inferred: boolean
-  /** Both halves of its spread were read and follow each other. */
-  pair: boolean
+/**
+ * Numbers a capture counts for: those read on it, and the half of a spread
+ * inferred from its read half (left = right − 1). None when nothing was
+ * read on it.
+ */
+function countedNumbers(s: BookSheet): number[] {
+  return completeSpread(s.pages)
+    .filter((p) => p.state === 'read' && p.number !== undefined)
+    .map((p) => p.number!)
+}
+
+/** Both halves of a spread read on their own and consecutive (34・35). */
+function readPair(s: BookSheet): boolean {
+  const own = s.pages
+  return (
+    own.length === 2 &&
+    own.every((p) => p.state === 'read' && !p.inferred) &&
+    own[1]!.number === own[0]!.number! + 1
+  )
+}
+
+/**
+ * Whether two captures' numbers touch: the lowest of one is `gaps` above
+ * the highest of the other — the next spread (66・67 then 68・69, whichever
+ * half of each was read: 67 | 68), the next page taken one side only
+ * (31, 33). Captures holding the same page (a retake) do not touch.
+ */
+function touching(
+  a: readonly number[],
+  b: readonly number[],
+  gaps: readonly number[],
+): boolean {
+  if (a.length === 0 || b.length === 0) return false
+  return (
+    gaps.includes(Math.min(...b) - Math.max(...a)) ||
+    gaps.includes(Math.min(...a) - Math.max(...b))
+  )
+}
+
+/** Whether another of `sheets` touches `s` (its counted numbers). */
+function touchesAnother(
+  s: BookSheet,
+  sheets: readonly BookSheet[],
+  gaps: readonly number[],
+): boolean {
+  const own = countedNumbers(s)
+  return sheets.some(
+    (o) => o.id !== s.id && touching(own, countedNumbers(o), gaps),
+  )
 }
 
 /**
  * Coverage of the sheets taken so far.
  *
  * A misread number must not raise a red gap (the Android check's "false
- * red"): a gap is drawn only between TRUSTED numbers —
- *   - a number another capture's number follows or precedes (n ± step), or
- *   - both halves of a spread read on their own and consecutive (34・35).
+ * red"): a gap is drawn only between TRUSTED numbers — those of a capture
+ *   - whose numbers another capture's touch (the next spread: 66・67 then
+ *     68・69, whichever half of each was read — the half inferred from a
+ *     read half counts, as 67 | 68 does; book 4's 1440×1920 spreads were
+ *     read on the left one time and on the right the next, 66 and 69 three
+ *     apart, and nothing was trusted), or
+ *   - a spread both of whose halves were read on their own and follow each
+ *     other (34・35).
  * A gap wider than one spread (> 2 pages) also needs its upper bound
  * trusted by a neighbour, not only by its own pair (a pair misread as
  * 18・19 after 8・9 waits instead of turning 10〜17 red). Single pages taken
@@ -112,28 +160,11 @@ export function bookCoverage(
   const ordered = [...sheets].sort((a, b) => a.seq - b.seq)
   const full = ordered.map((s) => ({ ...s, pages: completeSpread(s.pages) }))
 
-  const numbered: NumberedAt[] = []
-  for (const s of ordered) {
-    const own = s.pages
-    const pair =
-      own.length === 2 &&
-      own.every((p) => p.state === 'read' && !p.inferred) &&
-      own[1]!.number === own[0]!.number! + 1
-    for (const p of completeSpread(own))
-      if (p.state === 'read' && p.number !== undefined)
-        numbered.push({
-          number: p.number,
-          seq: s.seq,
-          inferred: !!p.inferred,
-          pair,
-        })
-  }
-
   // Step: 2 when only single pages were taken and most of their numbers
   // (3 in 4) share a parity (one side of the book, e.g. every right page).
   const anySpread = full.some((s) => s.pages.length === 2)
-  const direct = numbered.filter((n) => !n.inferred)
-  const odd = direct.filter((n) => n.number % 2 === 1).length
+  const direct = directNumbers(ordered)
+  const odd = direct.filter((x) => x.n % 2 === 1).length
   const even = direct.length - odd
   const step: 1 | 2 =
     !anySpread &&
@@ -144,42 +175,25 @@ export function bookCoverage(
       : 1
   const parity = odd >= even ? 1 : 0
 
-  /** n is followed / preceded by a number of ANOTHER capture. */
-  const neighbour = (x: NumberedAt) =>
-    numbered.some(
-      (y) =>
-        y.seq !== x.seq &&
-        !y.inferred &&
-        Math.abs(y.number - x.number) === step,
-    )
   const trusted = new Map<number, { seq: number; byNeighbour: boolean }>()
-  for (const x of numbered) {
-    if (x.inferred && !x.pair) {
-      // An inferred half counts only through its read half's trust.
-      continue
-    }
-    if (step === 2 && x.number % 2 !== parity) continue
-    const nb = neighbour(x)
-    if (!nb && !x.pair) continue
-    const prev = trusted.get(x.number)
-    if (!prev || (nb && !prev.byNeighbour))
-      trusted.set(x.number, { seq: x.seq, byNeighbour: nb })
-  }
-  // The inferred half of a trusted spread is trusted with it.
   for (const s of ordered) {
-    const full2 = completeSpread(s.pages)
-    if (full2.length !== 2) continue
-    const nums = full2.map((p) => (p.state === 'read' ? p.number : undefined))
-    if (nums[0] === undefined || nums[1] === undefined) continue
-    const t0 = trusted.get(nums[0])
-    const t1 = trusted.get(nums[1])
-    if (t0 && !t1) trusted.set(nums[1], { seq: s.seq, byNeighbour: false })
-    if (t1 && !t0) trusted.set(nums[0], { seq: s.seq, byNeighbour: false })
+    const own = countedNumbers(s)
+    if (own.length === 0) continue
+    const nb = touchesAnother(s, ordered, [step])
+    if (!nb && !readPair(s)) continue
+    for (const n of own) {
+      if (step === 2 && n % 2 !== parity) continue
+      const prev = trusted.get(n)
+      if (!prev || (nb && !prev.byNeighbour))
+        trusted.set(n, { seq: s.seq, byNeighbour: nb })
+    }
   }
 
   // Captures between two trusted numbers whose number is not trusted
-  // (none, or read but unconfirmed) may be the missing pages: they cover a
-  // gap of their count; `pending` (still being read) defers it.
+  // (none, or read but unconfirmed) may be the missing pages: while there
+  // is one, no page of the gap can be named (book 4: 64・65 unread between
+  // 61 and 66, 62・63 skipped — "62〜65" would be red on a page that was
+  // taken), so the gap waits, as it does for `pending` (still being read).
   const trustedSeqNums = new Set(
     [...trusted.entries()].map(([n, t]) => `${t.seq}:${n}`),
   )
@@ -210,14 +224,13 @@ export function bookCoverage(
     const b = nums[i]!
     if (b - a <= step) continue
     if (step === 2 && (b - a) % 2 !== 0) continue
-    const count = (b - a) / step - 1
     if (b - a - 1 > o.maxGap) continue
     const ta = trusted.get(a)!
     const tb = trusted.get(b)!
     if (b - a - 1 > 2 && !(ta.byNeighbour && tb.byNeighbour)) continue
     const { none, pending } = unnumberedBetween(ta.seq, tb.seq)
     if (pending > 0) continue // decided once those pages are read
-    if (none >= count) continue // figure pages without a number
+    if (none > 0) continue // figure pages without a number, or the gap itself
     gaps.push({ from: a + step, to: b - step, step })
   }
 
@@ -297,18 +310,18 @@ function directNumbers(
 }
 
 /**
- * Numbers read directly on `sheets` that another of them confirms: a number
- * of another capture within 2 (34 next to 35, the next spread's 36, or every
- * right page 31, 33). One capture alone, even a spread whose halves follow
- * each other, confirms nothing.
+ * Numbers read directly on `sheets` that another of them confirms: the
+ * capture's numbers touch another capture's, 1 or 2 apart (34・35 then
+ * 36・37 whichever halves were read, every right page 31, 33). One capture
+ * alone, even a spread whose halves follow each other, confirms nothing;
+ * nor does the same page taken again.
  */
 function confirmedNumbers(
   sheets: readonly BookSheet[],
 ): { seq: number; n: number }[] {
-  const direct = directNumbers(sheets)
-  return direct.filter((x) =>
-    direct.some((y) => y.seq !== x.seq && Math.abs(y.n - x.n) <= 2),
-  )
+  return sheets
+    .filter((s) => touchesAnother(s, sheets, [1, 2]))
+    .flatMap((s) => directNumbers([s]))
 }
 
 /**
@@ -395,8 +408,8 @@ export const BOOK_NUMBER_DEFAULTS = {
  *    (`numbersFitOrder`);
  *  - `unsure`: a spread whose number nothing makes sure of. A spread's
  *    number is sure when
- *      · another capture confirms it (a number of it 1–2 pages off: the
- *        next / previous spread), or
+ *      · another capture confirms it (its numbers touch, 1–2 pages off:
+ *        the next / previous spread, whichever half of each was read), or
  *      · both halves were read on their own (not one inferred from the
  *        other), follow each other, and are at least `surePx` tall;
  *    and its left page has the parity the book's confirmed spreads have
@@ -435,16 +448,7 @@ export function settleBookNumbers(
     )
   }
 
-  const direct = directNumbers(work)
-  const confirmed = (s: BookSheet) =>
-    directNumbers([s]).some((x) =>
-      direct.some(
-        (y) =>
-          y.seq !== s.seq &&
-          Math.abs(y.n - x.n) >= 1 &&
-          Math.abs(y.n - x.n) <= 2,
-      ),
-    )
+  const confirmed = (s: BookSheet) => touchesAnother(s, work, [1, 2])
   const spreads = work.filter(
     (s) => s.pages.length === 2 && directNumbers([s]).length > 0,
   )

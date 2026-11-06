@@ -45,6 +45,53 @@ describe('parsePageNumberToken', () => {
     expect(parsePageNumberToken('十一')).toEqual({ value: 11, kind: 'kanji' })
   })
 
+  it('reads a label word before the digits, joined or not (book 4 "Page 58")', () => {
+    expect(parsePageNumberToken('Page 58')).toEqual({
+      value: 58,
+      kind: 'arabic',
+    })
+    expect(parsePageNumberToken('Page58')).toEqual({
+      value: 58,
+      kind: 'arabic',
+    })
+    expect(parsePageNumberToken('pg. 12')).toEqual({ value: 12, kind: 'arabic' })
+    expect(parsePageNumberToken('P58')).toEqual({ value: 58, kind: 'arabic' })
+    expect(parsePageNumberToken('S. 12')).toEqual({ value: 12, kind: 'arabic' })
+    // An unknown word, or the word alone, is not a page number.
+    expect(parsePageNumberToken('ge69')).toBeNull()
+    expect(parsePageNumberToken('Fig3')).toBeNull()
+    expect(parsePageNumberToken('Page')).toBeNull()
+  })
+
+  it('reads the page word as the Chinese OCR model writes it (book 4 "124页")', () => {
+    expect(parsePageNumberToken('124頁')).toEqual({
+      value: 124,
+      kind: 'arabic',
+    })
+    expect(parsePageNumberToken('124页')).toEqual({
+      value: 124,
+      kind: 'arabic',
+    })
+    expect(parsePageNumberToken('125真')).toEqual({
+      value: 125,
+      kind: 'arabic',
+    })
+    expect(parsePageNumberToken('12ページ')).toEqual({
+      value: 12,
+      kind: 'arabic',
+    })
+    expect(parsePageNumberToken('12ペ一ジ')).toEqual({
+      value: 12,
+      kind: 'arabic',
+    })
+  })
+
+  it('a kanji numeral with 第 but no page word is an article number, not a page', () => {
+    expect(parsePageNumberToken('第十')).toBeNull()
+    expect(parsePageNumberToken('第十頁')).toEqual({ value: 10, kind: 'kanji' })
+    expect(parsePageNumberToken('十')).toEqual({ value: 10, kind: 'kanji' })
+  })
+
   it('reads a number at the end of a running head', () => {
     expect(parsePageNumberToken('契約の成立 45')).toEqual({
       value: 45,

@@ -264,6 +264,43 @@ describe('bookCoverage (the mock ideal-capture.html flow)', () => {
     expect(settleBookNumbers(single).get(single[0]!.id)).toBe('ok')
   })
 
+  it('spreads read on different halves touch (book 4: 66・67 on the left, 68・69 on the right)', () => {
+    const t = (n: number): BookPageRead => ({
+      state: 'read',
+      number: n,
+      px: 9,
+    })
+    const inferred = (n: number): BookPageRead => ({
+      state: 'read',
+      number: n,
+      inferred: true,
+    })
+    // 1440×1920: 58・59 read on the left, 60・61 on the right, 64・65
+    // unread, 66・67 both, 68・69 on the right; 62・63 skipped.
+    const s = [
+      sheet(t(58), inferred(59)),
+      sheet(inferred(60), t(61)),
+      sheet(none, none),
+      sheet(t(66), t(67)),
+      sheet(inferred(68), t(69)),
+    ]
+    const v = settleBookNumbers(s)
+    expect([...v.values()]).toEqual(['ok', 'ok', 'ok', 'ok', 'ok'])
+    const c = bookCoverage(s)
+    // 58〜61 and 66〜69 are trusted by their neighbours; between them one
+    // unread spread covers two of the four pages, so 62〜65 stays a
+    // question until that spread is read (no red on 64・65, which was taken).
+    expect(c.gaps).toEqual([])
+    // The unread spread read: 62・63 is the gap.
+    const read = [...s]
+    read[2] = { ...s[2]!, pages: [t(64), inferred(65)] }
+    expect(bookCoverage(read).gaps).toEqual([{ from: 62, to: 63, step: 1 }])
+    // A spread read on one half, two spreads later: not a neighbour.
+    const apart = [sheet(t(66), inferred(67)), sheet(inferred(70), t(71))]
+    expect(bookCoverage(apart).gaps).toEqual([])
+    expect(settleBookNumbers(apart).get(apart[0]!.id)).toBe('unsure')
+  })
+
   it('a spread whose left page has the wrong parity for the book is unsure', () => {
     const t = (n: number): BookPageRead => ({
       state: 'read',

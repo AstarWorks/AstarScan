@@ -85,18 +85,31 @@ export function parsePageNumberToken(text: string): PageNumberToken | null {
     return null
   }
 
-  let m = /^(?:p\.?|P\.?)?(\d{1,4})$/.exec(core)
-  if (!m) m = /^第?(\d{1,4})(?:頁|ページ)$/.exec(core)
+  // A label word before the digits: "p. 5", "P58", "Page 58" and, as the
+  // reader gives it as often as not, "Page58" (book 4, Inter: 9–10 px
+  // "Page 61" / "Page 66" / "Page 67" came back joined, at 0.97–0.99, and
+  // none was taken as a number), "pg. 12", "S. 12" (Seite). The word
+  // alone, or an unknown one ("ge69", "Fig3"), is not a page number.
+  let m = /^(?:p|pp|pg|page|seite|fol|folio)?\.?(\d{1,4})$/i.exec(core)
+  if (!m) m = /^s\.(\d{1,4})$/i.exec(core)
+  // The page word after the digits: "124頁", "第7頁", "12ページ" — and as
+  // the Chinese PP-OCR model writes it: "124页" (simplified), or a
+  // look-alike of 頁 (book 4's Japanese book: every page came back as 页,
+  // one as "125真", at 0.9+ confidence, and no page got its number).
+  if (!m) m = /^第?(\d{1,4})(?:頁|页|真|貢|頂|ページ|[ぺペ][ー一-]ジ)$/.exec(core)
   if (m) {
     const v = Number(m[1])
     return valid(v) ? { value: v, kind: 'arabic' } : null
   }
 
-  const kanji = /^第?([〇零一二三四五六七八九十百千]{1,6})(?:頁|ページ)?$/.exec(
-    core,
-  )
+  // Kanji numerals: "一二三" (positional), "百二十三", "第十頁". With 第 and
+  // no page word it is an article or chapter number cut short (book 4:
+  // 「第十七条」 at the top of the body read as "第十", taken as page 10).
+  const kanji =
+    /^(第?)([〇零一二三四五六七八九十百千]{1,6})(頁|页|ページ)?$/.exec(core)
   if (kanji) {
-    const v = kanjiToNumber(kanji[1]!)
+    if (kanji[1] && !kanji[3]) return null
+    const v = kanjiToNumber(kanji[2]!)
     return v !== null && valid(v) ? { value: v, kind: 'kanji' } : null
   }
 
