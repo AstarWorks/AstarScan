@@ -74,6 +74,10 @@ const STILL_WINDOW_MS = 250
 const STILL_CORNER = 0.03
 /** Mean grey change of the 32×24 view allowed while still (0..255). */
 const STILL_VIEW = 9
+/** ...and below this the picture is still whatever the corners do. */
+const STILL_VIEW_CALM = 3.5
+/** The view drifted this far from the one taken: maybe a new page, judge again. */
+const TURNED_VIEW = 14
 /** The frame must cover this share of the picture to be a page. */
 const MIN_AREA = 0.12
 /** ORB inliers (400 px pages) at or above which two views are the same page. */
@@ -83,7 +87,7 @@ const MIN_NUMBER_CONF = 0.7
 /** Numbers further than this from every number read so far are not taken. */
 const FAR_NUMBER = 60
 /** Number lines lower than this (page px) are not read: too few pixels. */
-const MIN_NUMBER_PX = 3.5
+const MIN_NUMBER_PX = 5
 /** Long side the pages are kept at. */
 const PAGE_LONG = 1600
 
@@ -149,6 +153,13 @@ function probe(ev: Record<string, unknown>): void {
 
 function dist(a: Point, b: Point): number {
   return Math.hypot(a.x - b.x, a.y - b.y)
+}
+
+/** Mean grey difference of two 32×24 views. */
+function viewChange(a: Uint8ClampedArray, b: Uint8ClampedArray): number {
+  let s = 0
+  for (let i = 0; i < a.length; i++) s += Math.abs(a[i]! - b[i]!)
+  return s / a.length
 }
 
 function median3(v: number[]): number {
@@ -219,6 +230,8 @@ export class BookCapture {
   // stillness
   #history: { t: number; quad: Quad }[] = []
   #raw: Quad[] = []
+  /** 32×24 grey view when the last page was taken. */
+  #takenView: Uint8ClampedArray | null = null
   #view: Uint8ClampedArray | null = null
   #viewCanvas = canvas(32, 24)
   #stillSince = 0
@@ -412,6 +425,7 @@ export class BookCapture {
     probe({
       type: 'frame',
       t: now,
+      vd: Math.round(viewDiff * 10) / 10,
       quad: q,
       minPeak: det.minPeak,
       ms: Math.round(det.inferMs),
@@ -459,9 +473,16 @@ export class BookCapture {
       ) / diag
     // Once the green line runs, hand shake twice as large keeps it running
     // (hysteresis: book-clip spread-land-wood's 1.6 s hold was lost to it).
-    const k = this.#sweepStart > 0 || this.#stillSince > 0 ? 2 : 1
+    const k = this.#sweepStart > 0 ? 2 : 1
+    // The picture itself barely changing means the paper is still even
+    // when the model's corners waver between two readings of the page
+    // (single page with a strip of the facing page: framed single-land-white
+    // moved 6–9 % of the diagonal at a view change of 1–3 grey levels).
+    const calm = viewDiff <= STILL_VIEW_CALM
     const still =
-      inside && moved <= STILL_CORNER * k && viewDiff <= STILL_VIEW * k
+      inside &&
+      (moved <= STILL_CORNER * k || calm) &&
+      viewDiff <= STILL_VIEW * k
     if (!still) {
       if (this.#stillSince > 0)
         probe({ type: 'unstill', t: now, moved, viewDiff, inside })
@@ -480,7 +501,25 @@ export class BookCapture {
       now - this.#stillSince >= STILL_MS * 0.5
     ) {
       this.#holdVerdict = this.#judgeHold(video, q)
+      if (this.#holdVerdict === 'last') this.#takenView = view
       probe({ type: 'hold', t: now, verdict: this.#holdVerdict })
+    }
+    // Waiting for the page to be turned: a turn that never broke the
+    // stillness (framed spread: the frame stays put, each frame changes a
+    // little) shows as the picture having drifted from the one taken; the
+    // page is then judged again.
+    if (
+      this.#holdVerdict === 'last' &&
+      this.#takenView &&
+      viewChange(view, this.#takenView) > TURNED_VIEW
+    ) {
+      probe({
+        type: 'drift',
+        t: now,
+        change: viewChange(view, this.#takenView),
+      })
+      this.#resetStill()
+      this.#stillSince = now
     }
     if (this.#holdVerdict === 'last') {
       this.state.tone = 'done'
@@ -513,6 +552,7 @@ export class BookCapture {
     if (this.state.sweep >= 1) {
       this.#capture(video, mq, now)
       this.#holdVerdict = 'last'
+      this.#takenView = view
       this.state.tone = 'done'
       this.state.sweep = 0
     }
