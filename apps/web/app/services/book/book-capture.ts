@@ -88,6 +88,8 @@ const MIN_NUMBER_CONF = 0.7
 const FAR_NUMBER = 60
 /** Number lines lower than this (page px) are not read: too few pixels. */
 const MIN_NUMBER_PX = 5
+/** Page-number readers (workers) running side by side. */
+const NUMBER_READERS = 2
 /** Long side the pages are kept at. */
 const PAGE_LONG = 1600
 
@@ -221,7 +223,7 @@ export class BookCapture {
   #video: HTMLVideoElement | null = null
   #running = false
   #onChange: () => void
-  #worker: Worker | null = null
+  #workers: Worker[] = []
   #workerReady: Promise<void> | null = null
   #readId = 0
   #reads = new Map<number, (lines: FolioLine[] | null) => void>()
@@ -287,62 +289,76 @@ export class BookCapture {
     return this.#workerReady ?? Promise.resolve()
   }
 
+  /**
+   * Two readers, so the two halves of a spread are read at the same time
+   * (one reader took ~0.55 s a page here: a spread's number came 1.2–1.5 s
+   * after the shot, over the 1 s target).
+   */
   #startWorker(): void {
-    if (this.#worker) return
-    const w = new Worker(new URL('./folio.worker.ts', import.meta.url), {
-      type: 'module',
-    })
-    this.#worker = w
-    this.#workerReady = new Promise((resolve) => {
-      w.onmessage = (e: MessageEvent<FolioOut>) => {
-        const m = e.data
-        if (m.type === 'ready') {
-          this.state.numberThreads = m.threads
-          probe({
-            type: 'numberReady',
-            ms: Math.round(m.ms),
-            threads: m.threads,
-          })
-          resolve()
-        } else if (m.type === 'lines') {
-          probe({
-            type: 'numberLines',
-            id: m.id,
-            ms: Math.round(m.ms),
-            boxes: m.boxes,
-            lines: m.lines,
-          })
-          this.#reads.get(m.id)?.(m.lines)
-          this.#reads.delete(m.id)
-        } else if (m.type === 'error') {
-          console.warn('[book] number reader', m.message)
-          probe({ type: 'numberError', id: m.id ?? null, message: m.message })
-          if (m.id === undefined) resolve()
-          else {
-            this.#reads.get(m.id)?.(null)
-            this.#reads.delete(m.id)
+    if (this.#workers.length) return
+    const ready: Promise<void>[] = []
+    for (let k = 0; k < NUMBER_READERS; k++) {
+      const w = new Worker(new URL('./folio.worker.ts', import.meta.url), {
+        type: 'module',
+      })
+      this.#workers.push(w)
+      ready.push(
+        new Promise((resolve) => {
+          w.onmessage = (e: MessageEvent<FolioOut>) => {
+            const m = e.data
+            if (m.type === 'ready') {
+              this.state.numberThreads = m.threads
+              probe({
+                type: 'numberReady',
+                ms: Math.round(m.ms),
+                threads: m.threads,
+              })
+              resolve()
+            } else if (m.type === 'lines') {
+              probe({
+                type: 'numberLines',
+                id: m.id,
+                ms: Math.round(m.ms),
+                boxes: m.boxes,
+                lines: m.lines,
+              })
+              this.#reads.get(m.id)?.(m.lines)
+              this.#reads.delete(m.id)
+            } else if (m.type === 'error') {
+              console.warn('[book] number reader', m.message)
+              probe({
+                type: 'numberError',
+                id: m.id ?? null,
+                message: m.message,
+              })
+              if (m.id === undefined) resolve()
+              else {
+                this.#reads.get(m.id)?.(null)
+                this.#reads.delete(m.id)
+              }
+            }
           }
-        }
-      }
-    })
-    w.onerror = (e) => {
-      console.warn('[book] number reader failed to start', e.message)
-      probe({ type: 'numberError', message: e.message || 'worker error' })
+          w.onerror = (e) => {
+            console.warn('[book] number reader failed to start', e.message)
+            probe({ type: 'numberError', message: e.message || 'worker error' })
+            resolve()
+          }
+        }),
+      )
+      w.postMessage({ type: 'init' } satisfies FolioIn)
     }
-    w.postMessage({ type: 'init' } satisfies FolioIn)
+    this.#workerReady = Promise.all(ready).then(() => undefined)
   }
 
   async #readNumber(page: HTMLCanvasElement): Promise<FolioLine[] | null> {
-    if (!this.#worker) return null
+    if (!this.#workers.length) return null
     await this.#workerReady
     const id = ++this.#readId
+    const w = this.#workers[id % this.#workers.length]!
     const bmp = await createImageBitmap(page)
     return new Promise((resolve) => {
       this.#reads.set(id, resolve)
-      this.#worker!.postMessage(
-        { type: 'read', id, page: bmp } satisfies FolioIn,
-        [bmp],
-      )
+      w.postMessage({ type: 'read', id, page: bmp } satisfies FolioIn, [bmp])
     })
   }
 
@@ -367,8 +383,8 @@ export class BookCapture {
 
   dispose(): void {
     this.stop()
-    this.#worker?.terminate()
-    this.#worker = null
+    for (const w of this.#workers) w.terminate()
+    this.#workers = []
     for (const s of this.sheets) s.orb?.descriptors.delete()
   }
 
