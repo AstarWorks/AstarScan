@@ -103,6 +103,17 @@ FONTS_EXTRA = {
     'liberation-sans': ('/usr/share/fonts/truetype/liberation/LiberationSans-Regular.ttf',
                         '/usr/share/fonts/truetype/liberation/LiberationSans-Bold.ttf',
                         '/usr/share/fonts/truetype/liberation/LiberationSans-Italic.ttf'),
+    # book 4 (book4.py): fonts-inter, xfonts-scalable (Bitstream Charter)
+    'inter': ('/usr/share/fonts/opentype/inter/Inter-Regular.otf',
+              '/usr/share/fonts/opentype/inter/Inter-Bold.otf',
+              '/usr/share/fonts/opentype/inter/Inter-Italic.otf'),
+    'charter': ('/usr/share/fonts/X11/Type1/c0648bt_.pfb',
+                '/usr/share/fonts/X11/Type1/c0632bt_.pfb',
+                '/usr/share/fonts/X11/Type1/c0649bt_.pfb'),
+}
+# Japanese body fonts other than IPAGothic (book 4: fonts-wqy-zenhei).
+FONTS_JA_EXTRA = {
+    'wqy-zenhei': '/usr/share/fonts/truetype/wqy/wqy-zenhei.ttc',
 }
 
 # ---------------------------------------------------------------- text → page textures
@@ -162,9 +173,10 @@ class Typesetter:
             self.fb = ImageFont.truetype(FONT_SANS_B, s)
             self.fh = ImageFont.truetype(FONT_SANS_B, int(s * 1.35))
         elif lang == 'ja':
-            self.f = ImageFont.truetype(FONT_JA, s)
-            self.fb = ImageFont.truetype(FONT_JA, s)
-            self.fh = ImageFont.truetype(FONT_JA, int(s * 1.35))
+            fj = FONTS_JA_EXTRA.get(font, FONT_JA)
+            self.f = ImageFont.truetype(fj, s)
+            self.fb = ImageFont.truetype(fj, s)
+            self.fh = ImageFont.truetype(fj, int(s * 1.35))
         else:
             self.f = ImageFont.truetype(FONT_SERIF, s + 1)
             self.fb = ImageFont.truetype(FONT_SERIF_B, s + 1)
@@ -265,7 +277,10 @@ class Typesetter:
         hy = int(9 * PX_MM)
         head = title if verso else (title.split('；')[0].split(';')[0])
         hw = self.fs.getlength(head)
-        d.text(((w - hw) / 2, hy + (int(5 * PX_MM) if folio_style == 'top-center' else 0)), head,
+        hx = (w - hw) / 2
+        if folio_style == 'top-inner':  # book 4: the head at the outer side
+            hx = x0 if verso else x0 + self.tw - hw
+        d.text((hx, hy + (int(5 * PX_MM) if folio_style == 'top-center' else 0)), head,
                font=self.fs, fill=(70, 66, 60))
         # folio_no: the number printed, when it is not the page's (a misprint
         # that plays a misread of the reader on the real screen).
@@ -286,6 +301,11 @@ class Typesetter:
             fx = (w - fw) / 2
         if folio_style == 'bottom-inner':  # book 3: bottom, by the gutter
             fx = x0 + self.tw - fw if verso else x0
+        if folio_style == 'top-inner':  # book 4: top, by the gutter, head moved outward
+            fy = hy
+            fx = x0 + self.tw - fw if verso else x0
+        if folio_style == 'bottom-outer':  # book 4: bottom outer corner, also in Japanese
+            fx = x0 if verso else x0 + self.tw - fw
         if with_folio:
             d.text((fx, fy), folio, font=self.f, fill=ink)
         a = np.asarray(img).astype(np.float32)[:, :, ::-1].copy()  # → BGR
@@ -369,6 +389,15 @@ def desk_texture(kind, r, mm=1400, ppm=2.0):
     elif kind == 'slate':  # matte grey-green desk mat
         base = np.array([96, 112, 98], np.float32)
         img = base[None, None, :] + low(9, 7)[..., None] + r.normal(0, 3.0, (n, n, 1)).astype(np.float32)
+    elif kind == 'marble':  # book 4: white-grey marble with dark veins
+        base = np.array([214, 216, 218], np.float32)
+        v = np.abs(np.sin((xx * 0.6 + yy * 0.35) / ppm * 0.08 + low(5, 2.2) + low(17, 0.5)))
+        veins = np.exp(-(v / 0.06) ** 2)
+        img = base[None, None, :] - veins[..., None] * 70 + low(7, 5)[..., None] + r.normal(0, 2.0, (n, n, 1)).astype(np.float32)
+    elif kind == 'rust':  # book 4: rust-red felt desk pad
+        base = np.array([45, 70, 150], np.float32)  # BGR
+        fuzz = cv2.GaussianBlur(r.normal(0, 1, (n, n)).astype(np.float32), (0, 0), 0.8) * 9
+        img = base[None, None, :] + fuzz[..., None] + low(10, 7)[..., None]
     else:
         base = np.array([226, 229, 230], np.float32)
         img = base[None, None, :] + low(5, 4)[..., None] + r.normal(0, 2.5, (n, n, 1)).astype(np.float32)
