@@ -45,6 +45,12 @@ export const GUTTER_DEFAULTS = {
   edgeMinDepth: 0.2,
   /** ...with the facing page's paper (bright again) beyond it. */
   edgeBeyondRise: 0.3,
+  /**
+   * ...and as wide as a shadow, not a printed line: at half its depth the
+   * folds of the book clips are 8–12 % of the width, a figure's frame or a
+   * rule 1.4–1.7 % (single-port-wood p5 / p7).
+   */
+  edgeMinWidth: 0.025,
 } as const
 
 /** Mean luminance of every column of rows [y0, y1), box-smoothed by `win`. */
@@ -178,6 +184,14 @@ export function findSpreadGutter(
  * the fold near the left or right side (dark across the page, with the
  * facing page's bright paper beyond it). Returns the cut as shares of the
  * width from each side (0 = nothing to cut).
+ *
+ * The fold runs across the page, so it must show in the upper and in the
+ * lower band (`bands`, as the spread's fold) at about the same place. A
+ * figure's frame is dark in one half only: book clip single-port-wood p7's
+ * figure border (lower half 31 % darker than the paper, upper half 9 %) was
+ * cut as a fold and took 13 % of the page with its number. And a fold is a
+ * shadow, wider than a printed line (`edgeMinWidth`): p5 has a figure in
+ * each half, their borders in line.
  */
 export function findEdgeGutter(
   lum: ArrayLike<number>,
@@ -187,10 +201,13 @@ export function findEdgeGutter(
 ): { left: number; right: number } {
   const o = { ...GUTTER_DEFAULTS, ...opts }
   const win = Math.max(1, Math.round(w / 150))
-  const prof = columnProfile(lum, w, h, 0.1 * h, 0.9 * h, win)
-  const paper = percentile(prof, 0, w, 0.8)
-  if (paper <= 0) return { left: 0, right: 0 }
-  const side = (fromLeft: boolean): number => {
+  const whole = columnProfile(lum, w, h, 0.1 * h, 0.9 * h, win)
+  const bands = o.bands.map(([a, b]) =>
+    columnProfile(lum, w, h, a * h, b * h, win),
+  )
+  const fold = (prof: Float64Array, fromLeft: boolean): number => {
+    const paper = percentile(prof, 0, w, 0.8)
+    if (paper <= 0) return 0
     const a = Math.floor(o.edgeFrom * w)
     const b = Math.ceil(o.edgeTo * w)
     let best = -1
@@ -210,7 +227,24 @@ export function findEdgeGutter(
       beyond = Math.max(beyond, prof[x]!)
     }
     if (beyond - bestV < o.edgeBeyondRise * (paper - bestV)) return 0
+    // Width of the dip at half its depth.
+    const half = (paper + bestV) / 2
+    const at = (k: number) => prof[fromLeft ? k : w - 1 - k]!
+    let l = best
+    while (l > 0 && at(l - 1) < half) l--
+    let r = best
+    while (r < w - 1 && at(r + 1) < half) r++
+    if ((r - l + 1) / w < o.edgeMinWidth) return 0
     return best / w
+  }
+  const side = (fromLeft: boolean): number => {
+    const cut = fold(whole, fromLeft)
+    if (cut === 0) return 0
+    for (const band of bands) {
+      const c = fold(band, fromLeft)
+      if (c === 0 || Math.abs(c - cut) > 0.1) return 0
+    }
+    return cut
   }
   return { left: side(true), right: side(false) }
 }

@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest'
 import {
   bookCoverage,
   newGaps,
+  numbersFitOrder,
   pageRangeLabel,
   sheetWithNumbers,
   type BookPageRead,
@@ -128,6 +129,82 @@ describe('bookCoverage (the mock ideal-capture.html flow)', () => {
     expect(d.gaps).toEqual([])
   })
 
+  it('a number below every page taken before is not taken (book 2: 98・99 read as 88・89)', () => {
+    const s = [
+      sheet(read(90), read(91)),
+      sheet(read(92), read(93)),
+      sheet(read(94), read(95)),
+    ]
+    const misread = sheet(read(88), read(89))
+    expect(numbersFitOrder([...s, misread], misread.id)).toBe(false)
+    // 96・97 read as 8・9 is the same.
+    const short = sheet(read(8), read(9))
+    expect(numbersFitOrder([...s, short], short.id)).toBe(false)
+    // Going back to fill a skipped spread, or a page taken already, fits.
+    const s2 = [
+      sheet(read(44), read(45)),
+      sheet(read(46), read(47)),
+      sheet(read(48), read(49)),
+      sheet(read(52), read(53)),
+    ]
+    const back = sheet(read(50), read(51))
+    expect(numbersFitOrder([...s2, back], back.id)).toBe(true)
+    const again = sheet(read(44), read(45))
+    expect(numbersFitOrder([...s2, again], again.id)).toBe(true)
+    // Forward, and the first captures, fit.
+    const next = sheet(read(54), read(55))
+    expect(numbersFitOrder([...s2, next], next.id)).toBe(true)
+    expect(numbersFitOrder([s2[0]!], s2[0]!.id)).toBe(true)
+  })
+
+  it('one misread capture does not lock out the right numbers after it', () => {
+    // 12・13 read as 72・73 first: nothing confirms 72, so 14・15 fits.
+    const wrong = sheet(read(72), read(73))
+    const right = sheet(read(14), read(15))
+    expect(numbersFitOrder([wrong, right], right.id)).toBe(true)
+    // Single pages, every right one: 31, 33 confirm each other; 21 is back
+    // before them; a page without a number never fails.
+    const r = [sheet(read(31)), sheet(read(33))]
+    const low = sheet(read(21))
+    expect(numbersFitOrder([...r, low], low.id)).toBe(false)
+    const blank = sheet(none)
+    expect(numbersFitOrder([...r, blank], blank.id)).toBe(true)
+  })
+
+  it('the captures after a number judge it too', () => {
+    // Book 2 single-top: 205 read as 5 between 201 and 209, 211.
+    const a = sheet(read(201))
+    const gap = sheet(none)
+    const five = sheet(read(5))
+    const after = [sheet(none), sheet(read(209)), sheet(read(211))]
+    const all = [a, gap, five, ...after]
+    expect(numbersFitOrder(all, five.id)).toBe(false)
+    expect(numbersFitOrder(all, a.id)).toBe(true)
+    // Book 1 single-land-white: the first page 31 read as 40, then 33, 35.
+    const forty = sheet(read(40))
+    const run = [sheet(read(33)), sheet(read(35)), sheet(read(37))]
+    expect(numbersFitOrder([forty, ...run], forty.id)).toBe(false)
+    expect(numbersFitOrder([forty, ...run], run[0]!.id)).toBe(true)
+    // ...but not before the run below it is confirmed.
+    expect(numbersFitOrder([forty, run[0]!], forty.id)).toBe(true)
+    // A lone misread spread first (72・73 for 12・13) is dropped once the
+    // right numbers after it confirm each other; they still fit.
+    const wrong = sheet(read(72), read(73))
+    const right = [sheet(read(14), read(15)), sheet(read(16), read(17))]
+    expect(numbersFitOrder([wrong, ...right], wrong.id)).toBe(false)
+    expect(numbersFitOrder([wrong, ...right], right[0]!.id)).toBe(true)
+  })
+
+  it('skipping a spread and going back fits (holds 0,1,2,4,3,5,6)', () => {
+    const order = [44, 46, 48, 52, 50, 54, 56].map((n) =>
+      sheet(read(n), read(n + 1)),
+    )
+    for (const s of order) expect(numbersFitOrder(order, s.id)).toBe(true)
+    // Two spreads skipped, both taken after going back.
+    const two = [44, 46, 52, 48, 50, 54].map((n) => sheet(read(n), read(n + 1)))
+    for (const s of two) expect(numbersFitOrder(two, s.id)).toBe(true)
+  })
+
   it('a far jump is a misread, not a gap', () => {
     expect(
       bookCoverage([sheet(read(4), read(5)), sheet(read(94), read(95))]).gaps,
@@ -208,6 +285,28 @@ describe('findEdgeGutter', () => {
     const w = 300
     const h = 420
     const img = spreadImage(w, h, () => 2) // fold outside the page
+    expect(findEdgeGutter(img, w, h)).toEqual({ left: 0, right: 0 })
+  })
+
+  it('a dark line in one half only (a figure frame) is not a fold (single-port-wood p7)', () => {
+    const w = 300
+    const h = 420
+    const img = spreadImage(w, h, () => 2)
+    // A figure's frame in the lower half, its right border 14 % in from
+    // the right side, paper beyond it.
+    const x0 = Math.round(0.1 * w)
+    const x1 = Math.round(0.86 * w)
+    for (let y = Math.round(0.55 * h); y < Math.round(0.85 * h); y++)
+      for (let x = x0; x <= x1; x++) {
+        const edge = x - x0 < 3 || x1 - x < 3
+        if (edge) img[y * w + x] = 30
+      }
+    expect(findEdgeGutter(img, w, h)).toEqual({ left: 0, right: 0 })
+    // p5: a figure in each half, their borders in line — a printed line,
+    // not a fold's shadow.
+    for (let y = Math.round(0.12 * h); y < Math.round(0.38 * h); y++)
+      for (let x = x0; x <= x1; x++)
+        if (x - x0 < 3 || x1 - x < 3) img[y * w + x] = 30
     expect(findEdgeGutter(img, w, h)).toEqual({ left: 0, right: 0 })
   })
 })

@@ -17,6 +17,7 @@ gives no frame) and OUT_DIR/stills.json ({file: {clip, hold, frame, truth,
 size}}), which book-measure.py scores against the app's "still" log lines.
 Needs numpy, opencv, pillow and the fonts render.py names.
 """
+import importlib
 import importlib.util
 import json
 import os
@@ -30,6 +31,15 @@ _spec = importlib.util.spec_from_file_location("render", os.path.join(HERE, "ren
 R = importlib.util.module_from_spec(_spec)
 _spec.loader.exec_module(R)
 
+# STILLS_BOOK=book2 / book3: another untuned book (book2.py / book3.py,
+# ground truth in book2/ / book3/). Unset: the five clips in clips/.
+SRC = "clips"
+BOOK = os.environ.get("STILLS_BOOK", "")
+if BOOK:
+    sys.path.insert(0, HERE)
+    R.CLIPS.update(getattr(importlib.import_module(BOOK), BOOK.upper()))
+    SRC = BOOK
+
 
 def size_for(cfg):
     return (4000, 3000) if cfg["mode"] == "spread" else (3000, 4000)
@@ -41,7 +51,7 @@ def one_clip(job):
     cfg = R.CLIPS[name]
     W, H = size_for(cfg)
     R.CLIPS[name] = dict(cfg, W=W, H=H)
-    with open(os.path.join(HERE, "clips", f"{name}.gt.json")) as f:
+    with open(os.path.join(HERE, SRC, f"{name}.gt.json")) as f:
         gt = json.load(f)
     mids = {}
     for hi, s in enumerate(s for s in gt["segments"] if s["phase"] == "hold"):

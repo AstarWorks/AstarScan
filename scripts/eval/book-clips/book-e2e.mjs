@@ -235,7 +235,11 @@ for (;;) {
     else if (e.type === 'number' && e.numbers.length) kind = 'number'
     else if (e.type === 'hold' && e.verdict === 'dup') kind = 'dup'
     else if (e.type === 'sweep') kind = 'sweep'
+    // A read dropped for not fitting the page order (scan-core
+    // numbersFitOrder): the screen a moment later, with its banner.
+    else if (e.type === 'numberOutOfOrder') kind = 'outoforder'
     if (kind && shots.filter((s) => s.kind === kind).length < 3) {
+      if (kind === 'outoforder') await page.waitForTimeout(250)
       const p = path.join(
         outDir,
         `shot-${String(shots.length).padStart(2, '0')}-${kind}.png`,
@@ -407,6 +411,17 @@ const captures = probe.filter((e) => e.type === 'capture')
 const numbers = new Map(
   probe.filter((e) => e.type === 'number').map((e) => [e.sheetId, e]),
 )
+// A read the screen took back once the pages after it were read (scan-core
+// numbersFitOrder: the first spread 314・315 read as 324・325, out of order
+// after 316〜319): the page ends unread; the number was shown for a while.
+const retracted = []
+for (const e of probe.filter((x) => x.type === 'numberOutOfOrder')) {
+  const n = numbers.get(e.sheetId)
+  if (n && n.numbers.length > 0 && e.wall >= n.wall) {
+    retracted.push({ sheetId: e.sheetId, numbers: n.numbers })
+    numbers.set(e.sheetId, { ...n, numbers: [] })
+  }
+}
 const alerts = probe.filter((e) => e.type === 'alert')
 const keptIds = new Set(kept.map((p) => p.sheetId))
 
@@ -569,6 +584,7 @@ const summary = {
   })(),
   numbersRight: right,
   numbersWrong: wrong,
+  numbersRetracted: retracted,
   numbersUnread: readRows.length - right - wrong,
   wrongPages: readRows
     .filter((r) => r.read !== null && r.read !== undefined && r.read !== r.page)

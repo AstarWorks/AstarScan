@@ -35,6 +35,7 @@ import {
   findEdgeGutter,
   findSpreadGutter,
   newGaps,
+  numbersFitOrder,
   folioZone,
   learnedFolioZone,
   pageRangeLabel,
@@ -76,6 +77,32 @@ const STILL_CORNER = 0.04
 const STILL_VIEW = 9
 /** ...and below this the picture is still whatever the corners do. */
 const STILL_VIEW_CALM = 4.5
+/**
+ * A frame where the corner model loses the paper (weakest corner under
+ * MIN_PEAK) keeps the stillness when it comes within this long of the last
+ * frame that found it and the picture has not changed since by more than
+ * a still frame may change (≤ STILL_VIEW): a blink of the model, not a turn. Android keeps it over
+ * one analysed frame without the paper (CaptureActivity NULL_RESET 2, ~0.7 s
+ * a frame). Without it, book 2's 96〜99 (1440×1080) lost every still spell:
+ * the weakest corner went 0.89 → 0.06 → 0.79 on a picture changing by 1–3
+ * grey levels.
+ */
+const BLINK_MS = 700
+/**
+ * A corner of the shot's frame that is further than STILL_CORNER (of the
+ * diagonal) from its median over the still spell's detections within this
+ * long before the shot is taken from that median instead. While the picture is calm the
+ * spell goes on whatever the corners do (STILL_VIEW_CALM), and the model can
+ * switch to another reading of the page for a few frames: book 1's framed
+ * single-land-white p39 had its top-left corner at (−2, 48) for 12 frames of
+ * the spell and at (101, 318) for the 3 frames before the shot, on a picture
+ * changing by about 1 grey level; the median of the last frames took the
+ * wrong one and the frame covered 80 % of the page (無表示). Corners nearer
+ * their spell median keep the last frames' reading, which follows the hand
+ * (the whole spell's median lagged it: frame error of the spreads of book 1
+ * 5 → 8 px, the thick book's p66 covered 86 %).
+ */
+const SPELL_QUAD_MS = 1000
 /** The view drifted this far from the one taken: maybe a new page, judge again. */
 const TURNED_VIEW = 14
 /** The frame must cover this share of the picture to be a page. */
@@ -232,11 +259,15 @@ export class BookCapture {
   // stillness
   #history: { t: number; quad: Quad }[] = []
   #raw: Quad[] = []
+  /** Detections of the still spell now (time, quad), for the shot's frame. */
+  #spell: { t: number; quad: Quad }[] = []
   /** 32×24 grey view when the last page was taken. */
   #takenView: Uint8ClampedArray | null = null
   #view: Uint8ClampedArray | null = null
   #viewCanvas = canvas(32, 24)
   #stillSince = 0
+  /** Last frame the corner model found the paper on (time, 32×24 view). */
+  #lastFound: { t: number; view: Uint8ClampedArray } | null = null
   #sweepStart = 0
   /** ORB of the page held still now (computed once per still spell). */
   #holdOrb: OrbResult | null = null
@@ -453,6 +484,22 @@ export class BookCapture {
     })
 
     if (!found) {
+      const lf = this.#lastFound
+      if (
+        this.#stillSince > 0 &&
+        lf !== null &&
+        now - lf.t <= BLINK_MS &&
+        viewChange(view, lf.view) <= STILL_VIEW
+      ) {
+        // A blink: the still spell (and the green line) carries on with the
+        // frame found before; the shot itself waits for a frame that finds it.
+        probe({ type: 'blink', t: now, minPeak: det.minPeak })
+        if (this.#sweepStart > 0)
+          this.state.sweep = Math.min(1, (now - this.#sweepStart) / SWEEP_MS)
+        this.#onChange()
+        return
+      }
+      this.#lastFound = null
       this.#resetStill()
       this.state.quad = det.minPeak >= 0.1 ? q : null
       this.state.tone = this.state.quad ? 'search' : 'none'
@@ -462,6 +509,7 @@ export class BookCapture {
       return
     }
     this.state.quad = q
+    this.#lastFound = { t: now, view }
 
     // Still: corners and the picture both hold.
     const diag = Math.hypot(vw, vh)
@@ -510,6 +558,8 @@ export class BookCapture {
       return
     }
     if (this.#stillSince === 0) this.#stillSince = now
+    this.#spell.push({ t: now, quad: q })
+    while (now - this.#spell[0]!.t > SPELL_QUAD_MS) this.#spell.shift()
 
     // Once per still spell: is this the page just taken, or one taken before?
     if (
@@ -566,7 +616,26 @@ export class BookCapture {
     this.state.pill = 'そのまま'
     this.state.sweep = Math.min(1, (now - this.#sweepStart) / SWEEP_MS)
     if (this.state.sweep >= 1) {
-      this.#capture(video, mq, now)
+      // The frame of the shot: a corner that jumped away from the still
+      // spell's reading of it is taken back (see SPELL_QUAD_MS).
+      const sm =
+        this.#spell.length > 0 ? medianQuad(this.#spell.map((x) => x.quad)) : mq
+      const jump = STILL_CORNER * diag
+      const sq: Quad = {
+        tl: dist(mq.tl, sm.tl) > jump ? sm.tl : mq.tl,
+        tr: dist(mq.tr, sm.tr) > jump ? sm.tr : mq.tr,
+        br: dist(mq.br, sm.br) > jump ? sm.br : mq.br,
+        bl: dist(mq.bl, sm.bl) > jump ? sm.bl : mq.bl,
+      }
+      probe({
+        type: 'shotQuad',
+        t: now,
+        last: mq,
+        spell: sm,
+        shot: sq,
+        n: this.#spell.length,
+      })
+      this.#capture(video, sq, now)
       this.#holdVerdict = 'last'
       this.#takenView = view
       this.state.tone = 'done'
@@ -577,6 +646,7 @@ export class BookCapture {
 
   #resetStill(): void {
     this.#stillSince = 0
+    this.#spell = []
     this.#sweepStart = 0
     this.#holdVerdict = null
     this.#holdOrb?.descriptors.delete()
@@ -851,6 +921,15 @@ export class BookCapture {
       sheet.pages.splice(0, 2, ...full)
       made.forEach((p, i) => (p.read = sheet.pages[i]!))
     }
+    // A number that does not fit the order the book was taken in (below
+    // every page taken before: book 2's 98・99 read as 88・89) is not taken
+    // as read — it would mark 88・89 taken and hide the pages missing.
+    if (!numbersFitOrder(this.sheets, sheet.id)) this.#dropNumbers(sheet)
+    // The captures after a page judge it too (the first page 31 read as 40
+    // is out of order only once 33, 35 follow it).
+    for (const o of this.sheets)
+      if (o !== sheet && !numbersFitOrder(this.sheets, o.id))
+        this.#dropNumbers(o)
     const numbers = sheet.pages
       .filter((p) => p.state === 'read')
       .map((p) => p.number!)
@@ -1082,6 +1161,18 @@ export class BookCapture {
       to: g.to,
       step: g.step,
     })
+  }
+
+  /** Keep the capture, without its numbers (読めず): they did not fit. */
+  #dropNumbers(sheet: Sheet): void {
+    probe({
+      type: 'numberOutOfOrder',
+      sheetId: sheet.id,
+      numbers: sheet.pages.map((p) => p.number ?? null),
+    })
+    sheet.pages.forEach((_, i) => (sheet.pages[i] = { state: 'none' }))
+    for (const p of this.pages)
+      if (p.sheetId === sheet.id) p.read = sheet.pages[p.side === 'R' ? 1 : 0]!
   }
 
   #removeSheet(id: string): void {

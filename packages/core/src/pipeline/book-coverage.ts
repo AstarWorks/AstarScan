@@ -278,6 +278,97 @@ export function sheetWithNumbers(
   return null
 }
 
+/** Numbers read directly (not inferred) on `sheets`, with their capture. */
+function directNumbers(
+  sheets: readonly BookSheet[],
+): { seq: number; n: number }[] {
+  return sheets.flatMap((s) =>
+    s.pages
+      .filter(
+        (p) => p.state === 'read' && !p.inferred && p.number !== undefined,
+      )
+      .map((p) => ({ seq: s.seq, n: p.number! })),
+  )
+}
+
+/**
+ * Numbers read directly on `sheets` that another of them confirms: a number
+ * of another capture within 2 (34 next to 35, the next spread's 36, or every
+ * right page 31, 33). One capture alone, even a spread whose halves follow
+ * each other, confirms nothing.
+ */
+function confirmedNumbers(
+  sheets: readonly BookSheet[],
+): { seq: number; n: number }[] {
+  const direct = directNumbers(sheets)
+  return direct.filter((x) =>
+    direct.some((y) => y.seq !== x.seq && Math.abs(y.n - x.n) <= 2),
+  )
+}
+
+/**
+ * Whether the numbers read on the capture `sheetId` fit the order the book
+ * has been taken in, so that they may count as pages taken. Call it again
+ * for every capture once a new one is read: the captures after a page
+ * judge it too.
+ *
+ * Pages are turned forward. Going back is to fill a gap or to a page taken
+ * already — both at or above the lowest page taken so far, and below a page
+ * taken before. A capture does not fit when
+ *
+ * 1. its number is below every number the earlier captures confirm among
+ *    themselves (90〜95 taken, then "88・89"): book 2 (FreeSerif) read
+ *    98・99 as 88・89 and 96・97 as 8・9, and taking them as read showed
+ *    "✓ 88・89 撮れた" and hid the real 88・89 / 96・97 that were missing;
+ * 2. its number is below every number read before it, confirmed or not,
+ *    and far below the next confirmed number after it — more than the
+ *    captures in between can turn (book 2: 205 read as 5 between 201 and
+ *    209, 211, …);
+ * 3. nothing before it is below it or next to it, and at least two
+ *    confirmed numbers after it are below it: the book went on from below
+ *    (book 1: the first page 31 read as 40, then 33, 35, …).
+ *
+ * Such a capture is kept, without a number (読めず): no ✓ with a number,
+ * never a page marked taken. Only confirmed numbers set the bar on 1 and
+ * 2's far side, so one misread capture (a lone "72・73" read for 12・13)
+ * does not lock out the right numbers after it — 3 drops it instead.
+ */
+export function numbersFitOrder(
+  sheets: readonly BookSheet[],
+  sheetId: string,
+): boolean {
+  const s = sheets.find((x) => x.id === sheetId)
+  if (!s) return true
+  const own = directNumbers([s]).map((x) => x.n)
+  if (own.length === 0) return true
+  const lo = Math.min(...own)
+  const hi = Math.max(...own)
+  const earlier = sheets.filter((x) => x.seq < s.seq)
+  const before = confirmedNumbers(earlier).map((x) => x.n)
+  if (before.length > 0 && lo < Math.min(...before)) return false
+
+  const others = sheets.filter((x) => x.id !== s.id)
+  const laterConfirmed = confirmedNumbers(others).filter((x) => x.seq > s.seq)
+  const allBefore = directNumbers(earlier).map((x) => x.n)
+  if (laterConfirmed.length > 0 && allBefore.length > 0) {
+    const nextSeq = Math.min(...laterConfirmed.map((x) => x.seq))
+    const next = Math.min(
+      ...laterConfirmed.filter((x) => x.seq === nextSeq).map((x) => x.n),
+    )
+    // Captures from this one to the next confirmed one, each turning at
+    // most a spread (2 pages), and one spread more of slack.
+    const between = sheets.filter(
+      (x) => x.seq > s.seq && x.seq <= nextSeq,
+    ).length
+    if (lo < Math.min(...allBefore) && next - hi > 2 * between + 2) return false
+  }
+  const below = new Set(
+    laterConfirmed.filter((x) => x.n < lo).map((x) => x.seq),
+  )
+  if (below.size >= 2 && !allBefore.some((n) => n <= hi + 2)) return false
+  return true
+}
+
 /** Gaps in `after` that were not in `before` (a page was just skipped). */
 export function newGaps(
   before: readonly BookGap[],
