@@ -16,7 +16,8 @@
  * SHA-256), run by scripts/fetch-public-assets.sh into public/models/.
  */
 
-import type { Quad } from '@astarworks/scan-core'
+import type { Point, Quad } from '@astarworks/scan-core'
+import { completeHiddenCorner } from '@astarworks/scan-core/pipeline'
 
 import {
   loadFastOrtSession,
@@ -35,8 +36,16 @@ export const CONTEXT_PAD = 0.15
 export interface PageDetection {
   /** Corners in the source picture's pixels. */
   quad: Quad
+  /** The model's peak for each corner (tl, tr, br, bl), the hidden one included. */
   peaks: [number, number, number, number]
+  /**
+   * The weakest peak among the corners the model saw. One corner under
+   * MIN_PEAK beside three sure ones (a thumb on it) is completed from the
+   * three (scan-core completeHiddenCorner) and does not count here.
+   */
   minPeak: number
+  /** Index (tl 0, tr 1, br 2, bl 3) of the corner completed from the other three, or null. */
+  hidden: number | null
   /** Model time of this call (ms). */
   inferMs: number
 }
@@ -201,10 +210,27 @@ export class PageDetector {
       tensor.dispose()
       hmT.dispose()
       const p = peaks as [number, number, number, number]
+      // The model's channels are tl, tr, br, bl (DocAligner); a corner it
+      // cannot see (under a thumb) is completed from the other three before
+      // the corners are ordered, since its reading can land anywhere.
+      const raw = xs.map((x, i) => ({ x, y: ys[i]! })) as [
+        Point,
+        Point,
+        Point,
+        Point,
+      ]
+      const done = completeHiddenCorner(raw, p, { minPeak: MIN_PEAK })
+      const pts = done?.points ?? raw
+      const hidden = done?.hidden ?? null
+      const seen = hidden === null ? p : p.filter((_, i) => i !== hidden)
       return {
-        quad: orderCorners(xs, ys),
+        quad: orderCorners(
+          pts.map((q) => q.x),
+          pts.map((q) => q.y),
+        ),
         peaks: p,
-        minPeak: Math.min(...p),
+        minPeak: Math.min(...seen),
+        hidden,
         inferMs,
       }
     } finally {

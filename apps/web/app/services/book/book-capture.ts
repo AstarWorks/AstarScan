@@ -506,6 +506,7 @@ export class BookCapture {
       quad: q,
       minPeak: det.minPeak,
       peaks: det.peaks.map((p) => Math.round(p * 100) / 100),
+      hidden: det.hidden,
       ms: Math.round(det.inferMs),
       vw,
       vh,

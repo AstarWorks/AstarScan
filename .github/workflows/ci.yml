@@ -459,6 +459,7 @@ jobs:
           sudo -E timeout 600 apt-get -o DPkg::Lock::Timeout=120 -o Acquire::http::Timeout=30 install -y -q \
             fonts-liberation fonts-ipafont-gothic fonts-dejavu-core fonts-crosextra-caladea fonts-crosextra-carlito \
             fonts-freefont-ttf fonts-inter xfonts-scalable fonts-wqy-zenhei fonts-jetbrains-mono fonts-ipafont-mincho \
+            fonts-tlwg-loma-otf fonts-ebgaramond fonts-hack fonts-sawarabi-mincho \
             python3-pil | tail -n 5
           # shellcheck disable=SC2086
           python3 -I scripts/eval/book-clips/stills.py /tmp/stills $STILLS_CLIPS --jobs 3 | grep -v ' / ' | tail -n 50

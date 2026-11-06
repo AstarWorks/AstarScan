@@ -115,7 +115,17 @@ export function parsePageNumberToken(text: string): PageNumberToken | null {
   }
 
   // Running head with the number at one end: "12 契約の成立" / "契約の成立 12".
-  const edge = /^(\d{1,4})\s+\S/.exec(raw) ?? /\S\s+(\d{1,4})$/.exec(raw)
+  // The reader drops the space as often as not (book 6, "202  LOG OF THE
+  // HARBOUR SURVEY" came back as "202LOGOFTHE HARBOUR SURVEY" and
+  // "LOGOFTHE HARBOUR SURVEY205", at 0.92–0.97, and no spread got its
+  // number): digits joined to a run of four or more letters at the line's
+  // start or end are the same reading. Shorter runs are left alone — "3rd",
+  // "10th", "12pt", "100ml" are words of the body, not a head's number.
+  const edge =
+    /^(\d{1,4})\s+\S/.exec(raw) ??
+    /\S\s+(\d{1,4})$/.exec(raw) ??
+    /^(\d{1,4})\p{L}{4,}/u.exec(raw) ??
+    /\p{L}{4,}(\d{1,4})$/u.exec(raw)
   if (edge) {
     const v = Number(edge[1])
     return valid(v) ? { value: v, kind: 'edge' } : null
@@ -162,15 +172,22 @@ export function pickPageNumbers(
   cands.sort((a, b) => b.score - a.score)
   const best = cands[0]!
 
-  // Spread: a strong number on the other half, same band, ±1 apart.
+  // Spread: a number on the other half, same band, ±1 apart. A strong
+  // number (arabic / kanji) pairs with any such number; two running-head
+  // numbers pair with each other only when both are heads (a book whose
+  // folio sits on the head's line, book 6: "202  TITLE" / "TITLE  203" —
+  // two heads ±1 apart on facing pages are its page numbers, since the
+  // heads themselves read the same on both pages), never a head with a
+  // body-text line (those are not candidates: the band keeps them out).
+  const strong = best.score >= KIND_SCORE.kanji
   const other = cands.find(
     (c) =>
-      c.score >= KIND_SCORE.kanji &&
+      (strong ? c.score >= KIND_SCORE.kanji : true) &&
       c.top === best.top &&
       c.cx < 0.5 !== best.cx < 0.5 &&
       Math.abs(c.value - best.value) === 1,
   )
-  if (best.score >= KIND_SCORE.kanji && other) {
+  if (other) {
     return [
       Math.min(best.value, other.value),
       Math.max(best.value, other.value),

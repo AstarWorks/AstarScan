@@ -33,6 +33,7 @@ export * from './gutter.js'
 export * from './book-coverage.js'
 export * from './turn-watch.js'
 export * from './shot-frame.js'
+export * from './hidden-corner.js'
 export * from './page-flatten.js'
 
 import type { PipelineDeps } from './deps.js'

@@ -20,6 +20,7 @@ import {
 } from '../src/pipeline/gutter.js'
 import { paperViewChange, paperViewMask } from '../src/pipeline/turn-watch.js'
 import { shotFrameQuad } from '../src/pipeline/shot-frame.js'
+import { completeHiddenCorner } from '../src/pipeline/hidden-corner.js'
 
 const read = (n: number): BookPageRead => ({ state: 'read', number: n })
 const none: BookPageRead = { state: 'none' }
@@ -745,5 +746,39 @@ describe('shotFrameQuad (the frame of the shot)', () => {
       y: 320,
     })
     expect(shotFrameQuad([])).toBeNull()
+  })
+})
+
+describe('completeHiddenCorner (a corner under a thumb)', () => {
+  // Book 6's framed spread (720×960), a hold-3 frame: the left thumb on the
+  // left page's bottom outer corner; tl / tr / br at 0.77–0.89, bl at 0.04
+  // and read 200 px away from the paper's corner.
+  const pts = [
+    { x: 41, y: 268 },
+    { x: 636, y: 252 },
+    { x: 658, y: 664 },
+    { x: 240, y: 470 },
+  ] as const
+  it('completes one unseen corner from the three sure ones (parallelogram)', () => {
+    const r = completeHiddenCorner(pts, [0.86, 0.89, 0.84, 0.04])!
+    expect(r.hidden).toBe(3)
+    // bl = br + tl − tr
+    expect(r.points[3]).toEqual({ x: 658 + 41 - 636, y: 664 + 268 - 252 })
+    expect(r.points[0]).toEqual(pts[0])
+    // any corner: tr = tl + br − bl
+    const t = completeHiddenCorner(pts, [0.9, 0.1, 0.9, 0.9])!
+    expect(t.hidden).toBe(1)
+    expect(t.points[1]).toEqual({ x: 41 + 658 - 240, y: 268 + 664 - 470 })
+  })
+  it('leaves a frame whose corners are all seen as it is', () => {
+    const r = completeHiddenCorner(pts, [0.9, 0.9, 0.9, 0.35])!
+    expect(r.hidden).toBeNull()
+    expect(r.points).toEqual(pts)
+  })
+  it('does not complete two unseen corners, or one beside unsure ones', () => {
+    expect(completeHiddenCorner(pts, [0.9, 0.9, 0.1, 0.2])).toBeNull()
+    // A turn / no paper: three corners seen but not plainly (0.3–0.6).
+    expect(completeHiddenCorner(pts, [0.9, 0.55, 0.9, 0.04])).toBeNull()
+    expect(completeHiddenCorner(pts, [0.9, 0.6, 0.9, 0.04])).not.toBeNull()
   })
 })
