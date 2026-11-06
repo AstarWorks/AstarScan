@@ -27,6 +27,7 @@ import {
   bookCoverage,
   completeSpread,
   curveAt,
+  facingHalfNumber,
   fitPageEdges,
   flattenGeometry,
   PAGE_FLATTEN,
@@ -46,6 +47,7 @@ import {
   quadAspect,
   settleBookNumbers,
   sheetWithNumbers,
+  shotFrameQuad,
   splitSpreadQuad,
   SPREAD_MIN_ASPECT,
   trimQuadSides,
@@ -91,18 +93,18 @@ const STILL_VIEW_CALM = 4.5
  */
 const BLINK_MS = 700
 /**
- * A corner of the shot's frame that is further than STILL_CORNER (of the
- * diagonal) from its median over the still spell's detections within this
- * long before the shot is taken from that median instead. While the picture is calm the
- * spell goes on whatever the corners do (STILL_VIEW_CALM), and the model can
- * switch to another reading of the page for a few frames: book 1's framed
- * single-land-white p39 had its top-left corner at (−2, 48) for 12 frames of
- * the spell and at (101, 318) for the 3 frames before the shot, on a picture
- * changing by about 1 grey level; the median of the last frames took the
- * wrong one and the frame covered 80 % of the page (無表示). Corners nearer
- * their spell median keep the last frames' reading, which follows the hand
- * (the whole spell's median lagged it: frame error of the spreads of book 1
- * 5 → 8 px, the thick book's p66 covered 86 %).
+ * The shot's frame is taken from the corner model's detections within this
+ * long before the shot (the still spell), each corner from the detections
+ * the model was surest of for it (scan-core shotFrameQuad). While the
+ * picture is calm the spell goes on whatever the corners do
+ * (STILL_VIEW_CALM), and the model can switch to another reading of a
+ * corner for frames at a time: book 1's framed single-land-white p39 had
+ * its top-left corner at (−2, 48) for 12 frames of the spell and at
+ * (101, 318) for the 3 frames before the shot; book 3's framed single page
+ * 137 at (71, 116) in 6 frames and at (93, 320) in 7 — the median of the
+ * last frames took the wrong one each time and the frame covered 80–85 %
+ * of the page (無表示). The model's peak for the wrong reading was lower
+ * (0.42–0.69 against 0.71–0.85).
  */
 const SPELL_QUAD_MS = 1000
 /** The view drifted this far from the one taken: maybe a new page, judge again. */
@@ -113,6 +115,13 @@ const MIN_AREA = 0.12
 const SAME_PAGE_INLIERS = 14
 /** Page number lines read with less confidence than this are ignored. */
 const MIN_NUMBER_CONF = 0.7
+/**
+ * ...unless the line reads as exactly the number the facing page predicts
+ * (a spread's other half ± 1; scan-core facingHalfNumber): then this much
+ * confidence is enough. A chance misread landing on that one number is
+ * rare; the sure half already carries the misread risk of its own.
+ */
+const LOW_NUMBER_CONF = 0.4
 /** Numbers further than this from every number read so far are not taken. */
 const FAR_NUMBER = 60
 /** Number lines lower than this (page px) are not read: too few pixels. */
@@ -265,7 +274,8 @@ export class BookCapture {
   #history: { t: number; quad: Quad }[] = []
   #raw: Quad[] = []
   /** Detections of the still spell now (time, quad), for the shot's frame. */
-  #spell: { t: number; quad: Quad }[] = []
+  #spell: { t: number; quad: Quad; peaks: [number, number, number, number] }[] =
+    []
   /** 32×24 grey view when the last page was taken. */
   #takenView: Uint8ClampedArray | null = null
   /** View cells on the paper of the page taken (scan-core paperViewMask). */
@@ -388,7 +398,11 @@ export class BookCapture {
     this.#workerReady = Promise.all(ready).then(() => undefined)
   }
 
-  async #readNumber(page: HTMLCanvasElement): Promise<FolioLine[] | null> {
+  async #readNumber(
+    page: HTMLCanvasElement,
+    zone: FolioZone | null,
+    side: BookPage['side'],
+  ): Promise<FolioLine[] | null> {
     if (!this.#workers.length) return null
     await this.#workerReady
     const id = ++this.#readId
@@ -396,7 +410,16 @@ export class BookCapture {
     const bmp = await createImageBitmap(page)
     return new Promise((resolve) => {
       this.#reads.set(id, resolve)
-      w.postMessage({ type: 'read', id, page: bmp } satisfies FolioIn, [bmp])
+      w.postMessage(
+        {
+          type: 'read',
+          id,
+          page: bmp,
+          zone: zone ?? undefined,
+          side,
+        } satisfies FolioIn,
+        [bmp],
+      )
     })
   }
 
@@ -482,6 +505,7 @@ export class BookCapture {
       vd: Math.round(viewDiff * 10) / 10,
       quad: q,
       minPeak: det.minPeak,
+      peaks: det.peaks.map((p) => Math.round(p * 100) / 100),
       ms: Math.round(det.inferMs),
       vw,
       vh,
@@ -565,7 +589,7 @@ export class BookCapture {
       return
     }
     if (this.#stillSince === 0) this.#stillSince = now
-    this.#spell.push({ t: now, quad: q })
+    this.#spell.push({ t: now, quad: q, peaks: det.peaks })
     while (now - this.#spell[0]!.t > SPELL_QUAD_MS) this.#spell.shift()
 
     // Once per still spell: is this the page just taken, or one taken before?
@@ -633,22 +657,18 @@ export class BookCapture {
     this.state.pill = 'そのまま'
     this.state.sweep = Math.min(1, (now - this.#sweepStart) / SWEEP_MS)
     if (this.state.sweep >= 1) {
-      // The frame of the shot: a corner that jumped away from the still
-      // spell's reading of it is taken back (see SPELL_QUAD_MS).
-      const sm =
-        this.#spell.length > 0 ? medianQuad(this.#spell.map((x) => x.quad)) : mq
-      const jump = STILL_CORNER * diag
-      const sq: Quad = {
-        tl: dist(mq.tl, sm.tl) > jump ? sm.tl : mq.tl,
-        tr: dist(mq.tr, sm.tr) > jump ? sm.tr : mq.tr,
-        br: dist(mq.br, sm.br) > jump ? sm.br : mq.br,
-        bl: dist(mq.bl, sm.bl) > jump ? sm.bl : mq.bl,
-      }
+      // The frame of the shot: each corner from the spell's detections the
+      // model was surest of for it (scan-core shotFrameQuad; see
+      // SPELL_QUAD_MS).
+      const sq = shotFrameQuad(this.#spell) ?? mq
       probe({
         type: 'shotQuad',
         t: now,
         last: mq,
-        spell: sm,
+        spell:
+          this.#spell.length > 0
+            ? medianQuad(this.#spell.map((x) => x.quad))
+            : mq,
         shot: sq,
         n: this.#spell.length,
       })
@@ -885,21 +905,26 @@ export class BookCapture {
     this.#onChange()
 
     // Numbers, both halves of a spread at once.
-    const reads = await Promise.all(made.map((p) => this.#readNumber(p.canvas)))
-    const before = this.state.coverage.gaps
     const zone = learnedFolioZone(this.#zones)
+    const reads = await Promise.all(
+      made.map((p) => this.#readNumber(p.canvas, zone, p.side)),
+    )
+    const before = this.state.coverage.gaps
     const chosen: (FolioZone | null)[] = []
+    /** Lines of a plausible size in the book's number place, per page. */
+    const placed: FolioLine[][] = []
     reads.forEach((lines, i) => {
       const p = made[i]!
       const side = p.side
       // Too small to read reliably (Android: ~5 px numbers come back wrong
       // as often as right), or outside the place this book prints numbers.
-      const ok = (lines ?? []).filter(
+      const sized = (lines ?? []).filter(
         (l) =>
-          l.conf >= MIN_NUMBER_CONF &&
           (l.box[3] - l.box[1]) * p.straight.height >= MIN_NUMBER_PX &&
           (zone === null || folioZone(l.cx, l.cy, side) === zone),
       )
+      placed.push(sized)
+      const ok = sized.filter((l) => l.conf >= MIN_NUMBER_CONF)
       // A number far from every number read so far is body text (a year,
       // "1668."), once the book's numbers are known.
       const known = this.pages
@@ -943,6 +968,39 @@ export class BookCapture {
     // Spread halves must be consecutive; one read wrong drops both to the
     // more confident inference (left = right − 1).
     if (sheet.spread) {
+      // A half read with less confidence than a number needs on its own
+      // still counts when it reads as exactly the other half's number ± 1
+      // (scan-core facingHalfNumber): book 2's 52 at 0.68 beside a sure 53.
+      for (const [i, j] of [
+        [0, 1],
+        [1, 0],
+      ] as const) {
+        const a = sheet.pages[i]!
+        const b = sheet.pages[j]!
+        if (a.state !== 'read' || b.state !== 'none') continue
+        const low = placed[j]!.filter((l) => l.conf >= LOW_NUMBER_CONF)
+        const n = facingHalfNumber(low, a.number!, j === 0 ? 'L' : 'R')
+        if (n === undefined) continue
+        const line = low.find((l) => parsePageNumberToken(l.text)?.value === n)!
+        const r: BookPageRead = {
+          state: 'read',
+          number: n,
+          px:
+            Math.round(
+              (line.box[3] - line.box[1]) * made[j]!.straight.height * 10,
+            ) / 10,
+        }
+        sheet.pages[j] = r
+        made[j]!.read = r
+        chosen[j] = folioZone(line.cx, line.cy, made[j]!.side)
+        probe({
+          type: 'numberFacing',
+          sheetId: sheet.id,
+          side: made[j]!.side,
+          number: n,
+          conf: line.conf,
+        })
+      }
       const [l, r] = sheet.pages as [BookPageRead, BookPageRead]
       if (
         l.state === 'read' &&

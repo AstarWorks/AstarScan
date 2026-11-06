@@ -165,6 +165,27 @@ export function pickPageNumbers(
   return [best.value]
 }
 
+/**
+ * The number of a spread's unread half, when one of its lines reads as
+ * exactly the facing page's number ± 1 (left = right − 1). The caller
+ * passes the lines it would otherwise not trust (read with less confidence
+ * than it asks of a number on its own): a read that happens to be the one
+ * number the facing page predicts is not a chance misread — book 2's 52
+ * was read at 0.68 beside a sure 53 and dropped, leaving the spread unsure
+ * and 50・51's red unsaid. Undefined when no line reads so.
+ */
+export function facingHalfNumber(
+  lines: readonly { readonly text: string }[],
+  facing: number,
+  side: 'L' | 'R',
+): number | undefined {
+  const want = side === 'L' ? facing - 1 : facing + 1
+  if (!valid(want)) return undefined
+  return lines.some((l) => parsePageNumberToken(l.text)?.value === want)
+    ? want
+    : undefined
+}
+
 export type PageNumberState = 'ok' | 'duplicate' | 'unread' | 'outOfOrder'
 
 export interface PageNumberCheck {

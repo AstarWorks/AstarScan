@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import {
   checkPageSequence,
+  facingHalfNumber,
   kanjiToNumber,
   parsePageNumberToken,
   pickPageNumbers,
@@ -80,6 +81,18 @@ describe('pickPageNumbers', () => {
         { text: '25', cx: 0.9, cy: 0.96 },
       ]),
     ).toEqual([24, 25])
+  })
+})
+
+describe('facingHalfNumber', () => {
+  it('takes the one number the facing page predicts, nothing else', () => {
+    // Book 2: 52 read with low confidence beside a sure 53.
+    expect(facingHalfNumber([{ text: '52' }, { text: 'RR' }], 53, 'L')).toBe(52)
+    expect(facingHalfNumber([{ text: '54' }], 53, 'R')).toBe(54)
+    expect(facingHalfNumber([{ text: '51' }, { text: '5' }], 53, 'L')).toBe(
+      undefined,
+    )
+    expect(facingHalfNumber([{ text: '0' }], 1, 'L')).toBe(undefined)
   })
 })
 

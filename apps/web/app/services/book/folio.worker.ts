@@ -17,6 +17,7 @@
  */
 
 import * as ort from 'onnxruntime-web/wasm'
+import { folioZone, type FolioZone } from '@astarworks/scan-core/pipeline'
 
 const MODEL_URL = '/models/ppocr-rec.onnx'
 const KEYS_URL = '/models/ppocr-keys.txt'
@@ -40,7 +41,21 @@ export interface FolioLine {
 
 export type FolioIn =
   | { type: 'init' }
-  | { type: 'read'; id: number; page: ImageBitmap }
+  | {
+      type: 'read'
+      id: number
+      page: ImageBitmap
+      /**
+       * Where this book prints its numbers, once learned (scan-core
+       * `learnedFolioZone`), and which page this is: lines there are read
+       * first. Only a few lines are read per page (time), and the running
+       * head's fragments — short and as near the edge — can fill them
+       * before the number (book 2's top-outer "217" behind six pieces of
+       * "NOTES ON THE WHALE FISHERY").
+       */
+      zone?: FolioZone
+      side?: 'L' | 'R' | 'S'
+    }
 
 export type FolioOut =
   | { type: 'ready'; threads: number; ms: number }
@@ -219,6 +234,8 @@ function candidates(
   sat: Uint8ClampedArray,
   w: number,
   h: number,
+  zone?: FolioZone,
+  side: 'L' | 'R' | 'S' = 'S',
 ): Box[] {
   const band = Math.round(h * BAND)
   const all = [
@@ -228,11 +245,19 @@ function candidates(
   const ok = all.filter(
     (b) => b.x1 - b.x0 + 1 <= w * 0.5 && b.y1 - b.y0 + 1 >= h * 0.006,
   )
-  // Short lines (a number alone) first, then nearest the page edge; a
+  // Lines where this book prints its numbers first (once that is known),
+  // then short lines (a number alone), then nearest the page edge; a
   // running head with the number at its end comes after them.
+  const inZone = (b: Box) =>
+    zone &&
+    folioZone((b.x0 + b.x1 + 1) / 2 / w, (b.y0 + b.y1 + 1) / 2 / h, side) ===
+      zone
+      ? 0
+      : 1
   const short = (b: Box) => (b.x1 - b.x0 + 1 <= w * 0.15 ? 0 : 1)
   ok.sort(
     (a, b) =>
+      inZone(a) - inZone(b) ||
       short(a) - short(b) ||
       Math.min(a.y0, h - a.y1) - Math.min(b.y0, h - b.y1),
   )
@@ -296,7 +321,12 @@ function decode(t: ort.Tensor): { text: string; conf: number } {
   return { text, conf: n ? sum / n : 0 }
 }
 
-async function read(id: number, page: ImageBitmap): Promise<void> {
+async function read(
+  id: number,
+  page: ImageBitmap,
+  zone?: FolioZone,
+  side?: 'L' | 'R' | 'S',
+): Promise<void> {
   const t0 = performance.now()
   if (!session) throw new Error('not ready')
   const w = PAGE_W
@@ -315,7 +345,7 @@ async function read(id: number, page: ImageBitmap): Promise<void> {
     g[i] = (r * 299 + gg * 587 + b * 114) / 1000
     sat[i] = Math.max(r, gg, b) - Math.min(r, gg, b)
   }
-  const boxes = candidates(g, sat, w, h)
+  const boxes = candidates(g, sat, w, h, zone, side)
   const work = new OffscreenCanvas(16, IN_H)
   const lines: FolioLine[] = []
   for (const b of boxes) {
@@ -348,7 +378,7 @@ self.onmessage = (e: MessageEvent<FolioIn>) => {
       post({ type: 'error', message: String(err) }),
     )
   else if (m.type === 'read')
-    read(m.id, m.page).catch((err: unknown) =>
+    read(m.id, m.page, m.zone, m.side).catch((err: unknown) =>
       post({ type: 'error', id: m.id, message: String(err) }),
     )
 }

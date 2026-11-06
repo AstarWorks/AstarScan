@@ -19,6 +19,7 @@ import {
   unitToQuad,
 } from '../src/pipeline/gutter.js'
 import { paperViewChange, paperViewMask } from '../src/pipeline/turn-watch.js'
+import { shotFrameQuad } from '../src/pipeline/shot-frame.js'
 
 const read = (n: number): BookPageRead => ({ state: 'read', number: n })
 const none: BookPageRead = { state: 'none' }
@@ -512,5 +513,63 @@ describe('paperViewChange (has the page been turned?)', () => {
       bl: { x: 0, y: 30 },
     }
     expect(paperViewMask(tiny, 1080, 1920)).toBeNull()
+  })
+})
+
+describe('shotFrameQuad (the frame of the shot)', () => {
+  const q = (tlx: number, tly: number) => ({
+    tl: { x: tlx, y: tly },
+    tr: { x: 600, y: 80 },
+    br: { x: 650, y: 860 },
+    bl: { x: 115, y: 900 },
+  })
+  const det = (tlx: number, tly: number, tlPeak: number) => ({
+    quad: q(tlx, tly),
+    peaks: [tlPeak, 0.9, 0.9, 0.9] as [number, number, number, number],
+  })
+  it('takes each corner from the detections the model was surest of', () => {
+    // Book 3 framed single page 137: the top-left corner read at the
+    // paper's corner (71, 116) in 6 frames at peak 0.71–0.85 and a third
+    // of the way down the edge (93, 320) in 7 frames at 0.42–0.69.
+    const spell = [
+      det(71, 108, 0.82),
+      det(71, 109, 0.77),
+      det(102, 319, 0.45),
+      det(94, 325, 0.53),
+      det(93, 320, 0.67),
+      det(93, 320, 0.54),
+      det(93, 325, 0.64),
+      det(93, 325, 0.69),
+      det(71, 116, 0.71),
+      det(70, 117, 0.78),
+      det(71, 116, 0.83),
+      det(153, 318, 0.42),
+    ]
+    const s = shotFrameQuad(spell)!
+    expect(s.tl).toEqual({ x: 71, y: 116 })
+    expect(s.tr).toEqual({ x: 600, y: 80 })
+  })
+  it('follows the hand: the last sure detections, not the whole spell', () => {
+    const spell = [
+      det(60, 100, 0.8),
+      det(60, 100, 0.8),
+      det(60, 100, 0.8),
+      det(60, 100, 0.8),
+      det(60, 100, 0.8),
+      det(60, 100, 0.8),
+      det(70, 110, 0.8),
+      det(72, 112, 0.8),
+      det(74, 114, 0.8),
+      det(76, 116, 0.8),
+      det(78, 118, 0.8),
+    ]
+    expect(shotFrameQuad(spell)!.tl).toEqual({ x: 74, y: 114 })
+  })
+  it('a short spell counts every detection; an empty one gives null', () => {
+    expect(shotFrameQuad([det(71, 116, 0.8), det(93, 320, 0.4)])!.tl).toEqual({
+      x: 93,
+      y: 320,
+    })
+    expect(shotFrameQuad([])).toBeNull()
   })
 })
