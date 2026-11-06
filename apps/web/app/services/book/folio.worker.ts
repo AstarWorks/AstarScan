@@ -128,6 +128,25 @@ function lineBoxes(
     }
   }
   const thr = paper * 0.72
+  // Colour of the paper (its pixels' median saturation): under warm or
+  // cool light the print takes the paper's tint, so skin (a thumb) is
+  // told from print by being much more coloured than the paper, not by a
+  // fixed saturation (another-book check: warm light put print at 45–55).
+  const satHist = new Uint32Array(256)
+  let paperPx = 0
+  for (let i = y0 * w; i < y1 * w; i++)
+    if (g[i]! >= thr) {
+      satHist[sat[i]!]!++
+      paperPx++
+    }
+  let paperSat = 0
+  for (let v = 0, c = 0; v < 256; v++) {
+    c += satHist[v]!
+    if (c >= paperPx / 2) {
+      paperSat = v
+      break
+    }
+  }
   const minH = h * 0.005
   const maxH = h * 0.035
   const label = new Int32Array(w * bh).fill(-1)
@@ -170,7 +189,7 @@ function lineBoxes(
     if (ch > maxH || cw > maxH * 3) continue
     if (ch < minH && cw < minH) continue
     if (x0 <= 0 || x1 >= w - 1) continue
-    if (satSum / n > 40) continue
+    if (satSum / n > paperSat + 35) continue
     chars.push({ x0, y0: yy0 + y0, x1, y1: yy1 + y0, n })
   }
   chars.sort((a, b) => a.x0 - b.x0)

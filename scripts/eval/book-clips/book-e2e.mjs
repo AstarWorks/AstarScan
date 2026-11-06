@@ -516,7 +516,13 @@ for (const t of targets) {
 }
 const count = (s) => pageRows.filter((r) => r.state === s).length
 const readRows = pageRows.filter((r) => r.state === 'check')
-const right = readRows.filter((r) => r.read === r.page).length
+// Pages printed without a number (--no-folio 126,127): right when unread.
+const noFolio = (opt('--no-folio', '') || '')
+  .split(',')
+  .filter(Boolean)
+  .map(Number)
+const truth = (r) => (noFolio.includes(r.page) ? null : r.page)
+const right = readRows.filter((r) => (r.read ?? null) === truth(r)).length
 const wrong = readRows.filter(
   (r) => r.read !== null && r.read !== undefined && r.read !== r.page,
 ).length
