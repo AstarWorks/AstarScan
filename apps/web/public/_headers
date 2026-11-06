@@ -14,3 +14,12 @@
 # Config files (charset YAML)
 /config/*
   Cache-Control: public, max-age=86400
+
+# Cross-origin isolation (COOP + COEP): lets onnxruntime-web run the corner
+# model and the page-number reader on several WASM threads
+# (SharedArrayBuffer). Every subresource the app loads is same-origin, and
+# the page-number model is fetched with CORS (raw.githubusercontent.com
+# answers Access-Control-Allow-Origin: *), so require-corp blocks nothing.
+/*
+  Cross-Origin-Opener-Policy: same-origin
+  Cross-Origin-Embedder-Policy: require-corp

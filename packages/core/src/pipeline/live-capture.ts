@@ -76,6 +76,22 @@ export type LiveCaptureOptions = {
   -readonly [K in keyof typeof LIVE_CAPTURE_DEFAULTS]: number
 }
 
+/**
+ * Optional "is this the same page?" test that replaces the pHash rules
+ * (`changeDist`, `sameDist`) where it has an answer. Return null when it
+ * cannot tell (no features, no picture) — the pHash rule then decides.
+ *
+ * Why: on book pages the 256-bit average hash does not tell typeset text
+ * pages apart (book-clip replay: different pages 26–60 bits apart, the
+ * same page 10–77), so a page turn never exceeded `changeDist` and every
+ * page after the first ✓ went by silently. ORB inliers between warped
+ * pages separate them (same page ≥ 44, different ≤ 13).
+ */
+export type SamePageTest<T> = (
+  ref: LiveFrame<T>,
+  frame: LiveFrame<T>,
+) => boolean | null
+
 export interface LiveFrame<T = unknown> {
   /** Seconds since scan start. */
   t: number
@@ -146,6 +162,8 @@ interface Hold<T> {
   /** Start of the current still run; null while the page is moving. */
   stillSinceT: number | null
   ref: bigint
+  /** Frame whose picture `ref` is (compared by `SamePageTest`). */
+  refFrame: LiveFrame<T>
   best: LiveFrame<T>
   /** Set once captured (or resumed onto a captured page). */
   pageNo: number | null
@@ -153,8 +171,9 @@ interface Hold<T> {
   pending: LiveFrame<T>[]
 }
 
-interface CapturedRef extends LivePageSpan {
+interface CapturedRef<T> extends LivePageSpan {
   hash: bigint
+  frame: LiveFrame<T>
 }
 
 /** A stretch during which some page stayed in view (see `leaveS`). */
@@ -173,13 +192,69 @@ const EPS = 1e-6
 export class LiveCaptureJudge<T = unknown> {
   readonly opts: LiveCaptureOptions
   #hold: Hold<T> | null = null
-  #captured: CapturedRef[] = []
+  #captured: CapturedRef<T>[] = []
   #nextHoldId = 1
   #prevQuad: Quad | null = null
   #visit: Visit<T> | null = null
+  readonly #samePage: SamePageTest<T> | null
 
-  constructor(opts: Partial<LiveCaptureOptions> = {}) {
+  constructor(
+    opts: Partial<LiveCaptureOptions> = {},
+    samePage: SamePageTest<T> | null = null,
+  ) {
     this.opts = { ...LIVE_CAPTURE_DEFAULTS, ...opts }
+    this.#samePage = samePage
+  }
+
+  /** The last `#same` answer came from `samePage` (not pHash). */
+  #byTest = false
+
+  /** Same picture: `samePage` when it answers, else pHash ≤ `maxDist`. */
+  #same(
+    ref: LiveFrame<T>,
+    refHash: bigint,
+    f: LiveFrame<T>,
+    maxDist: number,
+  ): boolean {
+    const v = this.#samePage?.(ref, f) ?? null
+    this.#byTest = v !== null
+    if (v !== null) return v
+    return f.hash !== null && hamming(f.hash, refHash) <= maxDist
+  }
+
+  /**
+   * A page was swapped for a different one (decided by `samePage`, which
+   * unlike pHash tells book pages apart) without leaving the view. If it
+   * was in view for `missMinS` without a ✓, it is reported as missed now
+   * — on a book the page never leaves the view, so the stretch rule alone
+   * never fired and unturned-to pages went by without any sign. The
+   * stretch restarts on the new page.
+   */
+  #swapped(
+    prev: Hold<T>,
+    seed: LiveFrame<T>[],
+    out: LiveCaptureEvent<T>[],
+  ): void {
+    const v = this.#visit
+    if (
+      prev.pageNo === null &&
+      !v?.captured &&
+      prev.lastSeenT - prev.startT + EPS >= this.opts.missMinS
+    ) {
+      out.push({
+        type: 'missed',
+        holdId: prev.id,
+        best: prev.best,
+        startT: prev.startT,
+        endT: prev.lastSeenT,
+        t: seed[seed.length - 1]!.t,
+      })
+    }
+    if (v) {
+      v.startT = seed[0]!.t
+      v.best = seed.reduce((a, b) => (b.score > a.score ? b : a))
+      v.captured = false
+    }
   }
 
   /** Spans of every captured page so far, in capture order. */
@@ -253,14 +328,17 @@ export class LiveCaptureJudge<T = unknown> {
       return
     }
 
-    if (hamming(f.hash, h.ref) <= o.changeDist) {
+    if (this.#same(h.refFrame, h.ref, f, o.changeDist)) {
       h.pending = []
       h.lastSeenT = f.t
       if (f.score > h.best.score) {
         h.best = f
         // Once captured, the reference stays on the captured picture so
         // the hold cannot drift onto the next page.
-        if (h.pageNo === null) h.ref = f.hash
+        if (h.pageNo === null) {
+          h.ref = f.hash
+          h.refFrame = f
+        }
       }
       if (!still) h.stillSinceT = null
       else if (h.stillSinceT === null) h.stillSinceT = f.t
@@ -269,12 +347,20 @@ export class LiveCaptureJudge<T = unknown> {
     }
 
     // Different picture. Only a change that persists is a page turn.
+    const changedByTest = this.#byTest
     h.pending.push(f)
     const first = h.pending[0]!
     if (f.t - first.t >= o.changeS - EPS) {
-      const seed = h.pending
+      // Seed the new hold with the newest frames that show the same
+      // picture as the newest one: frames from the middle of a page turn
+      // differ from both pages and must not become the new reference.
+      let k = h.pending.length - 1
+      while (k > 0 && this.#same(f, f.hash, h.pending[k - 1]!, o.changeDist))
+        k -= 1
+      const seed = h.pending.slice(k)
       h.pending = []
       this.#close()
+      if (changedByTest) this.#swapped(h, seed, out)
       this.#open(seed, still, out)
     }
   }
@@ -302,6 +388,7 @@ export class LiveCaptureJudge<T = unknown> {
       lastSeenT: last.t,
       stillSinceT: still ? (seed.length > 1 ? first.t : last.t) : null,
       ref: best.hash ?? 0n,
+      refFrame: best,
       best,
       pageNo: null,
       pending: [],
@@ -313,7 +400,7 @@ export class LiveCaptureJudge<T = unknown> {
     if (
       prev &&
       first.t - prev.endT <= this.opts.gapS + EPS &&
-      hamming(hold.ref, prev.hash) <= this.opts.sameDist
+      this.#same(prev.frame, prev.hash, best, this.opts.sameDist)
     ) {
       hold.pageNo = prev.pageNo
       prev.endT = last.t
@@ -340,7 +427,13 @@ export class LiveCaptureJudge<T = unknown> {
     if (held + EPS >= this.opts.holdS) {
       const pageNo = this.#captured.length + 1
       h.pageNo = pageNo
-      this.#captured.push({ pageNo, hash: h.ref, startT: h.startT, endT: t })
+      this.#captured.push({
+        pageNo,
+        hash: h.ref,
+        frame: h.refFrame,
+        startT: h.startT,
+        endT: t,
+      })
       out.push({
         type: 'captured',
         holdId: h.id,

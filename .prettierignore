@@ -28,3 +28,6 @@ test-results
 # Generated eval ground truth (minified on purpose)
 scripts/eval/book-clips/clips/*.gt.json
 scripts/eval/book-clips/framed/*.gt.json
+scripts/eval/book-clips/book2/*.gt.json
+scripts/eval/book-clips/book2-framed/*.gt.json
+docs/ux/ideal-capture.html

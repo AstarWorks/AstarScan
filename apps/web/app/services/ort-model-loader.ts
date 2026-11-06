@@ -2,22 +2,21 @@
  * ONNX Runtime Web session loader.
  *
  * Centralizes the one-time setup of `onnxruntime-web` (ort) and provides
- * a `loadOrtSession()` that fetches an ONNX model from a URL, creates an
- * `InferenceSession`, and returns it ready for `session.run()`.
+ * `loadOrtSession()` (WASM) and `loadFastOrtSession()` (WebGPU when the
+ * browser has it, else WASM) for the models the app runs.
  *
- * Callers (DocAlignerBackend, future OCR backend, etc.) each pass a
- * different model URL but share the same ort runtime initialization.
+ * WASM threads: ort runs one WASM thread per core (up to 4) when the page
+ * is cross-origin isolated (`crossOriginIsolated`, from the COOP / COEP
+ * headers in public/_headers), which SharedArrayBuffer needs. Without
+ * isolation (an old browser, a host without the headers) it is one thread.
  *
- * Design notes:
- * - WASM execution provider only (no WebGPU). At 5-10 FPS detection our
- *   inference budget is ~100-200ms per frame, which WASM comfortably
- *   meets for sub-20MB models. Avoiding WebGPU keeps us free from
- *   COOP/COEP header requirements and works on all browsers.
- * - `ort.env.wasm.wasmPaths` is set to the CDN hosted by onnxruntime so
- *   we don't have to bundle the ~5MB WASM binary into the Nuxt app.
- * - The session is created with `executionProviders: ['wasm']` explicitly
- *   to avoid ort's default GPU detection (which can fail silently on
- *   some mobile browsers and fall back slowly).
+ * WebGPU: the corner model (DocAligner, 4.8 MB) is tried on the 'webgpu'
+ * execution provider first. A browser without WebGPU, or one where the
+ * session cannot be created on it, gets the WASM session instead; the
+ * backend actually used is returned so the screen can show it (?debug).
+ *
+ * WASM binaries are self-hosted under /ort/ (scripts/copy-ort-assets.mjs),
+ * so the app works offline.
  */
 
 import * as ort from 'onnxruntime-web'
@@ -27,7 +26,7 @@ let ortInitialized = false
 function ensureOrtInitialized(): void {
   if (ortInitialized) return
 
-  ort.env.wasm.numThreads = 1
+  ort.env.wasm.numThreads = wasmThreadCount()
   ort.env.wasm.simd = true
 
   // Self-hosted WASM binaries (copied by scripts/copy-ort-assets.mjs into
@@ -39,6 +38,83 @@ function ensureOrtInitialized(): void {
   ortInitialized = true
 }
 
+/** WASM threads ort may use: one per core up to 4 when isolated, else 1. */
+export function wasmThreadCount(): number {
+  const isolated =
+    typeof globalThis.crossOriginIsolated === 'boolean' &&
+    globalThis.crossOriginIsolated
+  if (!isolated) return 1
+  const cores =
+    typeof navigator !== 'undefined' ? navigator.hardwareConcurrency || 1 : 1
+  return Math.max(1, Math.min(4, cores))
+}
+
+export type OrtBackend = 'webgpu' | 'wasm'
+
+export interface FastOrtSession {
+  session: ort.InferenceSession
+  backend: OrtBackend
+  /** WASM threads (1 on WebGPU: the model runs on the GPU). */
+  threads: number
+}
+
+async function fetchModel(url: string): Promise<ArrayBuffer> {
+  const response = await fetch(url)
+  if (!response.ok) {
+    throw new Error(
+      `Failed to fetch ONNX model from ${url}: ${response.status} ${response.statusText}`,
+    )
+  }
+  return response.arrayBuffer()
+}
+
+/**
+ * Session on WebGPU when the browser offers a GPU adapter and the model
+ * loads on it, else on WASM (threaded when isolated). `prefer: 'wasm'`
+ * skips WebGPU (?backend=wasm, for measuring both).
+ */
+export async function loadFastOrtSession(
+  url: string,
+  prefer: OrtBackend = 'webgpu',
+): Promise<FastOrtSession> {
+  ensureOrtInitialized()
+  const bytes = await fetchModel(url)
+  const gpu = (
+    navigator as {
+      gpu?: {
+        requestAdapter(): Promise<{
+          isFallbackAdapter?: boolean
+          info?: { isFallbackAdapter?: boolean }
+        } | null>
+      }
+    }
+  ).gpu
+  if (prefer === 'webgpu' && gpu) {
+    try {
+      const adapter = await gpu.requestAdapter()
+      // A software adapter (SwiftShader, CPU) is far slower than WASM:
+      // 5.5 s per corner-model run in headless Chromium vs ~0.1 s on WASM.
+      const software =
+        adapter?.isFallbackAdapter === true ||
+        adapter?.info?.isFallbackAdapter === true
+      if (adapter && !software) {
+        const session = await ort.InferenceSession.create(bytes.slice(0), {
+          executionProviders: ['webgpu'],
+          graphOptimizationLevel: 'all',
+        })
+        return { session, backend: 'webgpu', threads: 1 }
+      }
+    } catch (err) {
+      console.warn('[ort] WebGPU session failed, using WASM', err)
+    }
+  }
+  const session = await ort.InferenceSession.create(bytes, {
+    executionProviders: ['wasm'],
+    graphOptimizationLevel: 'all',
+  })
+  return { session, backend: 'wasm', threads: ort.env.wasm.numThreads ?? 1 }
+}
+
 /**
  * Fetch an ONNX model from `url` and return a ready-to-use
  * `InferenceSession`. The model bytes are fetched via `fetch()` and
@@ -46,10 +122,8 @@ function ensureOrtInitialized(): void {
  * browser deployment (vs. passing a URL string, which has CORS issues
  * on some CDNs).
  *
- * The session uses the WASM execution provider with SIMD enabled and
- * a single thread. This is the safest configuration across mobile
- * browsers as of April 2026 — multi-threaded WASM requires
- * SharedArrayBuffer which needs COOP/COEP headers.
+ * The session uses the WASM execution provider with SIMD enabled
+ * (threads: see `wasmThreadCount`).
  *
  * Throws on network errors, invalid model format, or OOM.
  */
@@ -58,13 +132,7 @@ export async function loadOrtSession(
 ): Promise<ort.InferenceSession> {
   ensureOrtInitialized()
 
-  const response = await fetch(url)
-  if (!response.ok) {
-    throw new Error(
-      `Failed to fetch ONNX model from ${url}: ${response.status} ${response.statusText}`,
-    )
-  }
-  const modelBytes = await response.arrayBuffer()
+  const modelBytes = await fetchModel(url)
 
   const session = await ort.InferenceSession.create(modelBytes, {
     executionProviders: ['wasm'],

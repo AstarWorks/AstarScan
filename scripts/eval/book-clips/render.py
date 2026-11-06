@@ -35,6 +35,8 @@ FONT_SERIF = '/usr/share/fonts/truetype/liberation/LiberationSerif-Regular.ttf'
 FONT_SERIF_B = '/usr/share/fonts/truetype/liberation/LiberationSerif-Bold.ttf'
 FONT_SERIF_I = '/usr/share/fonts/truetype/liberation/LiberationSerif-Italic.ttf'
 FONT_JA = '/usr/share/fonts/opentype/ipafont-gothic/ipag.ttf'
+FONT_SANS = '/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf'
+FONT_SANS_B = '/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf'
 
 # ---------------------------------------------------------------- clips
 CLIPS = {
@@ -68,6 +70,29 @@ CLIPS = {
         title='紙資料電子化規程（評価用）', spreads=10, first_page=30, offset=14,
         glare=0.6, shadow=0.55, shake=1.0, thick=(8.0, 8.0), left_thumb=False,
         cover=(60, 60, 60), seed=55),
+    # Over-fitting check (not used to tune anything): another book — sans
+    # serif body, the number at the TOP outer corner, two figure pages
+    # printed without a number, a grey-green desk, warm dim light, a
+    # stronger hand shake than spread-land-wood. Not in the default set
+    # (render.py renders it only when named).
+    'other-sans-top': dict(
+        W=1920, H=1080, mode='spread', desk='slate', text='carroll-alice.txt', lang='en',
+        title='THROUGH THE READING ROOM', spreads=7, first_page=120, offset=31,
+        glare=0.45, shadow=0.6, shake=1.3, thick=(14.0, 12.0), left_thumb=True,
+        cover=(120, 40, 30), seed=77, font='sans', folio='top-outer', no_folio=(126, 127),
+        tint=(1.06, 0.98, 0.90)),  # R, G, B
+}
+EXTRA_CLIPS = {'other-sans-top'}
+FONTS_EXTRA = {
+    'caladea': ('/usr/share/fonts/truetype/crosextra/Caladea-Regular.ttf',
+                '/usr/share/fonts/truetype/crosextra/Caladea-Bold.ttf',
+                '/usr/share/fonts/truetype/crosextra/Caladea-Italic.ttf'),
+    'carlito': ('/usr/share/fonts/truetype/crosextra/Carlito-Regular.ttf',
+                '/usr/share/fonts/truetype/crosextra/Carlito-Bold.ttf',
+                '/usr/share/fonts/truetype/crosextra/Carlito-Italic.ttf'),
+    'freeserif': ('/usr/share/fonts/truetype/freefont/FreeSerif.ttf',
+                  '/usr/share/fonts/truetype/freefont/FreeSerifBold.ttf',
+                  '/usr/share/fonts/truetype/freefont/FreeSerifItalic.ttf'),
 }
 
 # ---------------------------------------------------------------- text → page textures
@@ -112,10 +137,21 @@ def en_source(fname):
 
 
 class Typesetter:
-    def __init__(self, lang):
+    def __init__(self, lang, font='serif'):
         self.lang = lang
         s = int(3.5 * PX_MM)  # ~10 pt body text
-        if lang == 'ja':
+        self.italic = None
+        if font in FONTS_EXTRA and lang != 'ja':
+            fr, fbp, fi = FONTS_EXTRA[font]
+            self.f = ImageFont.truetype(fr, s + 1)
+            self.fb = ImageFont.truetype(fbp, s + 1)
+            self.fh = ImageFont.truetype(fbp, int(s * 1.4))
+            self.italic = fi
+        elif font == 'sans' and lang != 'ja':
+            self.f = ImageFont.truetype(FONT_SANS, s)
+            self.fb = ImageFont.truetype(FONT_SANS_B, s)
+            self.fh = ImageFont.truetype(FONT_SANS_B, int(s * 1.35))
+        elif lang == 'ja':
             self.f = ImageFont.truetype(FONT_JA, s)
             self.fb = ImageFont.truetype(FONT_JA, s)
             self.fh = ImageFont.truetype(FONT_JA, int(s * 1.35))
@@ -123,7 +159,7 @@ class Typesetter:
             self.f = ImageFont.truetype(FONT_SERIF, s + 1)
             self.fb = ImageFont.truetype(FONT_SERIF_B, s + 1)
             self.fh = ImageFont.truetype(FONT_SERIF_B, int(s * 1.4))
-        self.fs = ImageFont.truetype(FONT_JA if lang == 'ja' else FONT_SERIF_I, int(s * 0.8))
+        self.fs = ImageFont.truetype(FONT_JA if lang == 'ja' else (self.italic or FONT_SERIF_I), int(s * 0.8))
         self.lh = int(s * (1.75 if lang == 'ja' else 1.45))
         self.mt, self.mb, self.mi, self.mo = 20, 22, 19, 15  # margins (mm)
         self.tw = int((PW - self.mi - self.mo) * PX_MM)
@@ -166,10 +202,11 @@ class Typesetter:
         if cur: pages.append(cur)
         return pages
 
-    def draw(self, items, page_no, verso, title, seed):
+    def draw(self, items, page_no, verso, title, seed, folio_style='default', with_folio=True,
+             paper=(246, 242, 232)):
         w, h = int(PW * PX_MM), int(PH * PX_MM)
         r = np.random.default_rng(seed)
-        img = Image.new('RGB', (w, h), (246, 242, 232))
+        img = Image.new('RGB', (w, h), tuple(paper))
         d = ImageDraw.Draw(img)
         x0 = int((self.mo if verso else self.mi) * PX_MM)
         y = int(self.mt * PX_MM)
@@ -219,11 +256,17 @@ class Typesetter:
         head = title if verso else (title.split('；')[0].split(';')[0])
         hw = self.fs.getlength(head)
         d.text(((w - hw) / 2, hy), head, font=self.fs, fill=(70, 66, 60))
-        folio = f'— {page_no} —' if self.lang == 'ja' else str(page_no)
+        folio = f'— {page_no} —' if self.lang == 'ja' or folio_style == 'dash-center' else str(page_no)
         fw = self.f.getlength(folio)
         fy = h - int(13 * PX_MM)
         fx = (w - fw) / 2 if self.lang == 'ja' else (x0 if verso else x0 + self.tw - fw)
-        d.text((fx, fy), folio, font=self.f, fill=ink)
+        if folio_style in ('dash-center', 'center'):  # bottom centre
+            fx = (w - fw) / 2
+        if folio_style == 'top-outer':  # beside the running head, outer corner
+            fy = hy
+            fx = x0 if verso else x0 + self.tw - fw
+        if with_folio:
+            d.text((fx, fy), folio, font=self.f, fill=ink)
         a = np.asarray(img).astype(np.float32)[:, :, ::-1].copy()  # → BGR
         # paper fibres / uneven tone
         low = cv2.resize(r.normal(0, 1, (12, 9)).astype(np.float32), (w, h), interpolation=cv2.INTER_CUBIC)
@@ -233,7 +276,7 @@ class Typesetter:
 
 def page_textures(cfg):
     lang = cfg['lang']
-    ts = Typesetter(lang)
+    ts = Typesetter(lang, cfg.get('font', 'serif'))
     paras = ja_source(cfg['seed']) if cfg['text'] == 'ja' else en_source(cfg['text'])
     laid = ts.layout(paras, 0)
     n = 2 * cfg['spreads'] + 2
@@ -242,13 +285,16 @@ def page_textures(cfg):
         no = cfg['first_page'] + k
         verso = (k % 2 == 0)
         items = laid[(cfg['offset'] + k) % len(laid)]
-        out[no] = ts.draw(items, no, verso, cfg['title'], cfg['seed'] * 1000 + no)
+        out[no] = ts.draw(items, no, verso, cfg['title'], cfg['seed'] * 1000 + no,
+                          cfg.get('folio', 'default'), no not in cfg.get('no_folio', ()),
+                          cfg.get('paper', (246, 242, 232)))
     # show-through of the other side of the leaf (mirrored, faint)
     final = {}
+    base = float(np.mean(cfg.get('paper', (246, 242, 232)))) if 'paper' in cfg else 246.0
     for no, a in out.items():
         back = no - 1 if (no - cfg['first_page']) % 2 == 0 else no + 1
         if back in out:
-            ink = 246.0 - out[back][:, ::-1].mean(axis=2, keepdims=True)
+            ink = base - out[back][:, ::-1].mean(axis=2, keepdims=True)
             a = a - 0.05 * np.clip(ink, 0, 255)
         final[no] = np.clip(a, 0, 255).astype(np.uint8)
     return final
@@ -271,6 +317,24 @@ def desk_texture(kind, r, mm=1400, ppm=2.0):
         img[plank < 1.2] *= 0.55
         # varnish: slight sheen
         img += r.normal(0, 3, (n, n, 1)).astype(np.float32)
+    elif kind == 'walnut':  # dark wood, fine grain
+        warp = low(9, 10.0) + low(31, 2.0)
+        t = (xx / ppm) * 1.4 + warp
+        rings = np.sin(t * 0.9) * 0.5 + 0.5
+        base = np.array([28, 45, 70], np.float32)  # BGR dark walnut
+        img = base[None, None, :] * (0.8 + 0.3 * rings[..., None]) + low(13, 4)[..., None]
+        img += r.normal(0, 2.5, (n, n, 1)).astype(np.float32)
+    elif kind == 'navy':  # woven navy cloth
+        base = np.array([95, 55, 35], np.float32)  # BGR
+        weave = (np.sin(xx * 2.2) * np.sin(yy * 2.2))[..., None] * 6
+        img = base[None, None, :] + weave + low(8, 5)[..., None] + r.normal(0, 3.0, (n, n, 1)).astype(np.float32)
+    elif kind == 'cork':  # speckled cork board
+        base = np.array([110, 150, 185], np.float32)  # BGR
+        speck = cv2.GaussianBlur(r.normal(0, 1, (n, n)).astype(np.float32), (0, 0), 1.2) * 40
+        img = base[None, None, :] + speck[..., None] + low(11, 6)[..., None]
+    elif kind == 'slate':  # matte grey-green desk mat
+        base = np.array([96, 112, 98], np.float32)
+        img = base[None, None, :] + low(9, 7)[..., None] + r.normal(0, 3.0, (n, n, 1)).astype(np.float32)
     else:
         base = np.array([226, 229, 230], np.float32)
         img = base[None, None, :] + low(5, 4)[..., None] + r.normal(0, 2.5, (n, n, 1)).astype(np.float32)
@@ -513,6 +577,10 @@ def render(name, out_dir, max_frames=None, dump_png=False, only=None, sink=None)
     if dump_png: os.makedirs(os.path.join(out_dir, name + '-frames'), exist_ok=True)
     gt_frames = []
     hold_tip_R = np.array([0.80 * PW, PH / 2 - 7.0])
+    hold_out_R = np.array([0.45, 1.0, 0.8])
+    if 'thumb_R' in cfg:  # another grip: x as a share of the page width, y offset (mm) from the bottom-margin grip
+        hold_tip_R = np.array([cfg['thumb_R'][0] * PW, PH / 2 - 7.0 + cfg['thumb_R'][1]])
+        hold_out_R = np.array(cfg['thumb_out'], float)
     hold_tip_L = np.array([-0.72 * PW, PH / 2 - 6.0])
     for fi in range(n_frames):
         if only is not None and fi not in only:
@@ -606,7 +674,7 @@ def render(name, out_dir, max_frames=None, dump_png=False, only=None, sink=None)
                 tip = np.array([xx, yy, zr + 25 * math.sin(math.pi * a)])
             else:
                 tip = np.array([hold_tip_R[0], hold_tip_R[1], zr])
-            hands.append((tip, np.array([0.45, 1.0, 0.8])))
+            hands.append((tip, hold_out_R))
         if cfg['left_thumb']:
             zl = BOARD + float(rest_z(np.array([0.72 * PW]), TL)[0]) + 3.0
             hands.append((np.array([hold_tip_L[0], hold_tip_L[1], zl]), np.array([-0.4, 1.0, 0.8])))
@@ -639,6 +707,8 @@ def render(name, out_dir, max_frames=None, dump_png=False, only=None, sink=None)
         pm = cv2.GaussianBlur(paper, (0, 0), 1.2).astype(np.float32) / 255 * (1 - hand_alpha)
         gloss = pm + (0.35 if cfg['desk'] == 'white' else 0.55) * (1 - pm)
         fr += (255 - fr) * np.clip(g * gloss, 0, 0.97)[..., None]
+        if 'tint' in cfg:  # warm / cool light (B, G, R gains)
+            fr *= np.array(cfg['tint'], np.float32)[::-1][None, None, :]
         # ---- sensor: exposure drift, blur, noise
         fr *= 1 + 0.02 * math.sin(2 * math.pi * 0.17 * t)
         fr = cv2.GaussianBlur(fr, (0, 0), 0.9)
@@ -748,6 +818,6 @@ if __name__ == '__main__':
     if '--only' in sys.argv:  # preview a few frame indices (PNG only, the mp4 is incomplete)
         v = sys.argv[sys.argv.index('--only') + 1]; args = [a for a in args if a != v]
         only = set(int(x) for x in v.split(','))
-    names = list(CLIPS) if args[0] == 'all' else [args[0]]
+    names = [n for n in CLIPS if n not in EXTRA_CLIPS] if args[0] == 'all' else [args[0]]
     for nm in names:
         render(nm, args[1], nf, '--png' in sys.argv or only is not None, only)
