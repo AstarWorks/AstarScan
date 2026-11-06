@@ -45,8 +45,17 @@ BOOK2 = {
         thumb_R=(0.97, -30.0), thumb_out=(1.0, 0.3, 0.6)),
 }
 
+# Not a book to measure: book2-spread-center-1440 with 98・99 printed as
+# "88・89", the misread PP-OCR made of FreeSerif's 9 in the first browser
+# run. It plays that misread on the real screen (holds 1,2,3,5: 88・89 and
+# 96・97 not taken, as in that run) to show what the screen does with it.
+DEMO = {
+    'book2-misread-demo': dict(BOOK2['book2-spread-center-1440'], folio_as={98: 88, 99: 89}),
+}
+
 if __name__ == '__main__':
     R.CLIPS.update(BOOK2)
+    R.CLIPS.update(DEMO)
     names = list(BOOK2) if sys.argv[1] == 'all' else [sys.argv[1]]
     for nm in names:
         R.render(nm, sys.argv[2])

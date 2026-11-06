@@ -213,7 +213,7 @@ class Typesetter:
         return pages
 
     def draw(self, items, page_no, verso, title, seed, folio_style='default', with_folio=True,
-             paper=(246, 242, 232), folio_fmt=None):
+             paper=(246, 242, 232), folio_fmt=None, folio_no=None):
         w, h = int(PW * PX_MM), int(PH * PX_MM)
         r = np.random.default_rng(seed)
         img = Image.new('RGB', (w, h), tuple(paper))
@@ -267,9 +267,12 @@ class Typesetter:
         hw = self.fs.getlength(head)
         d.text(((w - hw) / 2, hy + (int(5 * PX_MM) if folio_style == 'top-center' else 0)), head,
                font=self.fs, fill=(70, 66, 60))
-        folio = f'— {page_no} —' if self.lang == 'ja' or folio_style == 'dash-center' else str(page_no)
+        # folio_no: the number printed, when it is not the page's (a misprint
+        # that plays a misread of the reader on the real screen).
+        shown = page_no if folio_no is None else folio_no
+        folio = f'— {shown} —' if self.lang == 'ja' or folio_style == 'dash-center' else str(shown)
         if folio_fmt:  # book 3: "p. 133", "( 315 )"
-            folio = folio_fmt.format(page_no)
+            folio = folio_fmt.format(shown)
         fw = self.f.getlength(folio)
         fy = h - int(13 * PX_MM)
         fx = (w - fw) / 2 if self.lang == 'ja' else (x0 if verso else x0 + self.tw - fw)
@@ -305,7 +308,8 @@ def page_textures(cfg):
         items = laid[(cfg['offset'] + k) % len(laid)]
         out[no] = ts.draw(items, no, verso, cfg['title'], cfg['seed'] * 1000 + no,
                           cfg.get('folio', 'default'), no not in cfg.get('no_folio', ()),
-                          cfg.get('paper', (246, 242, 232)), cfg.get('folio_fmt'))
+                          cfg.get('paper', (246, 242, 232)), cfg.get('folio_fmt'),
+                          cfg.get('folio_as', {}).get(no))
     # show-through of the other side of the leaf (mirrored, faint)
     final = {}
     base = float(np.mean(cfg.get('paper', (246, 242, 232)))) if 'paper' in cfg else 246.0
