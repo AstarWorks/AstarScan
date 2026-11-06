@@ -20,6 +20,11 @@ export interface BookPageRead {
   readonly number?: number
   /** The number was not read but follows from the facing page's (±1). */
   readonly inferred?: boolean
+  /**
+   * Height (page px) of the printed number as read. Unknown: taken as a
+   * size the reader is sure at (see `settleBookNumbers`).
+   */
+  readonly px?: number
 }
 
 /** One automatic capture: a single page, or a spread (left, right). */
@@ -367,6 +372,119 @@ export function numbersFitOrder(
   )
   if (below.size >= 2 && !allBefore.some((n) => n <= hi + 2)) return false
   return true
+}
+
+export const BOOK_NUMBER_DEFAULTS = {
+  /**
+   * A spread whose number nothing else confirms is taken as read only when
+   * both halves were read on their own at this height (page px) or more.
+   * At 720×960 an upright spread's numbers are 4–5 px: the browser read
+   * them wrong as often as right there (books 1–3, run5: 4 right / 6 wrong
+   * pages among the numbers read), always on a spread no other capture
+   * confirmed; at 1920×1080 (≈ 12 px) none was wrong.
+   */
+  surePx: 8,
+}
+
+/**
+ * Whether a capture's numbers may count as the pages taken (✓ with the
+ * number) — the numbers kept as read, judged again for every capture once
+ * a new one is read:
+ *
+ *  - `order`: they do not fit the order the book is taken in
+ *    (`numbersFitOrder`);
+ *  - `unsure`: a spread whose number nothing makes sure of. A spread's
+ *    number is sure when
+ *      · another capture confirms it (a number of it 1–2 pages off: the
+ *        next / previous spread), or
+ *      · both halves were read on their own (not one inferred from the
+ *        other), follow each other, and are at least `surePx` tall;
+ *    and its left page has the parity the book's confirmed spreads have
+ *    (left even, right odd — or the other way round, per book).
+ *    Book 1 4・5 read as 1・2 (the right half "第二" from the body text,
+ *    the left inferred), book 3 318・319 as 328・329 (the left half
+ *    alone) and 324・325 as 824・825, book 2 96・97 as 8・9 — all at
+ *    720×960, with no other number to judge them by, were shown as
+ *    "✓ 1・2 撮れた" and listed under those numbers;
+ *  - `ok`: shown and counted.
+ *
+ * Single pages keep the order rule only (their numbers are read at twice a
+ * spread's size). A capture held back as `unsure` comes back as `ok` once
+ * a later capture confirms it.
+ */
+export function settleBookNumbers(
+  sheets: readonly BookSheet[],
+  opts: Partial<typeof BOOK_NUMBER_DEFAULTS> = {},
+): Map<string, 'ok' | 'unsure' | 'order'> {
+  const o = { ...BOOK_NUMBER_DEFAULTS, ...opts }
+  const out = new Map<string, 'ok' | 'unsure' | 'order'>()
+  for (const s of sheets) out.set(s.id, 'ok')
+
+  // Out of order, until nothing more drops (a dropped capture no longer
+  // confirms the ones round it).
+  const none: BookPageRead = { state: 'none' }
+  let work: BookSheet[] = [...sheets]
+  for (let pass = 0; pass <= sheets.length; pass++) {
+    const drop = work.filter(
+      (s) => directNumbers([s]).length > 0 && !numbersFitOrder(work, s.id),
+    )
+    if (drop.length === 0) break
+    for (const s of drop) out.set(s.id, 'order')
+    work = work.map((s) =>
+      out.get(s.id) === 'order' ? { ...s, pages: s.pages.map(() => none) } : s,
+    )
+  }
+
+  const direct = directNumbers(work)
+  const confirmed = (s: BookSheet) =>
+    directNumbers([s]).some((x) =>
+      direct.some(
+        (y) =>
+          y.seq !== s.seq &&
+          Math.abs(y.n - x.n) >= 1 &&
+          Math.abs(y.n - x.n) <= 2,
+      ),
+    )
+  const spreads = work.filter(
+    (s) => s.pages.length === 2 && directNumbers([s]).length > 0,
+  )
+  const leftOf = (s: BookSheet) => {
+    const l = completeSpread(s.pages)[0]
+    return l?.state === 'read' ? l.number : undefined
+  }
+  // The book's left-page parity, from the OTHER spreads other captures
+  // confirm (a misread spread must not vote for itself).
+  const sure = spreads.filter(confirmed)
+  const parityBut = (s: BookSheet): 0 | 1 | null => {
+    const lefts = sure
+      .filter((x) => x.id !== s.id)
+      .map(leftOf)
+      .filter((n): n is number => n !== undefined)
+    const even = lefts.filter((n) => n % 2 === 0).length
+    const most = Math.max(even, lefts.length - even)
+    if (lefts.length < 2 || most < 0.75 * lefts.length) return null
+    return even >= lefts.length - even ? 0 : 1
+  }
+
+  for (const s of spreads) {
+    if (out.get(s.id) === 'order') continue
+    const left = leftOf(s)
+    const parity = parityBut(s)
+    const parityOk =
+      parity === null || left === undefined || left % 2 === parity
+    const [l, r] = s.pages as [BookPageRead, BookPageRead]
+    const tall = (p: BookPageRead) => p.px === undefined || p.px >= o.surePx
+    const pair =
+      l.state === 'read' &&
+      r.state === 'read' &&
+      !l.inferred &&
+      !r.inferred &&
+      r.number === l.number! + 1 &&
+      tall(l) &&
+      tall(r)
+    out.set(s.id, parityOk && (confirmed(s) || pair) ? 'ok' : 'unsure')
+  }
+  return out
 }
 
 /** Gaps in `after` that were not in `before` (a page was just skipped). */

@@ -238,8 +238,11 @@ for (;;) {
     // A read dropped for not fitting the page order (scan-core
     // numbersFitOrder): the screen a moment later, with its banner.
     else if (e.type === 'numberOutOfOrder') kind = 'outoforder'
+    // A spread's read held back as unsure (scan-core settleBookNumbers).
+    else if (e.type === 'numberUnsure') kind = 'unsure'
     if (kind && shots.filter((s) => s.kind === kind).length < 3) {
-      if (kind === 'outoforder') await page.waitForTimeout(250)
+      if (kind === 'outoforder' || kind === 'unsure')
+        await page.waitForTimeout(250)
       const p = path.join(
         outDir,
         `shot-${String(shots.length).padStart(2, '0')}-${kind}.png`,
@@ -408,20 +411,36 @@ const skippedPages = (gt.target_pages ?? []).filter(
 )
 for (const n of skippedPages) targets.push({ page: n, seg: null })
 const captures = probe.filter((e) => e.type === 'capture')
-const numbers = new Map(
-  probe.filter((e) => e.type === 'number').map((e) => [e.sheetId, e]),
-)
-// A read the screen took back once the pages after it were read (scan-core
-// numbersFitOrder: the first spread 314・315 read as 324・325, out of order
-// after 316〜319): the page ends unread; the number was shown for a while.
-const retracted = []
-for (const e of probe.filter((x) => x.type === 'numberOutOfOrder')) {
-  const n = numbers.get(e.sheetId)
-  if (n && n.numbers.length > 0 && e.wall >= n.wall) {
-    retracted.push({ sheetId: e.sheetId, numbers: n.numbers })
-    numbers.set(e.sheetId, { ...n, numbers: [] })
+// What the screen finally shows for each capture's number, in time order:
+// `number` shows it (again: `late`, a held spread a later capture made
+// sure of); `numberOutOfOrder` / `numberUnsure` (scan-core
+// settleBookNumbers) take it back — e.g. the first spread 314・315 read as
+// 324・325, out of order after 316〜319: the page ends unread; the number
+// was shown for a while (retracted).
+const numbers = new Map()
+const shownOnce = new Map()
+for (const e of probe) {
+  if (e.type === 'number') {
+    const prev = numbers.get(e.sheetId)
+    // The first number event carries the time from the shot; a late one
+    // replaces it only when it shows a number.
+    if (!prev || e.numbers.length > 0) numbers.set(e.sheetId, e)
+    if (e.numbers.length > 0) shownOnce.set(e.sheetId, e.numbers)
+  } else if (e.type === 'numberOutOfOrder' || e.type === 'numberUnsure') {
+    const n = numbers.get(e.sheetId)
+    if (n && n.numbers.length > 0 && e.wall >= n.wall)
+      numbers.set(e.sheetId, { ...n, numbers: [] })
   }
 }
+const retracted = [...shownOnce]
+  .filter(([id]) => (numbers.get(id)?.numbers.length ?? 0) === 0)
+  .map(([sheetId, nums]) => ({ sheetId, numbers: nums }))
+const heldBack = probe
+  .filter((e) => e.type === 'numberUnsure')
+  .map((e) => ({ sheetId: e.sheetId, numbers: e.numbers, px: e.px }))
+const shownLate = probe
+  .filter((e) => e.type === 'number' && e.late)
+  .map((e) => ({ sheetId: e.sheetId, numbers: e.numbers }))
 const alerts = probe.filter((e) => e.type === 'alert')
 const keptIds = new Set(kept.map((p) => p.sheetId))
 
@@ -585,6 +604,9 @@ const summary = {
   numbersRight: right,
   numbersWrong: wrong,
   numbersRetracted: retracted,
+  numbersHeldBack: heldBack,
+  numbersShownLate: shownLate,
+  turnDrifts: probe.filter((e) => e.type === 'drift').length,
   numbersUnread: readRows.length - right - wrong,
   wrongPages: readRows
     .filter((r) => r.read !== null && r.read !== undefined && r.read !== r.page)
