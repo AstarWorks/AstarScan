@@ -89,14 +89,18 @@ const STILL_VIEW_CALM = 4.5
  */
 const BLINK_MS = 700
 /**
- * The shot's frame is the per-corner median of the detections of the still
- * spell within this long before the shot. While the picture is calm the
+ * A corner of the shot's frame that is further than STILL_CORNER (of the
+ * diagonal) from its median over the still spell's detections within this
+ * long before the shot is taken from that median instead. While the picture is calm the
  * spell goes on whatever the corners do (STILL_VIEW_CALM), and the model can
  * switch to another reading of the page for a few frames: book 1's framed
  * single-land-white p39 had its top-left corner at (−2, 48) for 12 frames of
  * the spell and at (101, 318) for the 3 frames before the shot, on a picture
  * changing by about 1 grey level; the median of the last frames took the
- * wrong one and the frame covered 80 % of the page (無表示).
+ * wrong one and the frame covered 80 % of the page (無表示). Corners nearer
+ * their spell median keep the last frames' reading, which follows the hand
+ * (the whole spell's median lagged it: frame error of the spreads of book 1
+ * 5 → 8 px, the thick book's p66 covered 86 %).
  */
 const SPELL_QUAD_MS = 1000
 /** The view drifted this far from the one taken: maybe a new page, judge again. */
@@ -612,15 +616,23 @@ export class BookCapture {
     this.state.pill = 'そのまま'
     this.state.sweep = Math.min(1, (now - this.#sweepStart) / SWEEP_MS)
     if (this.state.sweep >= 1) {
-      // The frame of the shot: the corners' median over the still spell,
-      // not over the last few frames (see SPELL_QUAD_MS).
-      const sq =
+      // The frame of the shot: a corner that jumped away from the still
+      // spell's reading of it is taken back (see SPELL_QUAD_MS).
+      const sm =
         this.#spell.length > 0 ? medianQuad(this.#spell.map((x) => x.quad)) : mq
+      const jump = STILL_CORNER * diag
+      const sq: Quad = {
+        tl: dist(mq.tl, sm.tl) > jump ? sm.tl : mq.tl,
+        tr: dist(mq.tr, sm.tr) > jump ? sm.tr : mq.tr,
+        br: dist(mq.br, sm.br) > jump ? sm.br : mq.br,
+        bl: dist(mq.bl, sm.bl) > jump ? sm.bl : mq.bl,
+      }
       probe({
         type: 'shotQuad',
         t: now,
         last: mq,
-        spell: sq,
+        spell: sm,
+        shot: sq,
         n: this.#spell.length,
       })
       this.#capture(video, sq, now)
