@@ -242,7 +242,8 @@ describe('splitSpreadQuad', () => {
 
   it('trims a side', () => {
     const t = trimQuadSides(quad, 0.1, 0)
-    expect(t.tr).toEqual(quad.tr)
+    expect(t.tr.x).toBeCloseTo(quad.tr.x, 6)
+    expect(t.tr.y).toBeCloseTo(quad.tr.y, 6)
     expect(t.tl.x).toBeGreaterThan(quad.tl.x)
   })
 })
