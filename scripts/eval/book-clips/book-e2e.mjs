@@ -53,23 +53,111 @@ if (!url || !clipName || !outDir) {
 const COVER_PAGE = 0.9
 
 fs.mkdirSync(path.join(outDir, 'pages'), { recursive: true })
-const gt = JSON.parse(fs.readFileSync(path.join(clipsDir, `${clipName}.gt.json`), 'utf8'))
+const gt = JSON.parse(
+  fs.readFileSync(path.join(clipsDir, `${clipName}.gt.json`), 'utf8'),
+)
 const fps = gt.fps
-const N = gt.frames.length
-const clipS = N / fps
-
 const mp4 = path.join(clipsDir, `${clipName}.mp4`)
 const mjpeg = path.join(outDir, `${clipName}.mjpeg`)
-if (!fs.existsSync(mjpeg)) execFileSync('ffmpeg', ['-y', '-loglevel', 'error', '-i', mp4, '-q:v', '3', mjpeg])
+
+// --holds 0,1,3,2,3,4 plays the clip's holds in that order (a turn is kept
+// between a hold and the next one in the book; other steps are a cut):
+// skipping a page, going back to it, coming back to a page taken before.
+// --skip-hold 3 plays every hold but that one (single-land-white p37, as
+// the Android check skips it).
+const holdsArg = opt('--holds', null)
+const skipHold = opt('--skip-hold', null)
+const origHolds = gt.segments.filter((x) => x.phase === 'hold')
+let order = null
+if (holdsArg) order = holdsArg.split(',').map(Number)
+else if (skipHold !== null)
+  order = origHolds.map((_, i) => i).filter((i) => i !== Number(skipHold))
+if (order) {
+  const keep = []
+  order.forEach((k, j) => {
+    const h = origHolds[k]
+    for (let f = h.start_frame; f < h.end_frame; f += 1) keep.push(f)
+    const next = order[j + 1]
+    const turn = gt.segments.find(
+      (x) => x.phase === 'turn' && x.start_frame === h.end_frame,
+    )
+    // The turn after this hold (the page being turned), unless we go back.
+    if (next !== undefined && next > k && turn)
+      for (let f = turn.start_frame; f < turn.end_frame; f += 1) keep.push(f)
+  })
+  const dir = path.join(outDir, 'src-frames')
+  fs.mkdirSync(dir, { recursive: true })
+  if (!fs.existsSync(path.join(dir, '00001.jpg')))
+    execFileSync('ffmpeg', [
+      '-y',
+      '-loglevel',
+      'error',
+      '-i',
+      mp4,
+      '-q:v',
+      '3',
+      path.join(dir, '%05d.jpg'),
+    ])
+  fs.writeFileSync(
+    mjpeg,
+    Buffer.concat(
+      keep.map((f) =>
+        fs.readFileSync(
+          path.join(dir, `${String(f + 1).padStart(5, '0')}.jpg`),
+        ),
+      ),
+    ),
+  )
+  const frames2 = keep.map((f) => gt.frames[f])
+  const segs = []
+  keep.forEach((f, i) => {
+    const ph = gt.frames[f].phase === 'hold' ? 'hold' : 'turn'
+    const last = segs[segs.length - 1]
+    const brk = i > 0 && keep[i - 1] !== f - 1
+    if (last && last.phase === ph && !brk) last.end_frame = i + 1
+    else segs.push({ phase: ph, start_frame: i, end_frame: i + 1 })
+  })
+  gt.frames = frames2
+  gt.segments = segs
+  fs.writeFileSync(
+    path.join(outDir, 'order.json'),
+    JSON.stringify({ order, keep: keep.length }),
+  )
+} else if (!fs.existsSync(mjpeg))
+  execFileSync('ffmpeg', [
+    '-y',
+    '-loglevel',
+    'error',
+    '-i',
+    mp4,
+    '-q:v',
+    '3',
+    mjpeg,
+  ])
+const N = gt.frames.length
+const clipS = N / fps
 const SW = 32
 const SH = 24
 const raw = execFileSync(
   'ffmpeg',
-  ['-loglevel', 'error', '-i', mp4, '-vf', `scale=${SW}:${SH}:flags=area,format=gray`, '-f', 'rawvideo', '-'],
+  [
+    '-loglevel',
+    'error',
+    '-f',
+    'mjpeg',
+    '-i',
+    mjpeg,
+    '-vf',
+    `scale=${SW}:${SH}:flags=area,format=gray`,
+    '-f',
+    'rawvideo',
+    '-',
+  ],
   { maxBuffer: 1 << 28 },
 )
 const clipSig = []
-for (let i = 0; i < N; i += 1) clipSig.push(raw.subarray(i * SW * SH, (i + 1) * SW * SH))
+for (let i = 0; i < N; i += 1)
+  clipSig.push(raw.subarray(i * SW * SH, (i + 1) * SW * SH))
 
 // --- run --------------------------------------------------------------------
 const browser = await chromium.launch({
@@ -82,13 +170,21 @@ const browser = await chromium.launch({
 })
 const context = await browser.newContext({
   viewport: { width: vw, height: vh },
-  ...(record ? { recordVideo: { dir: path.join(outDir, 'video'), size: { width: vw, height: vh } } } : {}),
+  ...(record
+    ? {
+        recordVideo: {
+          dir: path.join(outDir, 'video'),
+          size: { width: vw, height: vh },
+        },
+      }
+    : {}),
 })
 const page = await context.newPage()
 const logs = []
 page.on('pageerror', (e) => logs.push(`pageerror: ${e.message}`))
 page.on('console', (m) => {
-  if (m.type() === 'warning' || m.type() === 'error') logs.push(`${m.type()}: ${m.text()}`)
+  if (m.type() === 'warning' || m.type() === 'error')
+    logs.push(`${m.type()}: ${m.text()}`)
 })
 // Portrait clips: a phone held upright returns 1080×1920 for the app's
 // 1920×1080 ideal; Chromium's fake camera would centre-crop to a square.
@@ -105,13 +201,18 @@ if (gt.H > gt.W)
   })
 await page.addInitScript(() => {
   window.__probe = []
-  window.__astarProbe = (e) => window.__probe.push({ ...e, wall: performance.now() })
+  window.__astarProbe = (e) =>
+    window.__probe.push({ ...e, wall: performance.now() })
 })
 await page.goto(`${url.replace(/\/$/, '')}/book${query ? `?${query}` : ''}`)
 await page.waitForLoadState('networkidle').catch(() => {})
 const pre = await page.evaluate(() => window.__astarBook.preload())
 await page.getByRole('button', { name: '撮影を始める' }).click()
-await page.waitForFunction(() => (document.querySelector('video')?.readyState ?? 0) >= 2, null, { timeout: 30000 })
+await page.waitForFunction(
+  () => (document.querySelector('video')?.readyState ?? 0) >= 2,
+  null,
+  { timeout: 30000 },
+)
 const wStream = await page.evaluate(() => performance.now())
 
 // Screenshots of the moments the PR shows: ✓ with a number, red, 撮影済み.
@@ -122,7 +223,10 @@ let seen = 0
 for (;;) {
   const now = (await page.evaluate(() => performance.now())) - wStream
   if (now >= endMs) break
-  const evs = await page.evaluate((from) => window.__probe.slice(from).filter((e) => e.type !== 'frame'), seen)
+  const evs = await page.evaluate(
+    (from) => window.__probe.slice(from).filter((e) => e.type !== 'frame'),
+    seen,
+  )
   seen = await page.evaluate(() => window.__probe.length)
   for (const e of evs) {
     let kind = null
@@ -131,7 +235,10 @@ for (;;) {
     else if (e.type === 'hold' && e.verdict === 'dup') kind = 'dup'
     else if (e.type === 'sweep') kind = 'sweep'
     if (kind && shots.filter((s) => s.kind === kind).length < 3) {
-      const p = path.join(outDir, `shot-${String(shots.length).padStart(2, '0')}-${kind}.png`)
+      const p = path.join(
+        outDir,
+        `shot-${String(shots.length).padStart(2, '0')}-${kind}.png`,
+      )
       await page.screenshot({ path: p })
       shots.push({ kind, path: p, t: now })
       shotKinds.add(kind)
@@ -147,13 +254,20 @@ const firstRow = page.locator('.list__row').first()
 if (await firstRow.count()) {
   await firstRow.click()
   await page.waitForTimeout(400)
-  await page.screenshot({ path: path.join(outDir, 'list-preview.png'), fullPage: true })
+  await page.screenshot({
+    path: path.join(outDir, 'list-preview.png'),
+    fullPage: true,
+  })
 }
 const probe = await page.evaluate(() => window.__probe)
 const kept = await page.evaluate(() => window.__astarBook.pages())
 for (const p of kept) {
   const data = await page.evaluate((id) => window.__astarBook.image(id), p.id)
-  if (data) fs.writeFileSync(path.join(outDir, 'pages', `${p.id}.jpg`), Buffer.from(data.split(',')[1], 'base64'))
+  if (data)
+    fs.writeFileSync(
+      path.join(outDir, 'pages', `${p.id}.jpg`),
+      Buffer.from(data.split(',')[1], 'base64'),
+    )
 }
 const videoPath = record ? await page.video()?.path() : null
 await context.close()
@@ -193,7 +307,8 @@ const wallAt = (pos) => wStream + ((pos - offset) / fps) * 1000
 /** Clip frame shown by the processed frame nearest before `wall`. */
 const posOfWall = (wall) => {
   let best = null
-  for (const f of frames) if (f.wall <= wall + 1 && (!best || f.wall > best.wall)) best = f
+  for (const f of frames)
+    if (f.wall <= wall + 1 && (!best || f.wall > best.wall)) best = f
   return best ? best.pos : posAt(wall)
 }
 
@@ -222,7 +337,8 @@ function clip(subject, clipPoly) {
   for (let i = 0; i < clipPoly.length; i += 1) {
     const a = clipPoly[i]
     const b = clipPoly[(i + 1) % clipPoly.length]
-    const inside = (p) => sign * ((b.x - a.x) * (p.y - a.y) - (b.y - a.y) * (p.x - a.x)) >= 0
+    const inside = (p) =>
+      sign * ((b.x - a.x) * (p.y - a.y) - (b.y - a.y) * (p.x - a.x)) >= 0
     const inter = (p, q) => {
       const a1 = b.y - a.y
       const b1 = a.x - b.x
@@ -256,7 +372,9 @@ const cover = (q, target) => {
 const cornerErr = (q, target) => {
   const a = pts(q)
   const b = pts(target)
-  return a.reduce((s, p, i) => s + Math.hypot(p.x - b[i].x, p.y - b[i].y), 0) / 4
+  return (
+    a.reduce((s, p, i) => s + Math.hypot(p.x - b[i].x, p.y - b[i].y), 0) / 4
+  )
 }
 const dist = (a, b) => Math.hypot(pt(a).x - pt(b).x, pt(a).y - pt(b).y)
 
@@ -264,21 +382,30 @@ const dist = (a, b) => Math.hypot(pt(a).x - pt(b).x, pt(a).y - pt(b).y)
 const firstFrame = frames[0]
 const sx = firstFrame ? gt.W / firstFrame.vw : 1
 const sy = firstFrame ? gt.H / firstFrame.vh : 1
-const toClip = (q) => Object.fromEntries(K.map((k) => [k, { x: pt(q[k]).x * sx, y: pt(q[k]).y * sy }]))
+const toClip = (q) =>
+  Object.fromEntries(
+    K.map((k) => [k, { x: pt(q[k]).x * sx, y: pt(q[k]).y * sy }]),
+  )
 
 // --- score ---------------------------------------------------------------
 const holds = gt.segments.filter((s) => s.phase === 'hold')
 const targets = []
 for (const seg of holds) {
   const mid = gt.frames[Math.floor((seg.start_frame + seg.end_frame) / 2)]
-  for (const p of mid.pages) if (p.target) targets.push({ page: p.page, seg })
+  for (const p of mid.pages)
+    if (p.target && !targets.some((t) => t.page === p.page))
+      targets.push({ page: p.page, seg })
 }
 // A target page with no hold was skipped on purpose (single-land-white p37):
 // it can only be red (shown missing) or silent.
-const skippedPages = (gt.target_pages ?? []).filter((n) => !targets.some((t) => t.page === n))
+const skippedPages = (gt.target_pages ?? []).filter(
+  (n) => !targets.some((t) => t.page === n),
+)
 for (const n of skippedPages) targets.push({ page: n, seg: null })
 const captures = probe.filter((e) => e.type === 'capture')
-const numbers = new Map(probe.filter((e) => e.type === 'number').map((e) => [e.sheetId, e]))
+const numbers = new Map(
+  probe.filter((e) => e.type === 'number').map((e) => [e.sheetId, e]),
+)
 const alerts = probe.filter((e) => e.type === 'alert')
 const keptIds = new Set(kept.map((p) => p.sheetId))
 
@@ -288,7 +415,8 @@ const capRows = []
 for (const c of captures) {
   const pos = posOfWall(c.t)
   const fr = gt.frames[((pos % N) + N) % N]
-  const seg = holds.find((s) => pos >= s.start_frame && pos < s.end_frame) ?? null
+  const seg =
+    holds.find((s) => pos >= s.start_frame && pos < s.end_frame) ?? null
   const num = numbers.get(c.sheetId)
   const row = {
     sheetId: c.sheetId,
@@ -306,16 +434,33 @@ for (const c of captures) {
     let best = null
     for (const g of fr.pages) {
       const cv = cover(q, g.corners)
-      if (!best || cv > best.cover) best = { page: g.page, cover: cv, err: cornerErr(q, g.corners), target: g.target }
+      if (!best || cv > best.cover)
+        best = {
+          page: g.page,
+          cover: cv,
+          err: cornerErr(q, g.corners),
+          target: g.target,
+        }
     }
     row.pages.push({ id: p.id, side: p.side, ...best })
-    if (best && best.cover >= COVER_PAGE && fr.phase === 'hold' && !checkAt.has(best.page)) checkAt.set(best.page, c.t)
+    if (
+      best &&
+      best.cover >= COVER_PAGE &&
+      fr.phase === 'hold' &&
+      !checkAt.has(best.page)
+    )
+      checkAt.set(best.page, c.t)
   }
   if (c.spread && fr.pages.length >= 2) {
     const L = fr.pages.find((g) => g.side === 'left')
     const R = fr.pages.find((g) => g.side === 'right')
     if (L && R) {
-      const whole = { tl: L.corners.tl, tr: R.corners.tr, br: R.corners.br, bl: L.corners.bl }
+      const whole = {
+        tl: L.corners.tl,
+        tr: R.corners.tr,
+        br: R.corners.br,
+        bl: L.corners.bl,
+      }
       row.spreadErr = cornerErr(toClip(c.quad), whole)
       const left = c.pages.find((p) => p.side === 'L')
       if (left) {
@@ -331,12 +476,19 @@ const readOf = new Map()
 for (const r of capRows) {
   r.pages.forEach((p, i) => {
     if (!p || p.cover < COVER_PAGE) return
-    const n = r.numbers.length === r.pages.length ? r.numbers[i] : r.pages.length === 1 ? r.numbers[0] : undefined
+    const n =
+      r.numbers.length === r.pages.length
+        ? r.numbers[i]
+        : r.pages.length === 1
+          ? r.numbers[0]
+          : undefined
     if (!readOf.has(p.page)) readOf.set(p.page, n ?? null)
   })
 }
 const redPages = new Map() // page -> first alert wall
-for (const a of alerts) for (let n = a.from; n <= a.to; n += 1) if (!redPages.has(n)) redPages.set(n, a.t)
+for (const a of alerts)
+  for (let n = a.from; n <= a.to; n += a.step ?? 1)
+    if (!redPages.has(n)) redPages.set(n, a.t)
 let falseRed = 0
 const falseRedPages = []
 for (const [n, t] of redPages) {
@@ -356,14 +508,22 @@ for (const [n, t] of redPages) {
 for (const t of targets) {
   const ck = checkAt.has(t.page)
   const red = !ck && redPages.has(t.page)
-  pageRows.push({ page: t.page, state: ck ? 'check' : red ? 'red' : 'silent', read: readOf.get(t.page) })
+  pageRows.push({
+    page: t.page,
+    state: ck ? 'check' : red ? 'red' : 'silent',
+    read: readOf.get(t.page),
+  })
 }
 const count = (s) => pageRows.filter((r) => r.state === s).length
 const readRows = pageRows.filter((r) => r.state === 'check')
 const right = readRows.filter((r) => r.read === r.page).length
-const wrong = readRows.filter((r) => r.read !== null && r.read !== undefined && r.read !== r.page).length
+const wrong = readRows.filter(
+  (r) => r.read !== null && r.read !== undefined && r.read !== r.page,
+).length
 const median = (a) => {
-  const v = a.filter((x) => typeof x === 'number' && Number.isFinite(x)).sort((x, y) => x - y)
+  const v = a
+    .filter((x) => typeof x === 'number' && Number.isFinite(x))
+    .sort((x, y) => x - y)
   return v.length ? v[Math.floor(v.length / 2)] : null
 }
 const max = (a) => {
@@ -372,8 +532,13 @@ const max = (a) => {
 }
 const evalFrames = frames.filter((f) => f.pos >= 0 && f.pos < N)
 const fpsMeasured =
-  evalFrames.length > 1 ? (evalFrames.length - 1) / ((evalFrames.at(-1).wall - evalFrames[0].wall) / 1000) : 0
-const pageErrs = capRows.flatMap((r) => r.pages.filter((p) => p && p.cover >= 0.5).map((p) => p.err))
+  evalFrames.length > 1
+    ? (evalFrames.length - 1) /
+      ((evalFrames.at(-1).wall - evalFrames[0].wall) / 1000)
+    : 0
+const pageErrs = capRows.flatMap((r) =>
+  r.pages.filter((p) => p && p.cover >= 0.5).map((p) => p.err),
+)
 const gutterErrs = capRows.flatMap((r) => r.gutterErr ?? [])
 const flats = probe.filter((e) => e.type === 'flatten')
 const summary = {
@@ -388,13 +553,19 @@ const summary = {
   captures: captures.length,
   capturesInTurn: capRows.filter((r) => r.phase !== 'hold').length,
   duplicates: (() => {
-    const ps = capRows.filter((r) => r.kept).flatMap((r) => r.pages.filter((p) => p && p.cover >= COVER_PAGE).map((p) => p.page))
+    const ps = capRows
+      .filter((r) => r.kept)
+      .flatMap((r) =>
+        r.pages.filter((p) => p && p.cover >= COVER_PAGE).map((p) => p.page),
+      )
     return ps.length - new Set(ps).size
   })(),
   numbersRight: right,
   numbersWrong: wrong,
   numbersUnread: readRows.length - right - wrong,
-  wrongPages: readRows.filter((r) => r.read !== null && r.read !== undefined && r.read !== r.page).map((r) => `${r.page}→${r.read}`),
+  wrongPages: readRows
+    .filter((r) => r.read !== null && r.read !== undefined && r.read !== r.page)
+    .map((r) => `${r.page}→${r.read}`),
   alerts: alerts.map((a) => `${a.from}-${a.to}`),
   falseRed,
   falseRedPages,
@@ -410,13 +581,20 @@ const summary = {
   numberSMedian: median(capRows.map((r) => r.numberS)),
   numberSMax: max(capRows.map((r) => r.numberS)),
   flattened: `${flats.filter((f) => f.ok).length}/${flats.length}`,
-  numberReadMs: median(probe.filter((e) => e.type === 'numberLines').map((e) => e.ms)),
+  numberReadMs: median(
+    probe.filter((e) => e.type === 'numberLines').map((e) => e.ms),
+  ),
   logs: [...new Set(logs)].slice(0, 10),
   video: videoPath,
 }
 fs.writeFileSync(
   path.join(outDir, 'probe.json'),
-  JSON.stringify(probe.map((e) => (e.type === 'frame' ? { ...e, sig: undefined } : e))),
+  JSON.stringify(
+    probe.map((e) => (e.type === 'frame' ? { ...e, sig: undefined } : e)),
+  ),
 )
-fs.writeFileSync(path.join(outDir, 'result.json'), JSON.stringify({ summary, pageRows, capRows, shots }, null, 2))
+fs.writeFileSync(
+  path.join(outDir, 'result.json'),
+  JSON.stringify({ summary, pageRows, capRows, shots }, null, 2),
+)
 console.log(JSON.stringify(summary, null, 1))

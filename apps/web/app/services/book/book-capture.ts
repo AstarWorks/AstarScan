@@ -71,11 +71,11 @@ export const SWEEP_MS = 400
 /** Corners are compared with the frame this long ago. */
 const STILL_WINDOW_MS = 250
 /** Corner movement allowed while "still" (share of the frame's diagonal). */
-const STILL_CORNER = 0.03
+const STILL_CORNER = 0.04
 /** Mean grey change of the 32×24 view allowed while still (0..255). */
 const STILL_VIEW = 9
 /** ...and below this the picture is still whatever the corners do. */
-const STILL_VIEW_CALM = 3.5
+const STILL_VIEW_CALM = 4.5
 /** The view drifted this far from the one taken: maybe a new page, judge again. */
 const TURNED_VIEW = 14
 /** The frame must cover this share of the picture to be a page. */
@@ -454,7 +454,7 @@ export class BookCapture {
     // are not movement; Android CaptureActivity does the same), compared
     // with the same median STILL_WINDOW_MS ago.
     this.#raw.push(q)
-    if (this.#raw.length > 3) this.#raw.shift()
+    if (this.#raw.length > 5) this.#raw.shift()
     const mq = medianQuad(this.#raw)
     this.state.quad = mq
     this.#history.push({ t: now, quad: mq })
@@ -1059,7 +1059,13 @@ export class BookCapture {
     } catch {
       /* unsupported */
     }
-    probe({ type: 'alert', t: performance.now(), from: g.from, to: g.to })
+    probe({
+      type: 'alert',
+      t: performance.now(),
+      from: g.from,
+      to: g.to,
+      step: g.step,
+    })
   }
 
   #removeSheet(id: string): void {
