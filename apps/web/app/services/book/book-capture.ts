@@ -911,6 +911,8 @@ export class BookCapture {
     )
     const before = this.state.coverage.gaps
     const chosen: (FolioZone | null)[] = []
+    /** Confidence of the line each page's number was read from. */
+    const confs: number[] = []
     /** Lines of a plausible size in the book's number place, per page. */
     const placed: FolioLine[][] = []
     reads.forEach((lines, i) => {
@@ -951,6 +953,7 @@ export class BookCapture {
           ? plausible.find((l) => parsePageNumberToken(l.text)?.value === n)
           : undefined
       chosen.push(line ? folioZone(line.cx, line.cy, side) : null)
+      confs.push(line?.conf ?? 0)
       const r: BookPageRead =
         n !== undefined && line
           ? {
@@ -993,6 +996,7 @@ export class BookCapture {
         sheet.pages[j] = r
         made[j]!.read = r
         chosen[j] = folioZone(line.cx, line.cy, made[j]!.side)
+        confs[j] = line.conf
         probe({
           type: 'numberFacing',
           sheetId: sheet.id,
@@ -1001,14 +1005,20 @@ export class BookCapture {
           conf: line.conf,
         })
       }
+      // Halves that do not follow each other: one is a misread. The one
+      // read with less confidence is dropped (book 3 upright spread: the
+      // left "( 314 )" read as "(4)" at 0.77 beside "315)" at 0.73 kept the
+      // 4 and inferred 5); the kept half is still only a proposal until
+      // another capture confirms it (settleBookNumbers).
       const [l, r] = sheet.pages as [BookPageRead, BookPageRead]
       if (
         l.state === 'read' &&
         r.state === 'read' &&
         r.number !== l.number! + 1
       ) {
-        sheet.pages[1] = { state: 'none' }
-        made[1]!.read = sheet.pages[1]
+        const drop = (confs[0] ?? 0) >= (confs[1] ?? 0) ? 1 : 0
+        sheet.pages[drop] = { state: 'none' }
+        made[drop]!.read = sheet.pages[drop]!
       }
       const full = completeSpread(sheet.pages)
       sheet.pages.splice(0, 2, ...full)

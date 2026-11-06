@@ -56,8 +56,9 @@ export function shotFrameQuad(
   const o = { ...SHOT_FRAME_DEFAULTS, ...opts }
   const out = {} as Record<(typeof CORNERS)[number], Point>
   CORNERS.forEach((c, k) => {
-    const best = Math.max(...spell.map((d) => d.peaks[k]))
-    let sure = spell.filter((d) => d.peaks[k] >= best - o.peakDrop)
+    const peak = (d: CornerDetection) => d.peaks[k] ?? 0
+    const best = Math.max(...spell.map(peak))
+    let sure = spell.filter((d) => peak(d) >= best - o.peakDrop)
     if (sure.length < o.minSure) sure = [...spell]
     const last = sure.slice(-o.recent)
     out[c] = {
