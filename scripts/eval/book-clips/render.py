@@ -124,6 +124,13 @@ FONTS_EXTRA = {
     'courier': ('/usr/share/fonts/X11/Type1/c0419bt_.pfb',
                 '/usr/share/fonts/X11/Type1/c0583bt_.pfb',
                 '/usr/share/fonts/X11/Type1/c0582bt_.pfb'),
+    # book 7 (book7.py): fonts-ebgaramond (an old-style serif, old-style figures), fonts-hack
+    'ebgaramond': ('/usr/share/fonts/opentype/ebgaramond/EBGaramond12-Regular.otf',
+                   '/usr/share/fonts/opentype/ebgaramond/EBGaramond12-Bold.otf',
+                   '/usr/share/fonts/opentype/ebgaramond/EBGaramond12-Italic.otf'),
+    'hack': ('/usr/share/fonts/truetype/hack/Hack-Regular.ttf',
+             '/usr/share/fonts/truetype/hack/Hack-Bold.ttf',
+             '/usr/share/fonts/truetype/hack/Hack-Italic.ttf'),
 }
 # Japanese body fonts other than IPAGothic (book 4: fonts-wqy-zenhei).
 FONTS_JA_EXTRA = {
@@ -132,6 +139,8 @@ FONTS_JA_EXTRA = {
     'ipap-gothic': '/usr/share/fonts/opentype/ipafont-gothic/ipagp.ttf',
     # book 6: IPA Mincho (a serif; fonts-ipafont-mincho)
     'ipa-mincho': '/usr/share/fonts/opentype/ipafont-mincho/ipam.ttf',
+    # book 7: Sawarabi Mincho (fonts-sawarabi-mincho), a lighter serif than IPA Mincho
+    'sawarabi-mincho': '/usr/share/fonts/truetype/sawarabi-mincho/sawarabi-mincho-medium.ttf',
 }
 
 KANJI_DIGITS = '〇一二三四五六七八九'
@@ -468,6 +477,26 @@ def desk_texture(kind, r, mm=1400, ppm=2.0):
         base = np.array([120, 100, 85], np.float32)  # BGR
         loops = cv2.GaussianBlur(r.normal(0, 1, (n, n)).astype(np.float32), (0, 0), 1.0) * 14
         img = base[None, None, :] + loops[..., None] + low(7, 5)[..., None] + r.normal(0, 3.0, (n, n, 1)).astype(np.float32)
+    elif kind == 'baize':  # book 7: green baize (card-table felt), a soft nap
+        base = np.array([55, 105, 40], np.float32)  # BGR
+        nap = cv2.GaussianBlur(r.normal(0, 1, (n, n)).astype(np.float32), (0, 0), 0.7) * 8
+        img = base[None, None, :] + nap[..., None] + low(9, 6)[..., None]
+    elif kind == 'oak':  # book 7: pale oak, wide planks along y with knots, fine grain along x
+        warp = low(6, 14.0) + low(25, 2.5)
+        t = (xx / ppm) * 1.1 + warp
+        rings = np.sin(t * 0.7) * 0.5 + 0.5
+        base = np.array([150, 190, 222], np.float32)  # BGR pale oak
+        img = base[None, None, :] * (0.86 + 0.14 * rings[..., None]) + low(13, 5)[..., None]
+        plank = (xx / ppm) % 190.0
+        img[plank < 1.5] *= 0.6
+        knot = np.exp(-(((xx - n * 0.3) ** 2 + (yy - n * 0.6) ** 2) / (ppm * 18) ** 2))
+        img *= (1 - 0.35 * knot)[..., None]
+        img += r.normal(0, 2.5, (n, n, 1)).astype(np.float32)
+    elif kind == 'tiles':  # book 7: white ceramic tiles (150 mm) with grey grout lines
+        base = np.array([228, 226, 222], np.float32)  # BGR, slightly warm white
+        img = base[None, None, :] + low(5, 4)[..., None] + r.normal(0, 2.0, (n, n, 1)).astype(np.float32)
+        grout = (((xx / ppm) % 150.0) < 3.0) | (((yy / ppm) % 150.0) < 3.0)
+        img[grout] = np.array([150, 150, 148], np.float32)
     elif kind == 'rust':  # book 4: rust-red felt desk pad
         base = np.array([45, 70, 150], np.float32)  # BGR
         fuzz = cv2.GaussianBlur(r.normal(0, 1, (n, n)).astype(np.float32), (0, 0), 0.8) * 9
