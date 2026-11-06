@@ -87,6 +87,8 @@ apps/web/public/fonts/*.ttf
 # Screen recording of the book-clip check (5 MB, PR evidence).
 !docs/images/book-eval/*.mp4
 !scripts/eval/book-clips/framed/*.mp4
+!scripts/eval/book-clips/book2/*.mp4
+!scripts/eval/book-clips/book2-framed/*.mp4
 
 # Tauri
 src-tauri/target/
