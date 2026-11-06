@@ -70,6 +70,8 @@ scripts/dataset/doc-corners-dataset.*
 # DocAligner ONNX models (legacy failed experiment, kept locally for
 # reference but never tracked).
 apps/web/public/models/docaligner-*.onnx
+apps/web/public/models/docaligner-LICENSE.txt
+apps/web/public/models/ppocr-*
 
 # OpenCV.js (7.6MB — downloaded via scripts)
 apps/web/public/opencv.js

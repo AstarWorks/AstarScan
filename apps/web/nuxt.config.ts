@@ -54,6 +54,17 @@ export default defineNuxtConfig({
     preset: 'static',
   },
 
+  // Same cross-origin isolation as public/_headers (production), for
+  // `nuxt dev`: threaded WASM for onnxruntime-web needs SharedArrayBuffer.
+  routeRules: {
+    '/**': {
+      headers: {
+        'Cross-Origin-Opener-Policy': 'same-origin',
+        'Cross-Origin-Embedder-Policy': 'require-corp',
+      },
+    },
+  },
+
   typescript: {
     strict: true,
     typeCheck: false,

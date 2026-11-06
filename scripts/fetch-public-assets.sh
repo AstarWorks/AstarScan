@@ -8,6 +8,11 @@
 #   /opencv.js   scripts/download-opencv.sh (node_modules @techstark/opencv-js,
 #                CDN fallback). Without it "カメラで撮影" fails with
 #                "OpenCV.js の読み込みに失敗しました".
+#   /models/docaligner-lcnet100.onnx  page-corner model of the book capture
+#                screen (scripts/android/fetch-docaligner.sh, 4.8 MB, the
+#                same model the Android capture screen runs).
+#   /models/ppocr-rec.onnx, ppocr-keys.txt  page-number reader of the book
+#                capture screen (scripts/fetch-folio-model.sh, 10.8 MB).
 #   /ort/*       scripts/copy-ort-assets.mjs (onnxruntime-web WASM runtime
 #                from node_modules). apps/web's `prebuild` also runs it; it
 #                is run here too so the files exist even if the prebuild
@@ -30,6 +35,8 @@ cd "$(dirname "$0")/.."
 
 bash scripts/download-opencv.sh
 bun scripts/copy-ort-assets.mjs
+bash scripts/android/fetch-docaligner.sh apps/web/public/models
+bash scripts/fetch-folio-model.sh apps/web/public/models
 
 if [ "${FETCH_OCR_MODELS:-0}" = 1 ]; then
   bash scripts/download-ocr-models.sh
@@ -41,7 +48,10 @@ for f in \
   apps/web/public/ort/ort-wasm-simd-threaded.jsep.mjs \
   apps/web/public/ort/ort-wasm-simd-threaded.jsep.wasm \
   apps/web/public/ort/ort-wasm-simd-threaded.mjs \
-  apps/web/public/ort/ort-wasm-simd-threaded.wasm; do
+  apps/web/public/ort/ort-wasm-simd-threaded.wasm \
+  apps/web/public/models/docaligner-lcnet100.onnx \
+  apps/web/public/models/ppocr-rec.onnx \
+  apps/web/public/models/ppocr-keys.txt; do
   if [ ! -s "$f" ]; then
     echo "✗ missing: $f" >&2
     missing=1

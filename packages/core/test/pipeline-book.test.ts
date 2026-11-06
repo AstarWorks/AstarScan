@@ -219,3 +219,34 @@ describe('splitSpreadQuad', () => {
     expect(t.tl.x).toBeGreaterThan(quad.tl.x)
   })
 })
+
+describe('fitPageEdges (PageFlatten.kt edge fit)', () => {
+  it('finds a page whose top and bottom edges bow outward', async () => {
+    const { flattenGeometry, fitPageEdges, curveAt } =
+      await import('../src/pipeline/page-flatten.js')
+    const g = flattenGeometry(400, 560, 0.05)
+    const bow = 12 // px at the middle
+    const top = (u: number) => g.my - bow * 4 * u * (1 - u)
+    const bottom = (u: number) => g.my + g.oh + bow * 4 * u * (1 - u)
+    const lum = new Uint8Array(g.ew * g.eh)
+    for (let y = 0; y < g.eh; y++)
+      for (let x = 0; x < g.ew; x++) {
+        const u = (x - g.mx) / g.ow
+        lum[y * g.ew + x] = y >= top(u) && y <= bottom(u) ? 210 : 60
+      }
+    const r = fitPageEdges(lum, g, false)
+    expect(r.why).toBe('')
+    expect(r.edges).not.toBeNull()
+    expect(Math.abs(curveAt(r.edges!.top, 0.5) - top(0.5))).toBeLessThan(5)
+    expect(Math.abs(curveAt(r.edges!.bottom, 0.5) - bottom(0.5))).toBeLessThan(5)
+    expect(r.edges!.topBow).toBeGreaterThan(0.015)
+  })
+
+  it('gives up on a picture without paper edges', async () => {
+    const { flattenGeometry, fitPageEdges } =
+      await import('../src/pipeline/page-flatten.js')
+    const g = flattenGeometry(400, 560, 0.05)
+    const flat = new Uint8Array(g.ew * g.eh).fill(200)
+    expect(fitPageEdges(flat, g, false).edges).toBeNull()
+  })
+})
