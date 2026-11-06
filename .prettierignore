@@ -40,3 +40,6 @@ docs/ux/ideal-capture.html
 
 # Saved app output (Markdown save of the book capture, kept verbatim)
 docs/book3-eval/*.md
+
+# Saved app output (book 4 Markdown save, kept verbatim)
+docs/book4-eval/*.md
