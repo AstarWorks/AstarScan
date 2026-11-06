@@ -76,6 +76,17 @@ const STILL_CORNER = 0.04
 const STILL_VIEW = 9
 /** ...and below this the picture is still whatever the corners do. */
 const STILL_VIEW_CALM = 4.5
+/**
+ * A frame where the corner model loses the paper (weakest corner under
+ * MIN_PEAK) keeps the stillness when it comes within this long of the last
+ * frame that found it and the picture has not changed since by more than
+ * a still frame may change (≤ STILL_VIEW): a blink of the model, not a turn. Android keeps it over
+ * one analysed frame without the paper (CaptureActivity NULL_RESET 2, ~0.7 s
+ * a frame). Without it, book 2's 96〜99 (1440×1080) lost every still spell:
+ * the weakest corner went 0.89 → 0.06 → 0.79 on a picture changing by 1–3
+ * grey levels.
+ */
+const BLINK_MS = 700
 /** The view drifted this far from the one taken: maybe a new page, judge again. */
 const TURNED_VIEW = 14
 /** The frame must cover this share of the picture to be a page. */
@@ -237,6 +248,8 @@ export class BookCapture {
   #view: Uint8ClampedArray | null = null
   #viewCanvas = canvas(32, 24)
   #stillSince = 0
+  /** Last frame the corner model found the paper on (time, 32×24 view). */
+  #lastFound: { t: number; view: Uint8ClampedArray } | null = null
   #sweepStart = 0
   /** ORB of the page held still now (computed once per still spell). */
   #holdOrb: OrbResult | null = null
@@ -453,6 +466,22 @@ export class BookCapture {
     })
 
     if (!found) {
+      const lf = this.#lastFound
+      if (
+        this.#stillSince > 0 &&
+        lf !== null &&
+        now - lf.t <= BLINK_MS &&
+        viewChange(view, lf.view) <= STILL_VIEW
+      ) {
+        // A blink: the still spell (and the green line) carries on with the
+        // frame found before; the shot itself waits for a frame that finds it.
+        probe({ type: 'blink', t: now, minPeak: det.minPeak })
+        if (this.#sweepStart > 0)
+          this.state.sweep = Math.min(1, (now - this.#sweepStart) / SWEEP_MS)
+        this.#onChange()
+        return
+      }
+      this.#lastFound = null
       this.#resetStill()
       this.state.quad = det.minPeak >= 0.1 ? q : null
       this.state.tone = this.state.quad ? 'search' : 'none'
@@ -462,6 +491,7 @@ export class BookCapture {
       return
     }
     this.state.quad = q
+    this.#lastFound = { t: now, view }
 
     // Still: corners and the picture both hold.
     const diag = Math.hypot(vw, vh)
