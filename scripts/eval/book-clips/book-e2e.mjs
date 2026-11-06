@@ -135,6 +135,40 @@ if (order) {
     '3',
     mjpeg,
   ])
+// --own-size (book 4's 1440×1920 / 1920×1440): the fake camera SCALES a
+// clip larger than the app's 1920×1080 request to that size, squeezing a
+// 3:4 / 4:3 picture (book 4's first run: 1440×1920 reached the app as
+// 1080×1920 and the corner model never found the paper; asking for the
+// clip's own size gave 1440×1440 or 1440×1080). A phone keeps the aspect.
+// The clip is scaled here, aspect kept, to fit inside the request (a clip
+// that fits — the 720×960 framed ones, 1440×1080, 1080×1440 — comes at its
+// own size); the ground truth is mapped by the size the app got.
+if (args.includes('--own-size')) {
+  const [fw, fh] = gt.H > gt.W ? [1080, 1920] : [1920, 1080]
+  const k = Math.min(1, fw / gt.W, fh / gt.H)
+  if (k < 1) {
+    const w = Math.round((gt.W * k) / 2) * 2
+    const h = Math.round((gt.H * k) / 2) * 2
+    const tmp = `${mjpeg}.scaled`
+    execFileSync('ffmpeg', [
+      '-y',
+      '-loglevel',
+      'error',
+      '-f',
+      'mjpeg',
+      '-i',
+      mjpeg,
+      '-vf',
+      `scale=${w}:${h}:flags=area`,
+      '-q:v',
+      '3',
+      '-f',
+      'mjpeg',
+      tmp,
+    ])
+    fs.renameSync(tmp, mjpeg)
+  }
+}
 const N = gt.frames.length
 const clipS = N / fps
 const SW = 32
@@ -238,8 +272,11 @@ for (;;) {
     // A read dropped for not fitting the page order (scan-core
     // numbersFitOrder): the screen a moment later, with its banner.
     else if (e.type === 'numberOutOfOrder') kind = 'outoforder'
+    // A spread's read held back as unsure (scan-core settleBookNumbers).
+    else if (e.type === 'numberUnsure') kind = 'unsure'
     if (kind && shots.filter((s) => s.kind === kind).length < 3) {
-      if (kind === 'outoforder') await page.waitForTimeout(250)
+      if (kind === 'outoforder' || kind === 'unsure')
+        await page.waitForTimeout(250)
       const p = path.join(
         outDir,
         `shot-${String(shots.length).padStart(2, '0')}-${kind}.png`,
@@ -255,6 +292,25 @@ await page.evaluate(() => window.__astarBook.finish())
 // Let the last pages finish their numbers and flattening.
 await page.waitForTimeout(2500)
 await page.screenshot({ path: path.join(outDir, 'list.png'), fullPage: true })
+// --save pdf,md: press the list's save buttons and keep what they download
+// (saved.pdf / saved.md), as a person would. The Markdown save reads every
+// page with NDLOCR (scripts/download-ocr-models.sh must have fetched the
+// models into apps/web/public/models/ocr): minutes, not seconds.
+const saveKinds = (opt('--save', '') || '').split(',').filter(Boolean)
+for (const kind of saveKinds) {
+  const label = kind === 'pdf' ? /PDF 保存/ : /Markdown 保存/
+  const t0 = Date.now()
+  const [dl] = await Promise.all([
+    page.waitForEvent('download', { timeout: 15 * 60 * 1000 }),
+    page.getByRole('button', { name: label }).click(),
+  ])
+  await dl.saveAs(path.join(outDir, `saved.${kind}`))
+  console.error(`saved.${kind} in ${((Date.now() - t0) / 1000).toFixed(0)} s`)
+  await page.screenshot({
+    path: path.join(outDir, `list-after-${kind}.png`),
+    fullPage: true,
+  })
+}
 const firstRow = page.locator('.list__row').first()
 if (await firstRow.count()) {
   await firstRow.click()
@@ -408,20 +464,36 @@ const skippedPages = (gt.target_pages ?? []).filter(
 )
 for (const n of skippedPages) targets.push({ page: n, seg: null })
 const captures = probe.filter((e) => e.type === 'capture')
-const numbers = new Map(
-  probe.filter((e) => e.type === 'number').map((e) => [e.sheetId, e]),
-)
-// A read the screen took back once the pages after it were read (scan-core
-// numbersFitOrder: the first spread 314・315 read as 324・325, out of order
-// after 316〜319): the page ends unread; the number was shown for a while.
-const retracted = []
-for (const e of probe.filter((x) => x.type === 'numberOutOfOrder')) {
-  const n = numbers.get(e.sheetId)
-  if (n && n.numbers.length > 0 && e.wall >= n.wall) {
-    retracted.push({ sheetId: e.sheetId, numbers: n.numbers })
-    numbers.set(e.sheetId, { ...n, numbers: [] })
+// What the screen finally shows for each capture's number, in time order:
+// `number` shows it (again: `late`, a held spread a later capture made
+// sure of); `numberOutOfOrder` / `numberUnsure` (scan-core
+// settleBookNumbers) take it back — e.g. the first spread 314・315 read as
+// 324・325, out of order after 316〜319: the page ends unread; the number
+// was shown for a while (retracted).
+const numbers = new Map()
+const shownOnce = new Map()
+for (const e of probe) {
+  if (e.type === 'number') {
+    const prev = numbers.get(e.sheetId)
+    // The first number event carries the time from the shot; a late one
+    // replaces it only when it shows a number.
+    if (!prev || e.numbers.length > 0) numbers.set(e.sheetId, e)
+    if (e.numbers.length > 0) shownOnce.set(e.sheetId, e.numbers)
+  } else if (e.type === 'numberOutOfOrder' || e.type === 'numberUnsure') {
+    const n = numbers.get(e.sheetId)
+    if (n && n.numbers.length > 0 && e.wall >= n.wall)
+      numbers.set(e.sheetId, { ...n, numbers: [] })
   }
 }
+const retracted = [...shownOnce]
+  .filter(([id]) => (numbers.get(id)?.numbers.length ?? 0) === 0)
+  .map(([sheetId, nums]) => ({ sheetId, numbers: nums }))
+const heldBack = probe
+  .filter((e) => e.type === 'numberUnsure')
+  .map((e) => ({ sheetId: e.sheetId, numbers: e.numbers, px: e.px }))
+const shownLate = probe
+  .filter((e) => e.type === 'number' && e.late)
+  .map((e) => ({ sheetId: e.sheetId, numbers: e.numbers }))
 const alerts = probe.filter((e) => e.type === 'alert')
 const keptIds = new Set(kept.map((p) => p.sheetId))
 
@@ -585,6 +657,9 @@ const summary = {
   numbersRight: right,
   numbersWrong: wrong,
   numbersRetracted: retracted,
+  numbersHeldBack: heldBack,
+  numbersShownLate: shownLate,
+  turnDrifts: probe.filter((e) => e.type === 'drift').length,
   numbersUnread: readRows.length - right - wrong,
   wrongPages: readRows
     .filter((r) => r.read !== null && r.read !== undefined && r.read !== r.page)

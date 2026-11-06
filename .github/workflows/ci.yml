@@ -315,8 +315,14 @@ jobs:
     name: Android emulator check (capture screen, book clips on the camera)
     needs: android
     if: github.event_name == 'push'
-    runs-on: ubuntu-latest
-    timeout-minutes: 200
+    # Pinned: ubuntu-latest moved to 26.04 (run 42300357620 spent the whole
+    # 10 minutes of the apt limit downloading ffmpeg's packages and never
+    # reached the emulator; 42287531434's python3-opencv had no FFmpeg).
+    runs-on: ubuntu-24.04
+    # One run reads to the end: the camera step has 25 minutes, the stills
+    # 25, the emulator 80 (book 3's 23 holds took 42; a book is 20–30
+    # holds), the scoring 10. The job's limit is their sum and a little.
+    timeout-minutes: 150
     permissions:
       contents: write
     env:
@@ -327,6 +333,19 @@ jobs:
       # only at 1920x1440 and the preview stays black, so 1280x960 stays.
       FEED_SIZE: 1280x960
       FEED_LOG: /tmp/feed.log
+      # Which book the camera plays: the five clips of book 1 by default.
+      # An eval branch of another book sets these (book 4: book4-framed,
+      # BOOK_PLAN "book4-single-dash book4-spread-ja-43", BOOK_LAST and
+      # BOOK_STILLS_SEQ "book4-spread-inner 0 1 3 4 5" (62・63 skipped),
+      # STILLS_BOOK book4, FEED_FIRST book4-single-dash, STILLS_CLIPS the
+      # three clip names); emulator-check.sh and stills.py read them.
+      BOOK_CLIPS_REL: scripts/eval/book-clips/framed
+      BOOK_PLAN: ''
+      BOOK_LAST: ''
+      BOOK_STILLS_SEQ: ''
+      STILLS_BOOK: ''
+      STILLS_CLIPS: ''
+      FEED_FIRST: spread-land-wood
 
     steps:
       - uses: actions/checkout@v4
@@ -348,27 +367,77 @@ jobs:
 
       # The emulator's back camera is a v4l2loopback webcam that plays the
       # book clips (scripts/eval/book-clips) — see camera-feed.py.
+      # Run 42271420796 sat in this step for 45 minutes without a line of
+      # output (every command's output went to /dev/null) until the run was
+      # cancelled; cv2 was missing afterwards, so it never got past apt. Each
+      # command now has a time limit, says what it is doing and keeps its
+      # output, and the step itself stops after 20 minutes.
       - name: Virtual webcam (v4l2loopback) playing the book clips
         id: cam
+        timeout-minutes: 25
+        env:
+          DEBIAN_FRONTEND: noninteractive
+          NEEDRESTART_MODE: l
         run: |
           set -uo pipefail
-          sudo apt-get update -qq
-          sudo apt-get install -y -qq ffmpeg python3-opencv python3-numpy v4l-utils >/dev/null
+          # apt waits at most 2 minutes for the dpkg lock (unattended
+          # upgrades on a fresh runner) and 30 s per stalled download; a
+          # whole install may take 15 minutes (a slow mirror: run
+          # 42300357620 was still fetching ffmpeg's packages at 10).
+          APT="sudo -E timeout 900 apt-get -o DPkg::Lock::Timeout=120 -o Acquire::Retries=3 -o Acquire::http::Timeout=30 -o Dpkg::Use-Pty=0"
+          step() { echo "::group::$(date -u +%T) $1"; }
+          # Run 42300357620: the download of ffmpeg's 60-odd packages from the
+          # Azure mirror stalled after 30 of them and the whole 600 s went by
+          # (the run before took 12 s). Each install gets 4 minutes and three
+          # tries; a killed apt leaves dpkg half-configured, so it is tidied
+          # before the next try.
+          install_retry() {
+            for n in 1 2 3; do
+              step "apt-get install $* (try $n)"
+              if sudo timeout 240 apt-get -o DPkg::Lock::Timeout=120 -o Acquire::Retries=3 -o Acquire::http::Timeout=30 -o Dpkg::Use-Pty=0 \
+                   install -y -q --no-install-recommends "$@" > /tmp/apt-install.log 2>&1; then
+                tail -n 5 /tmp/apt-install.log; echo '::endgroup::'; return 0
+              fi
+              echo "try $n failed or timed out (rc $?)"; tail -n 20 /tmp/apt-install.log; echo '::endgroup::'
+              sudo timeout 120 dpkg --configure -a || true
+            done
+            return 1
+          }
+          step 'apt-get update'
+          $APT update -q || { echo "::error::apt-get update failed or timed out (rc $?)"; exit 1; }
+          echo '::endgroup::'
+          install_retry ffmpeg v4l-utils || { echo "::error::apt-get install ffmpeg v4l-utils failed three times"; exit 1; }
+          # OpenCV from pip (it carries its own FFmpeg): ubuntu-26.04's
+          # python3-opencv has no FFmpeg video backend, so VideoCapture fell
+          # to GStreamer, read the clip path as a pipeline ("no element
+          # scripts") and camera-feed.py got 0 frames (run 42287531434).
+          step 'pip install opencv-python-headless numpy'
+          sudo -H timeout 600 python3 -m pip install --quiet --break-system-packages opencv-python-headless numpy \
+            || { echo "::error::pip install opencv-python-headless failed or timed out"; exit 1; }
+          clip=$(ls "${BOOK_CLIPS_REL:-scripts/eval/book-clips/framed}"/*.mp4 | head -n 1)
+          python3 -I -c 'import cv2, sys; c = cv2.VideoCapture(sys.argv[1]); ok = c.read()[0]; print("cv2", cv2.__version__, "reads", sys.argv[1], ok); sys.exit(0 if ok else 1)' "$clip" \
+            || { echo "::error::OpenCV cannot decode the book clips"; exit 1; }
+          echo '::endgroup::'
           # udev would reset the node to root:video 0660 after a plain chmod.
           echo 'KERNEL=="video[0-9]*", MODE="0666"' | sudo tee /etc/udev/rules.d/99-video4all.rules
           sudo udevadm control --reload-rules
-          if ! sudo modprobe v4l2loopback devices=1 video_nr=0 card_label=BookCam exclusive_caps=1 2>/dev/null; then
-            sudo apt-get install -y -qq "linux-modules-extra-$(uname -r)" >/dev/null 2>&1 || true
-            sudo modprobe v4l2loopback devices=1 video_nr=0 card_label=BookCam exclusive_caps=1 2>/dev/null || {
-              sudo apt-get install -y -qq v4l2loopback-dkms "linux-headers-$(uname -r)" >/dev/null
-              sudo modprobe v4l2loopback devices=1 video_nr=0 card_label=BookCam exclusive_caps=1
-            }
+          load() { sudo timeout 60 modprobe v4l2loopback devices=1 video_nr=0 card_label=BookCam exclusive_caps=1; }
+          step 'modprobe v4l2loopback'
+          if ! load; then
+            step "apt-get install linux-modules-extra-$(uname -r)"
+            $APT install -y -q "linux-modules-extra-$(uname -r)" | tail -n 20 || true
+            if ! load; then
+              step 'apt-get install v4l2loopback-dkms (module build)'
+              $APT install -y -q v4l2loopback-dkms "linux-headers-$(uname -r)" | tail -n 40
+              load || { echo "::error::v4l2loopback could not be loaded"; exit 1; }
+            fi
           fi
-          sudo udevadm settle
+          echo '::endgroup::'
+          timeout 60 sudo udevadm settle
           sudo chmod 666 /dev/video0
           ls -l /dev/video*
           lsmod | grep v4l2loopback
-          nohup python3 -I scripts/android/camera-feed.py scripts/eval/book-clips/framed \
+          nohup python3 -I scripts/android/camera-feed.py "$BOOK_CLIPS_REL" --first "$FEED_FIRST" \
             /tmp/feed.control /tmp/feed.status --size "$FEED_SIZE" --log "$FEED_LOG" >/tmp/camera-feed.log 2>&1 &
           for _ in $(seq 60); do [ -s /tmp/feed.status ] && break; sleep 2; done
           cat /tmp/camera-feed.log
@@ -382,14 +451,26 @@ jobs:
       # 960x1280 leaves a spread's folio ~6 px tall.
       - name: Phone-resolution stills of the book clips
         continue-on-error: true
+        timeout-minutes: 25
+        env:
+          DEBIAN_FRONTEND: noninteractive
         run: |
           set -euo pipefail
-          sudo apt-get install -y -qq fonts-liberation fonts-ipafont-gothic python3-pil >/dev/null
-          python3 -I scripts/eval/book-clips/stills.py /tmp/stills --jobs 3 | grep -v ' / ' | tail -n 50
+          sudo -E timeout 600 apt-get -o DPkg::Lock::Timeout=120 -o Acquire::http::Timeout=30 install -y -q \
+            fonts-liberation fonts-ipafont-gothic fonts-dejavu-core fonts-crosextra-caladea fonts-crosextra-carlito \
+            fonts-freefont-ttf fonts-inter xfonts-scalable fonts-wqy-zenhei fonts-jetbrains-mono fonts-ipafont-mincho \
+            fonts-tlwg-loma-otf fonts-ebgaramond fonts-hack fonts-sawarabi-mincho \
+            python3-pil | tail -n 5
+          # shellcheck disable=SC2086
+          python3 -I scripts/eval/book-clips/stills.py /tmp/stills $STILLS_CLIPS --jobs 3 | grep -v ' / ' | tail -n 50
           ls -la /tmp/stills | head -n 5
           du -sh /tmp/stills
+          # Book 6's run 42308619390 lost its stills session to a missing font
+          # (stills.py died, the pipe above stayed green): no stills, no step.
+          test -s /tmp/stills/stills.json
 
       - name: Run the app on a Google Play emulator
+        timeout-minutes: 80
         uses: reactivecircus/android-emulator-runner@v2
         env:
           FEED_CONTROL: /tmp/feed.control
@@ -405,20 +486,22 @@ jobs:
           cores: 4
           disable-animations: true
           emulator-options: -no-window -gpu swiftshader_indirect -noaudio -no-boot-anim -camera-back webcam0 -camera-front emulated
-          script: bash scripts/android/emulator-check.sh AstarScan-android.apk emulator-out
+          script: BOOK_CLIPS="$PWD/$BOOK_CLIPS_REL" bash scripts/android/emulator-check.sh AstarScan-android.apk emulator-out
 
       - name: Score the run (what the screen said per page, corner error, numbers)
         if: always()
+        timeout-minutes: 10
         run: |
           [ -d emulator-out ] || exit 0
           cp /tmp/camera-feed.log emulator-out/ 2>/dev/null || true
           [ -s emulator-out/feed.log ] || cp "$FEED_LOG" emulator-out/feed.log 2>/dev/null || true
-          python3 -I scripts/android/book-measure.py emulator-out scripts/eval/book-clips/framed --size "$FEED_SIZE" | tee -a "$GITHUB_STEP_SUMMARY"
+          python3 -I scripts/android/book-measure.py emulator-out "$BOOK_CLIPS_REL" --size "$FEED_SIZE" | tee -a "$GITHUB_STEP_SUMMARY"
 
       # The detector comparison behind the capture screen's choice, on the
       # same clips as the camera sees them (corner-compare.py).
       - name: Page-frame detectors on the book clips (OpenCV vs DocAligner)
         if: always()
+        timeout-minutes: 15
         run: |
           set -uo pipefail
           mkdir -p emulator-out
@@ -432,7 +515,7 @@ jobs:
             echo
             echo "### Page-frame detectors on the book clips (clip px; camera window as the phone sees it)"
             echo
-            python3 -I scripts/eval/book-clips/corner-compare.py scripts/eval/book-clips/framed \
+            python3 -I scripts/eval/book-clips/corner-compare.py "$BOOK_CLIPS_REL" \
               --size "$FEED_SIZE" --docaligner /tmp/docaligner/docaligner-lcnet100.onnx --json emulator-out/corner-compare.json
           } | tee emulator-out/corner-compare.md | tee -a "$GITHUB_STEP_SUMMARY"
 

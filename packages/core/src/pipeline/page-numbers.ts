@@ -85,23 +85,47 @@ export function parsePageNumberToken(text: string): PageNumberToken | null {
     return null
   }
 
-  let m = /^(?:p\.?|P\.?)?(\d{1,4})$/.exec(core)
-  if (!m) m = /^第?(\d{1,4})(?:頁|ページ)$/.exec(core)
+  // A label word before the digits: "p. 5", "P58", "Page 58" and, as the
+  // reader gives it as often as not, "Page58" (book 4, Inter: 9–10 px
+  // "Page 61" / "Page 66" / "Page 67" came back joined, at 0.97–0.99, and
+  // none was taken as a number), "pg. 12", "S. 12" (Seite). The word
+  // alone, or an unknown one ("ge69", "Fig3"), is not a page number.
+  let m = /^(?:p|pp|pg|page|seite|fol|folio)?\.?(\d{1,4})$/i.exec(core)
+  if (!m) m = /^s\.(\d{1,4})$/i.exec(core)
+  // The page word after the digits: "124頁", "第7頁", "12ページ" — and as
+  // the Chinese PP-OCR model writes it: "124页" (simplified), or a
+  // look-alike of 頁 (book 4's Japanese book: every page came back as 页,
+  // one as "125真", at 0.9+ confidence, and no page got its number).
+  if (!m)
+    m = /^第?(\d{1,4})(?:頁|页|真|貢|頂|ページ|[ぺペ][ー一-]ジ)$/.exec(core)
   if (m) {
     const v = Number(m[1])
     return valid(v) ? { value: v, kind: 'arabic' } : null
   }
 
-  const kanji = /^第?([〇零一二三四五六七八九十百千]{1,6})(?:頁|ページ)?$/.exec(
-    core,
-  )
+  // Kanji numerals: "一二三" (positional), "百二十三", "第十頁". With 第 and
+  // no page word it is an article or chapter number cut short (book 4:
+  // 「第十七条」 at the top of the body read as "第十", taken as page 10).
+  const kanji =
+    /^(第?)([〇零一二三四五六七八九十百千]{1,6})(頁|页|ページ)?$/.exec(core)
   if (kanji) {
-    const v = kanjiToNumber(kanji[1]!)
+    if (kanji[1] && !kanji[3]) return null
+    const v = kanjiToNumber(kanji[2]!)
     return v !== null && valid(v) ? { value: v, kind: 'kanji' } : null
   }
 
   // Running head with the number at one end: "12 契約の成立" / "契約の成立 12".
-  const edge = /^(\d{1,4})\s+\S/.exec(raw) ?? /\S\s+(\d{1,4})$/.exec(raw)
+  // The reader drops the space as often as not (book 6, "202  LOG OF THE
+  // HARBOUR SURVEY" came back as "202LOGOFTHE HARBOUR SURVEY" and
+  // "LOGOFTHE HARBOUR SURVEY205", at 0.92–0.97, and no spread got its
+  // number): digits joined to a run of four or more letters at the line's
+  // start or end are the same reading. Shorter runs are left alone — "3rd",
+  // "10th", "12pt", "100ml" are words of the body, not a head's number.
+  const edge =
+    /^(\d{1,4})\s+\S/.exec(raw) ??
+    /\S\s+(\d{1,4})$/.exec(raw) ??
+    /^(\d{1,4})\p{L}{4,}/u.exec(raw) ??
+    /\p{L}{4,}(\d{1,4})$/u.exec(raw)
   if (edge) {
     const v = Number(edge[1])
     return valid(v) ? { value: v, kind: 'edge' } : null
@@ -148,21 +172,49 @@ export function pickPageNumbers(
   cands.sort((a, b) => b.score - a.score)
   const best = cands[0]!
 
-  // Spread: a strong number on the other half, same band, ±1 apart.
+  // Spread: a number on the other half, same band, ±1 apart. A strong
+  // number (arabic / kanji) pairs with any such number; two running-head
+  // numbers pair with each other only when both are heads (a book whose
+  // folio sits on the head's line, book 6: "202  TITLE" / "TITLE  203" —
+  // two heads ±1 apart on facing pages are its page numbers, since the
+  // heads themselves read the same on both pages), never a head with a
+  // body-text line (those are not candidates: the band keeps them out).
+  const strong = best.score >= KIND_SCORE.kanji
   const other = cands.find(
     (c) =>
-      c.score >= KIND_SCORE.kanji &&
+      (strong ? c.score >= KIND_SCORE.kanji : true) &&
       c.top === best.top &&
       c.cx < 0.5 !== best.cx < 0.5 &&
       Math.abs(c.value - best.value) === 1,
   )
-  if (best.score >= KIND_SCORE.kanji && other) {
+  if (other) {
     return [
       Math.min(best.value, other.value),
       Math.max(best.value, other.value),
     ]
   }
   return [best.value]
+}
+
+/**
+ * The number of a spread's unread half, when one of its lines reads as
+ * exactly the facing page's number ± 1 (left = right − 1). The caller
+ * passes the lines it would otherwise not trust (read with less confidence
+ * than it asks of a number on its own): a read that happens to be the one
+ * number the facing page predicts is not a chance misread — book 2's 52
+ * was read at 0.68 beside a sure 53 and dropped, leaving the spread unsure
+ * and 50・51's red unsaid. Undefined when no line reads so.
+ */
+export function facingHalfNumber(
+  lines: readonly { readonly text: string }[],
+  facing: number,
+  side: 'L' | 'R',
+): number | undefined {
+  const want = side === 'L' ? facing - 1 : facing + 1
+  if (!valid(want)) return undefined
+  return lines.some((l) => parsePageNumberToken(l.text)?.value === want)
+    ? want
+    : undefined
 }
 
 export type PageNumberState = 'ok' | 'duplicate' | 'unread' | 'outOfOrder'

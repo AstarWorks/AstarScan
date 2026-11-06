@@ -91,6 +91,12 @@ apps/web/public/fonts/*.ttf
 !scripts/eval/book-clips/book2-framed/*.mp4
 !scripts/eval/book-clips/book3/*.mp4
 !scripts/eval/book-clips/book3-framed/*.mp4
+!scripts/eval/book-clips/book4/*.mp4
+!scripts/eval/book-clips/book4-framed/*.mp4
+!scripts/eval/book-clips/book5/*.mp4
+!scripts/eval/book-clips/book5-framed/*.mp4
+!scripts/eval/book-clips/book6/*.mp4
+!scripts/eval/book-clips/book6-framed/*.mp4
 
 # Tauri
 src-tauri/target/

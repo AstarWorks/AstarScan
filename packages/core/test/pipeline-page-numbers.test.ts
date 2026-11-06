@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import {
   checkPageSequence,
+  facingHalfNumber,
   kanjiToNumber,
   parsePageNumberToken,
   pickPageNumbers,
@@ -44,11 +45,76 @@ describe('parsePageNumberToken', () => {
     expect(parsePageNumberToken('十一')).toEqual({ value: 11, kind: 'kanji' })
   })
 
+  it('reads a label word before the digits, joined or not (book 4 "Page 58")', () => {
+    expect(parsePageNumberToken('Page 58')).toEqual({
+      value: 58,
+      kind: 'arabic',
+    })
+    expect(parsePageNumberToken('Page58')).toEqual({
+      value: 58,
+      kind: 'arabic',
+    })
+    expect(parsePageNumberToken('pg. 12')).toEqual({
+      value: 12,
+      kind: 'arabic',
+    })
+    expect(parsePageNumberToken('P58')).toEqual({ value: 58, kind: 'arabic' })
+    expect(parsePageNumberToken('S. 12')).toEqual({ value: 12, kind: 'arabic' })
+    // An unknown word, or the word alone, is not a page number.
+    expect(parsePageNumberToken('ge69')).toBeNull()
+    expect(parsePageNumberToken('Fig3')).toBeNull()
+    expect(parsePageNumberToken('Page')).toBeNull()
+  })
+
+  it('reads the page word as the Chinese OCR model writes it (book 4 "124页")', () => {
+    expect(parsePageNumberToken('124頁')).toEqual({
+      value: 124,
+      kind: 'arabic',
+    })
+    expect(parsePageNumberToken('124页')).toEqual({
+      value: 124,
+      kind: 'arabic',
+    })
+    expect(parsePageNumberToken('125真')).toEqual({
+      value: 125,
+      kind: 'arabic',
+    })
+    expect(parsePageNumberToken('12ページ')).toEqual({
+      value: 12,
+      kind: 'arabic',
+    })
+    expect(parsePageNumberToken('12ペ一ジ')).toEqual({
+      value: 12,
+      kind: 'arabic',
+    })
+  })
+
+  it('a kanji numeral with 第 but no page word is an article number, not a page', () => {
+    expect(parsePageNumberToken('第十')).toBeNull()
+    expect(parsePageNumberToken('第十頁')).toEqual({ value: 10, kind: 'kanji' })
+    expect(parsePageNumberToken('十')).toEqual({ value: 10, kind: 'kanji' })
+  })
+
   it('reads a number at the end of a running head', () => {
     expect(parsePageNumberToken('契約の成立 45')).toEqual({
       value: 45,
       kind: 'edge',
     })
+  })
+
+  it('reads the head number joined to the head (book 6 "202LOGOFTHE …")', () => {
+    expect(parsePageNumberToken('202LOGOFTHE HARBOUR SURVEY')).toEqual({
+      value: 202,
+      kind: 'edge',
+    })
+    expect(parsePageNumberToken('LOGOFTHE HARBOUR SURVEY205')).toEqual({
+      value: 205,
+      kind: 'edge',
+    })
+    // Words of the body with a short letter run are not a head's number.
+    expect(parsePageNumberToken('3rd')).toBeNull()
+    expect(parsePageNumberToken('10th')).toBeNull()
+    expect(parsePageNumberToken('100ml')).toBeNull()
   })
 
   it('rejects body text, chapter numbers and zero', () => {
@@ -80,6 +146,34 @@ describe('pickPageNumbers', () => {
         { text: '25', cx: 0.9, cy: 0.96 },
       ]),
     ).toEqual([24, 25])
+  })
+
+  it('pairs two running-head numbers of a spread (book 6 "202  TITLE")', () => {
+    expect(
+      pickPageNumbers([
+        { text: '202LOGOFTHE HARBOUR SURVEY', cx: 0.3, cy: 0.05 },
+        { text: 'LOG OF THE HARBOUR SURVEY 203', cx: 0.7, cy: 0.05 },
+      ]),
+    ).toEqual([202, 203])
+    // Two heads 2 apart (a chapter number on both pages) do not pair.
+    expect(
+      pickPageNumbers([
+        { text: 'CHAPTER 12', cx: 0.3, cy: 0.05 },
+        { text: 'CHAPTER 14', cx: 0.7, cy: 0.05 },
+      ]),
+    ).toEqual([12])
+  })
+})
+
+describe('facingHalfNumber', () => {
+  it('takes the one number the facing page predicts, nothing else', () => {
+    // Book 2: 52 read with low confidence beside a sure 53.
+    expect(facingHalfNumber([{ text: '52' }, { text: 'RR' }], 53, 'L')).toBe(52)
+    expect(facingHalfNumber([{ text: '54' }], 53, 'R')).toBe(54)
+    expect(facingHalfNumber([{ text: '51' }, { text: '5' }], 53, 'L')).toBe(
+      undefined,
+    )
+    expect(facingHalfNumber([{ text: '0' }], 1, 'L')).toBe(undefined)
   })
 })
 

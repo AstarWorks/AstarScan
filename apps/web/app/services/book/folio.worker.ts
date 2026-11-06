@@ -17,6 +17,7 @@
  */
 
 import * as ort from 'onnxruntime-web/wasm'
+import { folioZone, type FolioZone } from '@astarworks/scan-core/pipeline'
 
 const MODEL_URL = '/models/ppocr-rec.onnx'
 const KEYS_URL = '/models/ppocr-keys.txt'
@@ -27,6 +28,25 @@ const MAX_W = 640
 const BAND = 0.12
 /** Width the page is read at. */
 const PAGE_W = 1000
+/**
+ * Ink is this much darker than the paper round it. The paper's level is
+ * taken per cell of a grid (INK_CELL of the page's height a side, its 70th
+ * percentile from dark, interpolated between cell centres), so the
+ * threshold follows the glare, the gutter's shade and the hand's shadow.
+ * Before, ink was 28 % darker than one level for the whole band: thin
+ * print 8–10 px tall is blurred to a lighter grey than the body, and book
+ * 4's "Page 64" (Inter, under glare) bottomed out at 73 % of the paper —
+ * not one of its pixels counted, the number was never a candidate. The
+ * body text on the same page reached 55 %; paper noise and show-through
+ * stay within 5 %.
+ */
+const INK_DARKER = 0.15
+const INK_CELL = 0.05
+/**
+ * A cell darker than this share of the band's level is not paper (a thumb,
+ * the desk beyond the page's edge): it takes the band's level instead.
+ */
+const INK_NOT_PAPER = 0.6
 
 export interface FolioLine {
   text: string
@@ -40,7 +60,21 @@ export interface FolioLine {
 
 export type FolioIn =
   | { type: 'init' }
-  | { type: 'read'; id: number; page: ImageBitmap }
+  | {
+      type: 'read'
+      id: number
+      page: ImageBitmap
+      /**
+       * Where this book prints its numbers, once learned (scan-core
+       * `learnedFolioZone`), and which page this is: lines there are read
+       * first. Only a few lines are read per page (time), and the running
+       * head's fragments — short and as near the edge — can fill them
+       * before the number (book 2's top-outer "217" behind six pieces of
+       * "NOTES ON THE WHALE FISHERY").
+       */
+      zone?: FolioZone
+      side?: 'L' | 'R' | 'S'
+    }
 
 export type FolioOut =
   | { type: 'ready'; threads: number; ms: number }
@@ -101,11 +135,77 @@ interface Box {
   y1: number
 }
 
+/** Grey level under which 70 % of `n` counted pixels lie. */
+function percentile70(hist: Uint32Array, n: number): number {
+  let acc = 0
+  for (let v = 0; v < 256; v++) {
+    acc += hist[v]!
+    if (acc >= n * 0.7) return v
+  }
+  return 255
+}
+
+/**
+ * Ink mask of rows [y0, y1) of the page: pixels INK_DARKER darker than the
+ * paper's level round them (per cell, interpolated; see INK_DARKER).
+ */
+function inkMask(
+  g: Uint8ClampedArray,
+  w: number,
+  h: number,
+  y0: number,
+  y1: number,
+): Uint8Array {
+  const bh = y1 - y0
+  const bandHist = new Uint32Array(256)
+  for (let i = y0 * w; i < y1 * w; i++) bandHist[g[i]!]!++
+  const bandPaper = percentile70(bandHist, bh * w)
+  const cell = Math.max(16, Math.round(h * INK_CELL))
+  const cols = Math.max(1, Math.ceil(w / cell))
+  const rows = Math.max(1, Math.ceil(bh / cell))
+  const level = new Float32Array(cols * rows)
+  const hist = new Uint32Array(256)
+  for (let r = 0; r < rows; r++)
+    for (let c = 0; c < cols; c++) {
+      hist.fill(0)
+      let n = 0
+      const yEnd = Math.min(bh, (r + 1) * cell)
+      const xEnd = Math.min(w, (c + 1) * cell)
+      for (let y = r * cell; y < yEnd; y++)
+        for (let x = c * cell; x < xEnd; x++) {
+          hist[g[(y + y0) * w + x]!]!++
+          n++
+        }
+      const p = percentile70(hist, n)
+      level[r * cols + c] = p < INK_NOT_PAPER * bandPaper ? bandPaper : p
+    }
+  const ink = new Uint8Array(w * bh)
+  for (let y = 0; y < bh; y++) {
+    const fy = Math.min(rows - 1, Math.max(0, (y + 0.5) / cell - 0.5))
+    const r0 = Math.floor(fy)
+    const r1 = Math.min(rows - 1, r0 + 1)
+    const ty = fy - r0
+    for (let x = 0; x < w; x++) {
+      const fx = Math.min(cols - 1, Math.max(0, (x + 0.5) / cell - 0.5))
+      const c0 = Math.floor(fx)
+      const c1 = Math.min(cols - 1, c0 + 1)
+      const tx = fx - c0
+      const paper =
+        (level[r0 * cols + c0]! * (1 - tx) + level[r0 * cols + c1]! * tx) *
+          (1 - ty) +
+        (level[r1 * cols + c0]! * (1 - tx) + level[r1 * cols + c1]! * tx) * ty
+      if (g[(y + y0) * w + x]! < paper * (1 - INK_DARKER)) ink[y * w + x] = 1
+    }
+  }
+  return ink
+}
+
 /**
  * Lines of isolated print in rows [y0, y1) of the page. Ink: darker than
- * 0.72 × the band's paper. Characters are the ink's connected components
- * (8-neighbour) of a plausible size and neutral colour; characters side by
- * side (overlapping rows, gap under ~0.9 × their height) form a line.
+ * the paper round it (inkMask). Characters are the ink's connected
+ * components (8-neighbour) of a plausible size and neutral colour;
+ * characters side by side (overlapping rows, gap under ~0.9 × their
+ * height) form a line.
  */
 function lineBoxes(
   g: Uint8ClampedArray,
@@ -116,27 +216,16 @@ function lineBoxes(
   y1: number,
 ): Box[] {
   const bh = y1 - y0
-  const hist = new Uint32Array(256)
-  for (let i = y0 * w; i < y1 * w; i++) hist[g[i]!]!++
-  let acc = 0
-  let paper = 255
-  for (let v = 0; v < 256; v++) {
-    acc += hist[v]!
-    if (acc >= bh * w * 0.7) {
-      paper = v
-      break
-    }
-  }
-  const thr = paper * 0.72
+  const ink = inkMask(g, w, h, y0, y1)
   // Colour of the paper (its pixels' median saturation): under warm or
   // cool light the print takes the paper's tint, so skin (a thumb) is
   // told from print by being much more coloured than the paper, not by a
   // fixed saturation (another-book check: warm light put print at 45–55).
   const satHist = new Uint32Array(256)
   let paperPx = 0
-  for (let i = y0 * w; i < y1 * w; i++)
-    if (g[i]! >= thr) {
-      satHist[sat[i]!]!++
+  for (let i = 0; i < w * bh; i++)
+    if (!ink[i]) {
+      satHist[sat[i + y0 * w]!]!++
       paperPx++
     }
   let paperSat = 0
@@ -153,7 +242,7 @@ function lineBoxes(
   const stack: number[] = []
   const chars: (Box & { n: number })[] = []
   for (let i = 0; i < w * bh; i++) {
-    if (label[i]! >= 0 || g[i + y0 * w]! >= thr) continue
+    if (label[i]! >= 0 || !ink[i]) continue
     let x0 = w
     let x1 = 0
     let yy0 = bh
@@ -178,7 +267,7 @@ function lineBoxes(
           const ny = y + dy
           if (nx < 0 || ny < 0 || nx >= w || ny >= bh) continue
           const k = ny * w + nx
-          if (label[k]! < 0 && g[k + y0 * w]! < thr) {
+          if (label[k]! < 0 && ink[k]) {
             label[k] = 1
             stack.push(k)
           }
@@ -219,6 +308,8 @@ function candidates(
   sat: Uint8ClampedArray,
   w: number,
   h: number,
+  zone?: FolioZone,
+  side: 'L' | 'R' | 'S' = 'S',
 ): Box[] {
   const band = Math.round(h * BAND)
   const all = [
@@ -228,11 +319,19 @@ function candidates(
   const ok = all.filter(
     (b) => b.x1 - b.x0 + 1 <= w * 0.5 && b.y1 - b.y0 + 1 >= h * 0.006,
   )
-  // Short lines (a number alone) first, then nearest the page edge; a
+  // Lines where this book prints its numbers first (once that is known),
+  // then short lines (a number alone), then nearest the page edge; a
   // running head with the number at its end comes after them.
+  const inZone = (b: Box) =>
+    zone &&
+    folioZone((b.x0 + b.x1 + 1) / 2 / w, (b.y0 + b.y1 + 1) / 2 / h, side) ===
+      zone
+      ? 0
+      : 1
   const short = (b: Box) => (b.x1 - b.x0 + 1 <= w * 0.15 ? 0 : 1)
   ok.sort(
     (a, b) =>
+      inZone(a) - inZone(b) ||
       short(a) - short(b) ||
       Math.min(a.y0, h - a.y1) - Math.min(b.y0, h - b.y1),
   )
@@ -296,7 +395,12 @@ function decode(t: ort.Tensor): { text: string; conf: number } {
   return { text, conf: n ? sum / n : 0 }
 }
 
-async function read(id: number, page: ImageBitmap): Promise<void> {
+async function read(
+  id: number,
+  page: ImageBitmap,
+  zone?: FolioZone,
+  side?: 'L' | 'R' | 'S',
+): Promise<void> {
   const t0 = performance.now()
   if (!session) throw new Error('not ready')
   const w = PAGE_W
@@ -315,7 +419,7 @@ async function read(id: number, page: ImageBitmap): Promise<void> {
     g[i] = (r * 299 + gg * 587 + b * 114) / 1000
     sat[i] = Math.max(r, gg, b) - Math.min(r, gg, b)
   }
-  const boxes = candidates(g, sat, w, h)
+  const boxes = candidates(g, sat, w, h, zone, side)
   const work = new OffscreenCanvas(16, IN_H)
   const lines: FolioLine[] = []
   for (const b of boxes) {
@@ -348,7 +452,7 @@ self.onmessage = (e: MessageEvent<FolioIn>) => {
       post({ type: 'error', message: String(err) }),
     )
   else if (m.type === 'read')
-    read(m.id, m.page).catch((err: unknown) =>
+    read(m.id, m.page, m.zone, m.side).catch((err: unknown) =>
       post({ type: 'error', id: m.id, message: String(err) }),
     )
 }

@@ -4,6 +4,7 @@ import {
   newGaps,
   numbersFitOrder,
   pageRangeLabel,
+  settleBookNumbers,
   sheetWithNumbers,
   type BookPageRead,
   type BookSheet,
@@ -17,6 +18,9 @@ import {
   trimQuadSides,
   unitToQuad,
 } from '../src/pipeline/gutter.js'
+import { paperViewChange, paperViewMask } from '../src/pipeline/turn-watch.js'
+import { shotFrameQuad } from '../src/pipeline/shot-frame.js'
+import { completeHiddenCorner } from '../src/pipeline/hidden-corner.js'
 
 const read = (n: number): BookPageRead => ({ state: 'read', number: n })
 const none: BookPageRead = { state: 'none' }
@@ -195,6 +199,54 @@ describe('bookCoverage (the mock ideal-capture.html flow)', () => {
     expect(numbersFitOrder([wrong, ...right], right[0]!.id)).toBe(true)
   })
 
+  it('two misreads that follow each other do not take out the right first page (book 1: 31, "3", 35, …, "4")', () => {
+    // Book 1 single-land-white at 720×960: "— 33 —" read as 3 and "— 47 —"
+    // as 4 confirm each other (3, 4); judged together with 31 they
+    // overtook it and all three were dropped at once. The two misreads are
+    // below the pages taken before them and go first; 31 then stands.
+    const s = [31, 3, 35, 39, 41, 43, 45, 4, 49].map((n) => sheet(read(n)))
+    const v = settleBookNumbers(s)
+    expect(v.get(s[0]!.id)).toBe('ok')
+    expect(v.get(s[1]!.id)).toBe('order')
+    expect(v.get(s[7]!.id)).toBe('order')
+    expect(v.get(s[8]!.id)).toBe('ok')
+  })
+
+  it('two spreads 2 apart do not follow each other (book 3 upright: 322・323 read "321・322" after 318・319)', () => {
+    const small = (n: number): BookPageRead => ({
+      state: 'read',
+      number: n,
+      px: 6,
+    })
+    const inferred = (n: number): BookPageRead => ({
+      state: 'read',
+      number: n,
+      inferred: true,
+    })
+    const tall = (n: number): BookPageRead => ({
+      state: 'read',
+      number: n,
+      px: 12,
+    })
+    // Held at 6 px either way; a tall 318・319 would confirm "321・322"
+    // under the 1–2 rule, and may not.
+    const s = [
+      sheet(tall(318), tall(319)),
+      sheet(none, none),
+      sheet(inferred(321), small(322)),
+    ]
+    expect(settleBookNumbers(s).get(s[2]!.id)).toBe('unsure')
+    // Single pages one side only still follow 2 apart (31, 33 confirm each
+    // other: 35 is red after 37), and a single page beside a spread either
+    // way.
+    const singles = [31, 33, 37, 39].map((n) => sheet(read(n)))
+    expect(bookCoverage(singles).gaps).toEqual([{ from: 35, to: 35, step: 2 }])
+    const mixed = [sheet(tall(34), tall(35)), sheet(tall(37))]
+    const v = settleBookNumbers(mixed)
+    expect(v.get(mixed[0]!.id)).toBe('ok')
+    expect(bookCoverage(mixed).gaps).toEqual([])
+  })
+
   it('skipping a spread and going back fits (holds 0,1,2,4,3,5,6)', () => {
     const order = [44, 46, 48, 52, 50, 54, 56].map((n) =>
       sheet(read(n), read(n + 1)),
@@ -209,6 +261,188 @@ describe('bookCoverage (the mock ideal-capture.html flow)', () => {
     expect(
       bookCoverage([sheet(read(4), read(5)), sheet(read(94), read(95))]).gaps,
     ).toEqual([])
+  })
+
+  it('a spread nothing makes sure of is not taken as read (settleBookNumbers)', () => {
+    const small = (n: number): BookPageRead => ({
+      state: 'read',
+      number: n,
+      px: 5,
+    })
+    const tall = (n: number): BookPageRead => ({
+      state: 'read',
+      number: n,
+      px: 12,
+    })
+    const inferred = (n: number): BookPageRead => ({
+      state: 'read',
+      number: n,
+      inferred: true,
+    })
+    // Book 3 720×960: 318・319 read as 328・329 (left half alone, 5 px),
+    // the other spreads unread.
+    const b3 = [
+      sheet(none, none),
+      sheet(none, none),
+      sheet(small(328), inferred(329)),
+      sheet(none, none),
+    ]
+    expect(settleBookNumbers(b3).get(b3[2]!.id)).toBe('unsure')
+    // Book 1: 4・5 read as 1・2 (right half "第二", left inferred).
+    const b1 = [sheet(none, none), sheet(inferred(1), small(2))]
+    expect(settleBookNumbers(b1).get(b1[1]!.id)).toBe('unsure')
+    // Both halves read at 5 px and following each other: still unsure.
+    const b2 = [sheet(small(8), small(9))]
+    expect(settleBookNumbers(b2).get(b2[0]!.id)).toBe('unsure')
+    // Both halves read tall: sure on its own (1920×1080).
+    const big = [sheet(tall(160), tall(161))]
+    expect(settleBookNumbers(big).get(big[0]!.id)).toBe('ok')
+    // One half alone at 5 px, and the next spread's at 5 px too: two small
+    // reads agreeing are not enough (book 2 720×960: 94・95 read as 98・99
+    // beside a right 96・97); a tall read on the next spread is, and so
+    // is a third capture on the middle one's other side.
+    const two = [sheet(small(96), inferred(97)), sheet(small(98), inferred(99))]
+    const v = settleBookNumbers(two)
+    expect(v.get(two[0]!.id)).toBe('unsure')
+    expect(v.get(two[1]!.id)).toBe('unsure')
+    const withTall = [sheet(small(96), inferred(97)), sheet(tall(98), tall(99))]
+    const vt = settleBookNumbers(withTall)
+    expect(vt.get(withTall[0]!.id)).toBe('ok')
+    expect(vt.get(withTall[1]!.id)).toBe('ok')
+    const three = [...two, sheet(small(100), inferred(101))]
+    expect(settleBookNumbers(three).get(three[1]!.id)).toBe('ok')
+    // The same number taken twice does not confirm itself.
+    const twice = [
+      sheet(small(328), inferred(329)),
+      sheet(small(328), inferred(329)),
+    ]
+    expect(settleBookNumbers(twice).get(twice[1]!.id)).toBe('unsure')
+    // Single pages: the order rule only.
+    const single = [sheet(small(133))]
+    expect(settleBookNumbers(single).get(single[0]!.id)).toBe('ok')
+  })
+
+  it('spreads read on different halves touch (book 4: 66・67 on the left, 68・69 on the right)', () => {
+    const t = (n: number): BookPageRead => ({
+      state: 'read',
+      number: n,
+      px: 9,
+    })
+    const inferred = (n: number): BookPageRead => ({
+      state: 'read',
+      number: n,
+      inferred: true,
+    })
+    // 1440×1920: 58・59 read on the left, 60・61 on the right, 64・65
+    // unread, 66・67 both, 68・69 on the right; 62・63 skipped.
+    const s = [
+      sheet(t(58), inferred(59)),
+      sheet(inferred(60), t(61)),
+      sheet(none, none),
+      sheet(t(66), t(67)),
+      sheet(inferred(68), t(69)),
+    ]
+    const v = settleBookNumbers(s)
+    expect([...v.values()]).toEqual(['ok', 'ok', 'ok', 'ok', 'ok'])
+    const c = bookCoverage(s)
+    // 58〜61 and 66〜69 are trusted by their neighbours; between them one
+    // unread spread covers two of the four pages, so 62〜65 stays a
+    // question until that spread is read (no red on 64・65, which was taken).
+    expect(c.gaps).toEqual([])
+    // The unread spread read: 62・63 is the gap.
+    const read = [...s]
+    read[2] = { ...s[2]!, pages: [t(64), inferred(65)] }
+    expect(bookCoverage(read).gaps).toEqual([{ from: 62, to: 63, step: 1 }])
+    // A spread read on one half, two spreads later: not a neighbour.
+    const apart = [sheet(t(66), inferred(67)), sheet(inferred(70), t(71))]
+    expect(bookCoverage(apart).gaps).toEqual([])
+    expect(settleBookNumbers(apart).get(apart[0]!.id)).toBe('unsure')
+  })
+
+  it('two small reads agreeing are not enough; a tall one or two partners are (book 2 720×960: 94・95 as 98・99)', () => {
+    const small = (n: number): BookPageRead => ({
+      state: 'read',
+      number: n,
+      px: 6,
+    })
+    const tall = (n: number): BookPageRead => ({
+      state: 'read',
+      number: n,
+      px: 12,
+    })
+    const inferred = (n: number): BookPageRead => ({
+      state: 'read',
+      number: n,
+      inferred: true,
+    })
+    // 92・93 tall, then 94・95 read "98・99" at 6 px (right half), then
+    // 96・97 read at 6 px (left half): the two small reads touch, nothing
+    // else backs them — both held, no 94・95 red.
+    const two = [
+      sheet(tall(92), tall(93)),
+      sheet(inferred(98), small(99)),
+      sheet(small(96), inferred(97)),
+    ]
+    const v = two.map((s) => settleBookNumbers(two).get(s.id))
+    expect(v).toEqual(['ok', 'unsure', 'unsure'])
+    const settled = two.map((s, i) =>
+      v[i] === 'ok' ? s : { ...s, pages: s.pages.map(() => none) },
+    )
+    expect(bookCoverage(settled).gaps).toEqual([])
+    // A tall read touching a small one makes it sure.
+    const withTall = [sheet(tall(94), tall(95)), sheet(small(96), inferred(97))]
+    expect(settleBookNumbers(withTall).get(withTall[1]!.id)).toBe('ok')
+    // Two small captures on either side of a small one make it sure.
+    const three = [
+      sheet(small(94), inferred(95)),
+      sheet(small(96), inferred(97)),
+      sheet(small(98), inferred(99)),
+    ]
+    expect(settleBookNumbers(three).get(three[1]!.id)).toBe('ok')
+  })
+
+  it('of two captures holding the same page, the one in sequence counts', () => {
+    const t = (n: number): BookPageRead => ({
+      state: 'read',
+      number: n,
+      px: 12,
+    })
+    // 92・93, then 94・95 misread as "98・99", then 96・97, then the real
+    // 98・99, then 100・101 (tall reads: every one is "sure" on its own).
+    const s = [
+      sheet(t(92), t(93)),
+      sheet(t(98), t(99)),
+      sheet(t(96), t(97)),
+      sheet(t(98), t(99)),
+      sheet(t(100), t(101)),
+    ]
+    const v = s.map((x) => settleBookNumbers(s).get(x.id))
+    expect(v).toEqual(['ok', 'unsure', 'ok', 'ok', 'ok'])
+  })
+
+  it('a spread whose left page has the wrong parity for the book is unsure', () => {
+    const t = (n: number): BookPageRead => ({
+      state: 'read',
+      number: n,
+      px: 12,
+    })
+    // Left even in this book (2・3, 4・5 confirm each other); "7・8" read
+    // tall on both halves breaks it.
+    const s = [sheet(t(2), t(3)), sheet(t(4), t(5)), sheet(t(7), t(8))]
+    const v = settleBookNumbers(s)
+    expect(v.get(s[0]!.id)).toBe('ok')
+    expect(v.get(s[2]!.id)).toBe('unsure')
+  })
+
+  it('out of order wins over sure (settleBookNumbers)', () => {
+    const t = (n: number): BookPageRead => ({
+      state: 'read',
+      number: n,
+      px: 12,
+    })
+    const s = [90, 92, 94].map((n) => sheet(t(n), t(n + 1)))
+    const low = sheet(t(88), t(89))
+    expect(settleBookNumbers([...s, low]).get(low.id)).toBe('order')
   })
 
   it('finds the sheet that already holds a page', () => {
@@ -404,5 +638,147 @@ describe('folioZone', () => {
         ]),
       ),
     ).toBe('bo')
+  })
+})
+
+describe('paperViewChange (has the page been turned?)', () => {
+  // An upright spread: the paper is the middle 40 % of a 1080×1920 view.
+  const quad = {
+    tl: { x: 40, y: 576 },
+    tr: { x: 1040, y: 576 },
+    br: { x: 1040, y: 1344 },
+    bl: { x: 40, y: 1344 },
+  }
+  it('measures the change on the paper, not on the desk', () => {
+    const mask = paperViewMask(quad, 1080, 1920)
+    expect(mask).not.toBeNull()
+    const cells = mask!.reduce((s, v) => s + v, 0)
+    expect(cells / (32 * 24)).toBeGreaterThan(0.3)
+    expect(cells / (32 * 24)).toBeLessThan(0.5)
+    // A turn changes the paper by 30 grey levels, the desk not at all.
+    const a = new Uint8ClampedArray(32 * 24).fill(100)
+    const b = a.map((v, i) => (mask![i] ? v + 30 : v))
+    expect(paperViewChange(a, b, null)).toBeLessThan(14)
+    expect(paperViewChange(a, b, mask)).toBe(30)
+  })
+  it('a frame too small for the view falls back to the whole view', () => {
+    const tiny = {
+      tl: { x: 0, y: 0 },
+      tr: { x: 30, y: 0 },
+      br: { x: 30, y: 30 },
+      bl: { x: 0, y: 30 },
+    }
+    expect(paperViewMask(tiny, 1080, 1920)).toBeNull()
+  })
+})
+
+describe('shotFrameQuad (the frame of the shot)', () => {
+  const q = (tlx: number, tly: number) => ({
+    tl: { x: tlx, y: tly },
+    tr: { x: 600, y: 80 },
+    br: { x: 650, y: 860 },
+    bl: { x: 115, y: 900 },
+  })
+  const det = (tlx: number, tly: number, tlPeak: number) => ({
+    quad: q(tlx, tly),
+    peaks: [tlPeak, 0.9, 0.9, 0.9] as [number, number, number, number],
+  })
+  it('takes each corner from the outermost place read often enough', () => {
+    // Book 3 framed single page 137: the top-left corner read at the
+    // paper's corner (71, 116) in 6 frames at peak 0.71–0.85 and a third
+    // of the way down the edge (93, 320) in 7 frames at 0.42–0.69.
+    const spell = [
+      det(71, 108, 0.82),
+      det(71, 109, 0.77),
+      det(102, 319, 0.45),
+      det(94, 325, 0.53),
+      det(93, 320, 0.67),
+      det(93, 320, 0.54),
+      det(93, 325, 0.64),
+      det(93, 325, 0.69),
+      det(71, 116, 0.71),
+      det(70, 117, 0.78),
+      det(71, 116, 0.83),
+      det(153, 318, 0.42),
+    ]
+    const s = shotFrameQuad(spell)!
+    expect(s.tl).toEqual({ x: 71, y: 116 })
+    expect(s.tr).toEqual({ x: 600, y: 80 })
+    // The same page at 1080×1920 (run12): the reading down the edge (128,
+    // 445) peaked HIGHER (0.70–0.77) than the corner's (0.58–0.73), and a
+    // lone flicker at (260, 277) peaked at 0.91. The corner is the
+    // outermost place read often enough; the flicker is not a place.
+    const own = [
+      det(260, 277, 0.91),
+      det(22, 306, 0.9),
+      det(9, 320, 0.85),
+      det(10, 321, 0.73),
+      det(128, 445, 0.77),
+      det(126, 445, 0.7),
+      det(140, 445, 0.77),
+      det(21, 324, 0.67),
+      det(9, 335, 0.68),
+      det(129, 458, 0.58),
+      det(9, 338, 0.64),
+      det(155, 460, 0.46),
+    ]
+    expect(shotFrameQuad(own)!.tl).toEqual({ x: 9, y: 324 })
+  })
+  it('follows the hand: the last sure detections, not the whole spell', () => {
+    const spell = [
+      det(60, 100, 0.8),
+      det(60, 100, 0.8),
+      det(60, 100, 0.8),
+      det(60, 100, 0.8),
+      det(60, 100, 0.8),
+      det(60, 100, 0.8),
+      det(70, 110, 0.8),
+      det(72, 112, 0.8),
+      det(74, 114, 0.8),
+      det(76, 116, 0.8),
+      det(78, 118, 0.8),
+    ]
+    expect(shotFrameQuad(spell)!.tl).toEqual({ x: 74, y: 114 })
+  })
+  it('a spell with no place read often enough takes the median of its last detections; an empty one gives null', () => {
+    expect(shotFrameQuad([det(71, 116, 0.8), det(93, 320, 0.4)])!.tl).toEqual({
+      x: 93,
+      y: 320,
+    })
+    expect(shotFrameQuad([])).toBeNull()
+  })
+})
+
+describe('completeHiddenCorner (a corner under a thumb)', () => {
+  // Book 6's framed spread (720×960), a hold-3 frame: the left thumb on the
+  // left page's bottom outer corner; tl / tr / br at 0.77–0.89, bl at 0.04
+  // and read 200 px away from the paper's corner.
+  const pts = [
+    { x: 41, y: 268 },
+    { x: 636, y: 252 },
+    { x: 658, y: 664 },
+    { x: 240, y: 470 },
+  ] as const
+  it('completes one unseen corner from the three sure ones (parallelogram)', () => {
+    const r = completeHiddenCorner(pts, [0.86, 0.89, 0.84, 0.04])!
+    expect(r.hidden).toBe(3)
+    // bl = br + tl − tr
+    expect(r.points[3]).toEqual({ x: 658 + 41 - 636, y: 664 + 268 - 252 })
+    expect(r.points[0]).toEqual(pts[0])
+    // any corner: tr = tl + br − bl
+    const t = completeHiddenCorner(pts, [0.9, 0.1, 0.9, 0.9])!
+    expect(t.hidden).toBe(1)
+    expect(t.points[1]).toEqual({ x: 41 + 658 - 240, y: 268 + 664 - 470 })
+  })
+  it('leaves a frame whose corners are all seen as it is', () => {
+    const r = completeHiddenCorner(pts, [0.9, 0.9, 0.9, 0.35])!
+    expect(r.hidden).toBeNull()
+    expect(r.points).toEqual(pts)
+  })
+  it('does not complete two unseen corners, or one beside unsure ones', () => {
+    expect(completeHiddenCorner(pts, [0.9, 0.9, 0.1, 0.2])).toBeNull()
+    // A turn / no paper: three corners seen but not plainly (0.3–0.6).
+    expect(completeHiddenCorner(pts, [0.9, 0.55, 0.9, 0.04])).toBeNull()
+    expect(completeHiddenCorner(pts, [0.9, 0.6, 0.9, 0.04])).not.toBeNull()
   })
 })

@@ -103,7 +103,43 @@ FONTS_EXTRA = {
     'liberation-sans': ('/usr/share/fonts/truetype/liberation/LiberationSans-Regular.ttf',
                         '/usr/share/fonts/truetype/liberation/LiberationSans-Bold.ttf',
                         '/usr/share/fonts/truetype/liberation/LiberationSans-Italic.ttf'),
+    # book 4 (book4.py): fonts-inter, xfonts-scalable (Bitstream Charter)
+    'inter': ('/usr/share/fonts/opentype/inter/Inter-Regular.otf',
+              '/usr/share/fonts/opentype/inter/Inter-Bold.otf',
+              '/usr/share/fonts/opentype/inter/Inter-Italic.otf'),
+    'charter': ('/usr/share/fonts/X11/Type1/c0648bt_.pfb',
+                '/usr/share/fonts/X11/Type1/c0632bt_.pfb',
+                '/usr/share/fonts/X11/Type1/c0649bt_.pfb'),
+    # book 5 (book5.py): fonts-freefont-ttf, fonts-jetbrains-mono
+    'freesans': ('/usr/share/fonts/truetype/freefont/FreeSans.ttf',
+                 '/usr/share/fonts/truetype/freefont/FreeSansBold.ttf',
+                 '/usr/share/fonts/truetype/freefont/FreeSansOblique.ttf'),
+    'jetbrains-mono': ('/usr/share/fonts/truetype/jetbrains-mono/JetBrainsMono-Regular.ttf',
+                       '/usr/share/fonts/truetype/jetbrains-mono/JetBrainsMono-Bold.ttf',
+                       '/usr/share/fonts/truetype/jetbrains-mono/JetBrainsMono-Italic.ttf'),
+    # book 6 (book6.py): fonts-tlwg-loma-otf (Loma, a humanist sans), xfonts-scalable (Courier 10 Pitch)
+    'loma': ('/usr/share/fonts/opentype/tlwg/Loma.otf',
+             '/usr/share/fonts/opentype/tlwg/Loma-Bold.otf',
+             '/usr/share/fonts/opentype/tlwg/Loma-Oblique.otf'),
+    'courier': ('/usr/share/fonts/X11/Type1/c0419bt_.pfb',
+                '/usr/share/fonts/X11/Type1/c0583bt_.pfb',
+                '/usr/share/fonts/X11/Type1/c0582bt_.pfb'),
 }
+# Japanese body fonts other than IPAGothic (book 4: fonts-wqy-zenhei).
+FONTS_JA_EXTRA = {
+    'wqy-zenhei': '/usr/share/fonts/truetype/wqy/wqy-zenhei.ttc',
+    # book 5: IPA P Gothic (proportional; fonts-ipafont-gothic ships it with ipag.ttf)
+    'ipap-gothic': '/usr/share/fonts/opentype/ipafont-gothic/ipagp.ttf',
+    # book 6: IPA Mincho (a serif; fonts-ipafont-mincho)
+    'ipa-mincho': '/usr/share/fonts/opentype/ipafont-mincho/ipam.ttf',
+}
+
+KANJI_DIGITS = '〇一二三四五六七八九'
+
+
+def kanji_folio(n):
+    """Positional kanji numeral (123 → 一二三), as some Japanese books print the folio."""
+    return ''.join(KANJI_DIGITS[int(c)] for c in str(n))
 
 # ---------------------------------------------------------------- text → page textures
 
@@ -162,9 +198,10 @@ class Typesetter:
             self.fb = ImageFont.truetype(FONT_SANS_B, s)
             self.fh = ImageFont.truetype(FONT_SANS_B, int(s * 1.35))
         elif lang == 'ja':
-            self.f = ImageFont.truetype(FONT_JA, s)
-            self.fb = ImageFont.truetype(FONT_JA, s)
-            self.fh = ImageFont.truetype(FONT_JA, int(s * 1.35))
+            fj = FONTS_JA_EXTRA.get(font, FONT_JA)
+            self.f = ImageFont.truetype(fj, s)
+            self.fb = ImageFont.truetype(fj, s)
+            self.fh = ImageFont.truetype(fj, int(s * 1.35))
         else:
             self.f = ImageFont.truetype(FONT_SERIF, s + 1)
             self.fb = ImageFont.truetype(FONT_SERIF_B, s + 1)
@@ -213,7 +250,7 @@ class Typesetter:
         return pages
 
     def draw(self, items, page_no, verso, title, seed, folio_style='default', with_folio=True,
-             paper=(246, 242, 232), folio_fmt=None, folio_no=None):
+             paper=(246, 242, 232), folio_fmt=None, folio_no=None, folio_kanji=False, rule=False):
         w, h = int(PW * PX_MM), int(PH * PX_MM)
         r = np.random.default_rng(seed)
         img = Image.new('RGB', (w, h), tuple(paper))
@@ -265,15 +302,28 @@ class Typesetter:
         hy = int(9 * PX_MM)
         head = title if verso else (title.split('；')[0].split(';')[0])
         hw = self.fs.getlength(head)
-        d.text(((w - hw) / 2, hy + (int(5 * PX_MM) if folio_style == 'top-center' else 0)), head,
-               font=self.fs, fill=(70, 66, 60))
+        hx = (w - hw) / 2
+        if folio_style == 'top-inner':  # book 4: the head at the outer side
+            hx = x0 if verso else x0 + self.tw - hw
         # folio_no: the number printed, when it is not the page's (a misprint
         # that plays a misread of the reader on the real screen).
         shown = page_no if folio_no is None else folio_no
         folio = f'— {shown} —' if self.lang == 'ja' or folio_style == 'dash-center' else str(shown)
         if folio_fmt:  # book 3: "p. 133", "( 315 )"
             folio = folio_fmt.format(shown)
+        if folio_kanji:  # book 5: 一二三 at the bottom centre of a Japanese book
+            folio = kanji_folio(shown)
         fw = self.f.getlength(folio)
+        if folio_style == 'head-outer':  # book 6: the number on the running head's line, outer end
+            gap = self.f.getlength('  ')
+            hx = x0 + fw + gap if verso else x0 + self.tw - fw - gap - hw
+            if not with_folio:
+                hx = x0 if verso else x0 + self.tw - hw
+        d.text((hx, hy + (int(5 * PX_MM) if folio_style == 'top-center' else 0)), head,
+               font=self.fs, fill=(70, 66, 60))
+        if rule:  # book 6: a thin rule under the running head, across the text width
+            ry = hy + self.lh + int(1.0 * PX_MM)
+            d.line((x0, ry, x0 + self.tw, ry), fill=(70, 66, 60), width=max(1, int(0.25 * PX_MM)))
         fy = h - int(13 * PX_MM)
         fx = (w - fw) / 2 if self.lang == 'ja' else (x0 if verso else x0 + self.tw - fw)
         if folio_style in ('dash-center', 'center'):  # bottom centre
@@ -286,6 +336,14 @@ class Typesetter:
             fx = (w - fw) / 2
         if folio_style == 'bottom-inner':  # book 3: bottom, by the gutter
             fx = x0 + self.tw - fw if verso else x0
+        if folio_style == 'top-inner':  # book 4: top, by the gutter, head moved outward
+            fy = hy
+            fx = x0 + self.tw - fw if verso else x0
+        if folio_style == 'bottom-outer':  # book 4: bottom outer corner, also in Japanese
+            fx = x0 if verso else x0 + self.tw - fw
+        if folio_style == 'head-outer':  # book 6: "77  TITLE" / "TITLE  78" on the head's line
+            fy = hy
+            fx = x0 if verso else x0 + self.tw - fw
         if with_folio:
             d.text((fx, fy), folio, font=self.f, fill=ink)
         a = np.asarray(img).astype(np.float32)[:, :, ::-1].copy()  # → BGR
@@ -309,7 +367,8 @@ def page_textures(cfg):
         out[no] = ts.draw(items, no, verso, cfg['title'], cfg['seed'] * 1000 + no,
                           cfg.get('folio', 'default'), no not in cfg.get('no_folio', ()),
                           cfg.get('paper', (246, 242, 232)), cfg.get('folio_fmt'),
-                          cfg.get('folio_as', {}).get(no))
+                          cfg.get('folio_as', {}).get(no), cfg.get('folio_kanji', False),
+                          cfg.get('rule', False))
     # show-through of the other side of the leaf (mirrored, faint)
     final = {}
     base = float(np.mean(cfg.get('paper', (246, 242, 232)))) if 'paper' in cfg else 246.0
@@ -369,6 +428,50 @@ def desk_texture(kind, r, mm=1400, ppm=2.0):
     elif kind == 'slate':  # matte grey-green desk mat
         base = np.array([96, 112, 98], np.float32)
         img = base[None, None, :] + low(9, 7)[..., None] + r.normal(0, 3.0, (n, n, 1)).astype(np.float32)
+    elif kind == 'marble':  # book 4: white-grey marble with dark veins
+        base = np.array([214, 216, 218], np.float32)
+        v = np.abs(np.sin((xx * 0.6 + yy * 0.35) / ppm * 0.08 + low(5, 2.2) + low(17, 0.5)))
+        veins = np.exp(-(v / 0.06) ** 2)
+        img = base[None, None, :] - veins[..., None] * 70 + low(7, 5)[..., None] + r.normal(0, 2.0, (n, n, 1)).astype(np.float32)
+    elif kind == 'leather':  # book 5: dark brown leather desk pad with a sheen and creases
+        base = np.array([30, 48, 78], np.float32)  # BGR
+        crease = np.abs(np.sin((xx * 0.9 - yy * 0.4) / ppm * 0.05 + low(6, 3.0)))
+        img = base[None, None, :] * (0.85 + 0.3 * np.exp(-(crease / 0.1) ** 2)[..., None]) + low(9, 6)[..., None] \
+            + r.normal(0, 2.0, (n, n, 1)).astype(np.float32)
+    elif kind == 'concrete':  # book 5: grey concrete worktop, pores and a few darker patches
+        base = np.array([150, 148, 142], np.float32)
+        pores = cv2.GaussianBlur(r.normal(0, 1, (n, n)).astype(np.float32), (0, 0), 0.6)
+        img = base[None, None, :] + (pores < -1.6)[..., None] * -45 + low(5, 9)[..., None] + low(19, 3)[..., None] \
+            + r.normal(0, 3.0, (n, n, 1)).astype(np.float32)
+    elif kind == 'tatami':  # book 5: tatami mat, yellow-green weave with a dark cloth border every 900 mm
+        base = np.array([120, 175, 185], np.float32)  # BGR
+        weave = (np.sin(yy * 1.7) * 7 + np.sin(xx * 0.25) * 3)[..., None]
+        img = base[None, None, :] + weave + low(8, 5)[..., None] + r.normal(0, 2.5, (n, n, 1)).astype(np.float32)
+        border = ((xx / ppm) % 900.0) < 30.0
+        img[border] = np.array([40, 45, 40], np.float32)
+    elif kind == 'plaid':  # book 6: red-and-white checked tablecloth (a 24 mm check)
+        cx = ((xx / ppm) % 48.0) < 24.0
+        cy_ = ((yy / ppm) % 48.0) < 24.0
+        red = np.array([60, 60, 190], np.float32)  # BGR
+        white = np.array([232, 234, 236], np.float32)
+        pink = np.array([150, 150, 215], np.float32)
+        img = np.where((cx & cy_)[..., None], red, np.where((~cx & ~cy_)[..., None], white, pink))
+        weave = (np.sin(xx * 2.0) * np.sin(yy * 2.0))[..., None] * 5
+        img = img + weave + low(8, 4)[..., None] + r.normal(0, 3.0, (n, n, 1)).astype(np.float32)
+    elif kind == 'steel':  # book 6: brushed stainless steel top, fine streaks along x, a broad sheen
+        base = np.array([172, 170, 166], np.float32)  # BGR, slightly warm grey
+        streak = cv2.resize(r.normal(0, 1, (n, 24)).astype(np.float32), (n, n), interpolation=cv2.INTER_LINEAR) * 6
+        sheen = np.sin(yy / n * 3.0 + low(4, 0.8)) * 14
+        img = base[None, None, :] + streak[..., None] + sheen[..., None] + low(9, 4)[..., None] \
+            + r.normal(0, 2.0, (n, n, 1)).astype(np.float32)
+    elif kind == 'carpet':  # book 6: blue-grey loop-pile office carpet
+        base = np.array([120, 100, 85], np.float32)  # BGR
+        loops = cv2.GaussianBlur(r.normal(0, 1, (n, n)).astype(np.float32), (0, 0), 1.0) * 14
+        img = base[None, None, :] + loops[..., None] + low(7, 5)[..., None] + r.normal(0, 3.0, (n, n, 1)).astype(np.float32)
+    elif kind == 'rust':  # book 4: rust-red felt desk pad
+        base = np.array([45, 70, 150], np.float32)  # BGR
+        fuzz = cv2.GaussianBlur(r.normal(0, 1, (n, n)).astype(np.float32), (0, 0), 0.8) * 9
+        img = base[None, None, :] + fuzz[..., None] + low(10, 7)[..., None]
     else:
         base = np.array([226, 229, 230], np.float32)
         img = base[None, None, :] + low(5, 4)[..., None] + r.normal(0, 2.5, (n, n, 1)).astype(np.float32)
