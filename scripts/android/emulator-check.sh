@@ -37,7 +37,9 @@ APK=$1
 OUT=$2
 PKG=com.astarworks.astarscan
 HERE=$(cd "$(dirname "$0")" && pwd)
-CLIPS=$HERE/../eval/book-clips/framed
+# BOOK_CLIPS / BOOK_PLAN / BOOK_LAST / BOOK_STILLS_SEQ: another set of clips
+# (book 2 of PR #11, branch book2-android-eval); unset = the five clips.
+CLIPS=${BOOK_CLIPS:-$HERE/../eval/book-clips/framed}
 FEED_CONTROL=${FEED_CONTROL:-/tmp/feed.control}
 FEED_STATUS=${FEED_STATUS:-/tmp/feed.status}
 FEED_LOG=${FEED_LOG:-/tmp/feed.log}
@@ -366,6 +368,18 @@ record_stop() {
 
 holds() { python3 -c 'import json,sys; d=json.load(open(sys.argv[1])); print(*range(sum(s["phase"]=="hold" for s in d["segments"])))' "$CLIPS/$1.gt.json"; }
 
+if [ -n "${BOOK_PLAN:-}" ]; then
+  # BOOK_PLAN: clips scanned with every hold in order (space separated);
+  # BOOK_LAST: "<clip> <holds…>" for the last, recorded clip.
+  for c in $BOOK_PLAN; do
+    # shellcheck disable=SC2046
+    scan_clip "$c" $(holds "$c")
+  done
+  record_start
+  # shellcheck disable=SC2086
+  scan_clip $BOOK_LAST
+  record_stop
+else
 # shellcheck disable=SC2046
 scan_clip spread-land-wood $(holds spread-land-wood)
 # shellcheck disable=SC2046
@@ -380,6 +394,7 @@ scan_clip single-port-wood $(holds single-port-wood)
 record_start
 scan_clip single-land-white 0 1 2 4 3 5 6 7 8 9
 record_stop
+fi
 
 # --- Save and dewarp on their own (last clip's list) -----------------------
 # One page opened from the list: the image the list holds is the
@@ -484,7 +499,7 @@ if [ -s "$STILLS/stills.json" ]; then
   # "stillseq …" lines): single-land-white without hold 3 (p37 skipped on
   # purpose, as on the live camera) — the list must have p37, and only p37,
   # red. Clips not listed: every hold in order.
-  printf 'single-land-white 0 1 2 4 5 6 7 8 9\n' >"$OUT/stills/sequence.txt"
+  printf '%s\n' "${BOOK_STILLS_SEQ:-single-land-white 0 1 2 4 5 6 7 8 9}" >"$OUT/stills/sequence.txt"
   adb push "$OUT/stills/sequence.txt" "$SDIR/" | tail -n1 | tee -a "$OUT/steps.log"
   mark=$(events_lines)
   adb shell monkey -p "$PKG" -c android.intent.category.LAUNCHER 1 >/dev/null

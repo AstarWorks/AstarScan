@@ -31,6 +31,15 @@ R = importlib.util.module_from_spec(_spec)
 _spec.loader.exec_module(R)
 
 
+# STILLS_BOOK2=1: the second untuned book (book2.py, ground truth in book2/).
+SRC = "clips"
+if os.environ.get("STILLS_BOOK2"):
+    sys.path.insert(0, HERE)
+    import book2 as _b2  # noqa: E402
+    R.CLIPS.update(_b2.BOOK2)
+    SRC = "book2"
+
+
 def size_for(cfg):
     return (4000, 3000) if cfg["mode"] == "spread" else (3000, 4000)
 
@@ -41,7 +50,7 @@ def one_clip(job):
     cfg = R.CLIPS[name]
     W, H = size_for(cfg)
     R.CLIPS[name] = dict(cfg, W=W, H=H)
-    with open(os.path.join(HERE, "clips", f"{name}.gt.json")) as f:
+    with open(os.path.join(HERE, SRC, f"{name}.gt.json")) as f:
         gt = json.load(f)
     mids = {}
     for hi, s in enumerate(s for s in gt["segments"] if s["phase"] == "hold"):
