@@ -93,6 +93,16 @@ FONTS_EXTRA = {
     'freeserif': ('/usr/share/fonts/truetype/freefont/FreeSerif.ttf',
                   '/usr/share/fonts/truetype/freefont/FreeSerifBold.ttf',
                   '/usr/share/fonts/truetype/freefont/FreeSerifItalic.ttf'),
+    # book 3 (book3.py)
+    'dejavu-serif': ('/usr/share/fonts/truetype/dejavu/DejaVuSerif.ttf',
+                     '/usr/share/fonts/truetype/dejavu/DejaVuSerif-Bold.ttf',
+                     '/usr/share/fonts/truetype/dejavu/DejaVuSerif.ttf'),  # no italic in fonts-dejavu-core
+    'liberation-mono': ('/usr/share/fonts/truetype/liberation/LiberationMono-Regular.ttf',
+                        '/usr/share/fonts/truetype/liberation/LiberationMono-Bold.ttf',
+                        '/usr/share/fonts/truetype/liberation/LiberationMono-Italic.ttf'),
+    'liberation-sans': ('/usr/share/fonts/truetype/liberation/LiberationSans-Regular.ttf',
+                        '/usr/share/fonts/truetype/liberation/LiberationSans-Bold.ttf',
+                        '/usr/share/fonts/truetype/liberation/LiberationSans-Italic.ttf'),
 }
 
 # ---------------------------------------------------------------- text → page textures
@@ -203,7 +213,7 @@ class Typesetter:
         return pages
 
     def draw(self, items, page_no, verso, title, seed, folio_style='default', with_folio=True,
-             paper=(246, 242, 232)):
+             paper=(246, 242, 232), folio_fmt=None):
         w, h = int(PW * PX_MM), int(PH * PX_MM)
         r = np.random.default_rng(seed)
         img = Image.new('RGB', (w, h), tuple(paper))
@@ -255,8 +265,11 @@ class Typesetter:
         hy = int(9 * PX_MM)
         head = title if verso else (title.split('；')[0].split(';')[0])
         hw = self.fs.getlength(head)
-        d.text(((w - hw) / 2, hy), head, font=self.fs, fill=(70, 66, 60))
+        d.text(((w - hw) / 2, hy + (int(5 * PX_MM) if folio_style == 'top-center' else 0)), head,
+               font=self.fs, fill=(70, 66, 60))
         folio = f'— {page_no} —' if self.lang == 'ja' or folio_style == 'dash-center' else str(page_no)
+        if folio_fmt:  # book 3: "p. 133", "( 315 )"
+            folio = folio_fmt.format(page_no)
         fw = self.f.getlength(folio)
         fy = h - int(13 * PX_MM)
         fx = (w - fw) / 2 if self.lang == 'ja' else (x0 if verso else x0 + self.tw - fw)
@@ -265,6 +278,11 @@ class Typesetter:
         if folio_style == 'top-outer':  # beside the running head, outer corner
             fy = hy
             fx = x0 if verso else x0 + self.tw - fw
+        if folio_style == 'top-center':  # book 3: alone at the top centre, head moved below
+            fy = hy
+            fx = (w - fw) / 2
+        if folio_style == 'bottom-inner':  # book 3: bottom, by the gutter
+            fx = x0 + self.tw - fw if verso else x0
         if with_folio:
             d.text((fx, fy), folio, font=self.f, fill=ink)
         a = np.asarray(img).astype(np.float32)[:, :, ::-1].copy()  # → BGR
@@ -287,7 +305,7 @@ def page_textures(cfg):
         items = laid[(cfg['offset'] + k) % len(laid)]
         out[no] = ts.draw(items, no, verso, cfg['title'], cfg['seed'] * 1000 + no,
                           cfg.get('folio', 'default'), no not in cfg.get('no_folio', ()),
-                          cfg.get('paper', (246, 242, 232)))
+                          cfg.get('paper', (246, 242, 232)), cfg.get('folio_fmt'))
     # show-through of the other side of the leaf (mirrored, faint)
     final = {}
     base = float(np.mean(cfg.get('paper', (246, 242, 232)))) if 'paper' in cfg else 246.0
@@ -332,6 +350,18 @@ def desk_texture(kind, r, mm=1400, ppm=2.0):
         base = np.array([110, 150, 185], np.float32)  # BGR
         speck = cv2.GaussianBlur(r.normal(0, 1, (n, n)).astype(np.float32), (0, 0), 1.2) * 40
         img = base[None, None, :] + speck[..., None] + low(11, 6)[..., None]
+    elif kind == 'linen':  # book 3: light beige linen tablecloth
+        base = np.array([180, 205, 218], np.float32)  # BGR
+        weave = (np.sin(xx * 1.3)[..., None] * 4 + np.sin(yy * 1.1)[..., None] * 4)
+        img = base[None, None, :] + weave + low(6, 6)[..., None] + r.normal(0, 3.5, (n, n, 1)).astype(np.float32)
+    elif kind == 'black':  # book 3: black laminate table with a faint sheen
+        base = np.array([24, 24, 26], np.float32)
+        img = base[None, None, :] + low(4, 10)[..., None] + r.normal(0, 2.0, (n, n, 1)).astype(np.float32)
+    elif kind == 'green':  # book 3: green cutting mat with a 10 mm grid
+        base = np.array([70, 120, 40], np.float32)
+        img = base[None, None, :] + low(7, 4)[..., None] + r.normal(0, 2.5, (n, n, 1)).astype(np.float32)
+        grid = (((xx / ppm) % 10.0) < 0.6) | (((yy / ppm) % 10.0) < 0.6)
+        img[grid] += 35
     elif kind == 'slate':  # matte grey-green desk mat
         base = np.array([96, 112, 98], np.float32)
         img = base[None, None, :] + low(9, 7)[..., None] + r.normal(0, 3.0, (n, n, 1)).astype(np.float32)
@@ -582,6 +612,10 @@ def render(name, out_dir, max_frames=None, dump_png=False, only=None, sink=None)
         hold_tip_R = np.array([cfg['thumb_R'][0] * PW, PH / 2 - 7.0 + cfg['thumb_R'][1]])
         hold_out_R = np.array(cfg['thumb_out'], float)
     hold_tip_L = np.array([-0.72 * PW, PH / 2 - 6.0])
+    hold_out_L = np.array([-0.4, 1.0, 0.8])
+    if 'thumb_L' in cfg:  # book 3: x as a share of the page width (left page, negative), y (mm) from the centre
+        hold_tip_L = np.array([cfg['thumb_L'][0] * PW, cfg['thumb_L'][1]])
+        hold_out_L = np.array(cfg['thumb_out_L'], float)
     for fi in range(n_frames):
         if only is not None and fi not in only:
             continue
@@ -676,8 +710,8 @@ def render(name, out_dir, max_frames=None, dump_png=False, only=None, sink=None)
                 tip = np.array([hold_tip_R[0], hold_tip_R[1], zr])
             hands.append((tip, hold_out_R))
         if cfg['left_thumb']:
-            zl = BOARD + float(rest_z(np.array([0.72 * PW]), TL)[0]) + 3.0
-            hands.append((np.array([hold_tip_L[0], hold_tip_L[1], zl]), np.array([-0.4, 1.0, 0.8])))
+            zl = BOARD + float(rest_z(np.array([abs(hold_tip_L[0])]), TL)[0]) + 3.0
+            hands.append((np.array([hold_tip_L[0], hold_tip_L[1], zl]), hold_out_L))
         hand_alpha = np.zeros((H, W), np.float32)
         layers = []
         for tip, outd in hands:

@@ -235,7 +235,11 @@ for (;;) {
     else if (e.type === 'number' && e.numbers.length) kind = 'number'
     else if (e.type === 'hold' && e.verdict === 'dup') kind = 'dup'
     else if (e.type === 'sweep') kind = 'sweep'
+    // A read dropped for not fitting the page order (scan-core
+    // numbersFitOrder): the screen a moment later, with its banner.
+    else if (e.type === 'numberOutOfOrder') kind = 'outoforder'
     if (kind && shots.filter((s) => s.kind === kind).length < 3) {
+      if (kind === 'outoforder') await page.waitForTimeout(250)
       const p = path.join(
         outDir,
         `shot-${String(shots.length).padStart(2, '0')}-${kind}.png`,

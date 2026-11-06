@@ -287,7 +287,9 @@ export function sheetWithNumbers(
 function confirmedNumbers(sheets: readonly BookSheet[]): number[] {
   const direct = sheets.flatMap((s) =>
     s.pages
-      .filter((p) => p.state === 'read' && !p.inferred && p.number !== undefined)
+      .filter(
+        (p) => p.state === 'read' && !p.inferred && p.number !== undefined,
+      )
       .map((p) => ({ seq: s.seq, n: p.number! })),
   )
   return direct
