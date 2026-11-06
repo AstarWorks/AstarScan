@@ -23,7 +23,7 @@ that code; nothing is changed after looking at it. Unlike books 1–6:
 - hands: right thumb on the bottom-right corner (over the corner itself);
   right thumb at the top by the gutter; left thumb at the left page's top
   by the gutter + right thumb on the fore-edge middle;
-- frames: 1344x1792 upright (3:4) spread, 1920x2560 upright (3:4) single
+- frames: 1344x1792 upright (3:4) spread, 1260x1680 upright (3:4) single
   page, 2560x1920 landscape (4:3) spread — none of the sizes of books 1–6;
 - one spread is skipped on purpose (book7-spread-garamond hold 2, 306・307).
 """
@@ -43,7 +43,7 @@ BOOK7 = {
         paper=(232, 240, 230), tint=(0.85, 0.85, 0.85),
         thumb_R=(0.95, 0.0), thumb_out=(0.8, 1.0, 0.8)),
     'book7-single-lato': dict(
-        W=1920, H=2560, mode='single', desk='kraft', text='melville-moby_dick.txt', lang='en',
+        W=1260, H=1680, mode='single', desk='kraft', text='melville-moby_dick.txt', lang='en',
         title='INSPECTION NOTES, EAST PIER', spreads=10, first_page=40, offset=71,
         glare=0.5, shadow=0.35, shake=1.0, thick=(10.0, 10.0), left_thumb=False,
         cover=(120, 110, 30), seed=421, font='lato', folio='center', folio_fmt='PAGE {}',
