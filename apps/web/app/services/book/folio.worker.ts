@@ -209,8 +209,15 @@ function candidates(
   const ok = all.filter(
     (b) => b.x1 - b.x0 + 1 <= w * 0.5 && b.y1 - b.y0 + 1 >= h * 0.006,
   )
-  ok.sort((a, b) => Math.min(a.y0, h - a.y1) - Math.min(b.y0, h - b.y1))
-  return ok.slice(0, 8)
+  // Short lines (a number alone) first, then nearest the page edge; a
+  // running head with the number at its end comes after them.
+  const short = (b: Box) => (b.x1 - b.x0 + 1 <= w * 0.15 ? 0 : 1)
+  ok.sort(
+    (a, b) =>
+      short(a) - short(b) ||
+      Math.min(a.y0, h - a.y1) - Math.min(b.y0, h - b.y1),
+  )
+  return ok.slice(0, 6)
 }
 
 /** The line (padded) at 48 px high, RGB normalised to [−1, 1]. */

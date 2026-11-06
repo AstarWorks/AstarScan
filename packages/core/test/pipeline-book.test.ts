@@ -90,15 +90,42 @@ describe('bookCoverage (the mock ideal-capture.html flow)', () => {
       sheet(read(35)),
       sheet(read(39)),
     ]
-    const c = bookCoverage(s)
+    // 39 has no neighbour yet: not trusted, no red until 41 confirms it.
+    expect(bookCoverage(s).gaps).toEqual([])
+    const c = bookCoverage([...s, sheet(read(41))])
     expect(c.step).toBe(2)
     expect(c.gaps).toEqual([{ from: 37, to: 37, step: 2 }])
   })
 
   it('single pages taken one after the other (46, 47) step by one', () => {
-    const c = bookCoverage([sheet(read(46)), sheet(read(47)), sheet(read(49))])
+    const c = bookCoverage([
+      sheet(read(46)),
+      sheet(read(47)),
+      sheet(read(49)),
+      sheet(read(50)),
+    ])
     expect(c.step).toBe(1)
     expect(c.gaps).toEqual([{ from: 48, to: 48, step: 1 }])
+  })
+
+  it('a misread does not raise a red gap', () => {
+    // 10・11 misread as 18・19 after 8・9: a pair alone does not trust a
+    // jump wider than one spread.
+    const c = bookCoverage([
+      sheet(read(6), read(7)),
+      sheet(read(8), read(9)),
+      sheet(read(18), read(19)),
+    ])
+    expect(c.gaps).toEqual([])
+    // A lone misread single (16 among 13, 15, 17) is not trusted on one side.
+    const d = bookCoverage([
+      sheet(read(13)),
+      sheet(read(15)),
+      sheet(read(16)),
+      sheet(read(17)),
+    ])
+    expect(d.step).toBe(2)
+    expect(d.gaps).toEqual([])
   })
 
   it('a far jump is a misread, not a gap', () => {
@@ -238,7 +265,9 @@ describe('fitPageEdges (PageFlatten.kt edge fit)', () => {
     expect(r.why).toBe('')
     expect(r.edges).not.toBeNull()
     expect(Math.abs(curveAt(r.edges!.top, 0.5) - top(0.5))).toBeLessThan(5)
-    expect(Math.abs(curveAt(r.edges!.bottom, 0.5) - bottom(0.5))).toBeLessThan(5)
+    expect(Math.abs(curveAt(r.edges!.bottom, 0.5) - bottom(0.5))).toBeLessThan(
+      5,
+    )
     expect(r.edges!.topBow).toBeGreaterThan(0.015)
   })
 
@@ -248,5 +277,32 @@ describe('fitPageEdges (PageFlatten.kt edge fit)', () => {
     const g = flattenGeometry(400, 560, 0.05)
     const flat = new Uint8Array(g.ew * g.eh).fill(200)
     expect(fitPageEdges(flat, g, false).edges).toBeNull()
+  })
+})
+
+describe('folioZone', () => {
+  it('names the outer corner per side and learns the place', async () => {
+    const { folioZone, learnedFolioZone } =
+      await import('../src/pipeline/page-numbers.js')
+    expect(folioZone(0.1, 0.95, 'L')).toBe('bo')
+    expect(folioZone(0.9, 0.95, 'R')).toBe('bo')
+    expect(folioZone(0.5, 0.05, 'S')).toBe('tc')
+    expect(learnedFolioZone(new Map([['bo', 1]]))).toBeNull()
+    expect(
+      learnedFolioZone(
+        new Map([
+          ['bo', 3],
+          ['tc', 1],
+        ]),
+      ),
+    ).toBeNull()
+    expect(
+      learnedFolioZone(
+        new Map([
+          ['bo', 4],
+          ['tc', 1],
+        ]),
+      ),
+    ).toBe('bo')
   })
 })

@@ -287,3 +287,51 @@ export function checkPageSequence(
 
   return { pages: out, missing }
 }
+
+/**
+ * Where a page number sits on its page: top / bottom band, and outer /
+ * centre / inner third (outer = away from the gutter: left on a left page,
+ * right on a right or single page). A book prints every number in the same
+ * place, so once a few numbers agree, lines elsewhere (running heads, body
+ * text near the margin) can be left out — the capture screen learns it.
+ */
+export type FolioZone = `${'t' | 'b'}${'o' | 'c' | 'i'}`
+
+export function folioZone(
+  cx: number,
+  cy: number,
+  side: 'L' | 'R' | 'S',
+): FolioZone {
+  const v = cy < 0.5 ? 't' : 'b'
+  const outerLeft = side === 'L'
+  const h =
+    cx < 0.35
+      ? outerLeft
+        ? 'o'
+        : 'i'
+      : cx > 0.65
+        ? outerLeft
+          ? 'i'
+          : 'o'
+        : 'c'
+  return `${v}${h}` as FolioZone
+}
+
+/** Learned folio place: the zone of ≥ `min` agreeing reads making ≥ `share` of them. */
+export function learnedFolioZone(
+  counts: ReadonlyMap<FolioZone, number>,
+  min = 2,
+  share = 0.8,
+): FolioZone | null {
+  let total = 0
+  let best: FolioZone | null = null
+  let bestN = 0
+  for (const [z, n] of counts) {
+    total += n
+    if (n > bestN) {
+      best = z
+      bestN = n
+    }
+  }
+  return best && bestN >= min && bestN >= share * total ? best : null
+}

@@ -81,9 +81,24 @@ export function completeSpread(pages: readonly BookPageRead[]): BookPageRead[] {
 interface NumberedAt {
   number: number
   seq: number
+  inferred: boolean
+  /** Both halves of its spread were read and follow each other. */
+  pair: boolean
 }
 
-/** Coverage of the sheets taken so far. */
+/**
+ * Coverage of the sheets taken so far.
+ *
+ * A misread number must not raise a red gap (the Android check's "false
+ * red"): a gap is drawn only between TRUSTED numbers —
+ *   - a number another capture's number follows or precedes (n ± step), or
+ *   - both halves of a spread read on their own and consecutive (34・35).
+ * A gap wider than one spread (> 2 pages) also needs its upper bound
+ * trusted by a neighbour, not only by its own pair (a pair misread as
+ * 18・19 after 8・9 waits instead of turning 10〜17 red). Single pages taken
+ * one side only (31, 33, 35) step by 2, decided by the parity of most of
+ * their numbers; a number of the other parity is then not trusted.
+ */
 export function bookCoverage(
   sheets: readonly BookSheet[],
   opts: Partial<typeof BOOK_COVERAGE_DEFAULTS> = {},
@@ -93,23 +108,76 @@ export function bookCoverage(
   const full = ordered.map((s) => ({ ...s, pages: completeSpread(s.pages) }))
 
   const numbered: NumberedAt[] = []
-  for (const s of full)
-    for (const p of s.pages)
+  for (const s of ordered) {
+    const own = s.pages
+    const pair =
+      own.length === 2 &&
+      own.every((p) => p.state === 'read' && !p.inferred) &&
+      own[1]!.number === own[0]!.number! + 1
+    for (const p of completeSpread(own))
       if (p.state === 'read' && p.number !== undefined)
-        numbered.push({ number: p.number, seq: s.seq })
+        numbered.push({
+          number: p.number,
+          seq: s.seq,
+          inferred: !!p.inferred,
+          pair,
+        })
+  }
 
-  // Step: 2 when only single pages were taken and every number has the
-  // same parity (one side of the book, e.g. every right page).
+  // Step: 2 when only single pages were taken and most of their numbers
+  // (3 in 4) share a parity (one side of the book, e.g. every right page).
   const anySpread = full.some((s) => s.pages.length === 2)
-  const nums = [...new Set(numbered.map((n) => n.number))].sort((a, b) => a - b)
-  const sameParity =
-    nums.length >= 2 && nums.every((n) => n % 2 === nums[0]! % 2)
-  const step: 1 | 2 = !anySpread && sameParity ? 2 : 1
+  const direct = numbered.filter((n) => !n.inferred)
+  const odd = direct.filter((n) => n.number % 2 === 1).length
+  const even = direct.length - odd
+  const step: 1 | 2 =
+    !anySpread &&
+    direct.length >= 2 &&
+    Math.max(odd, even) >= 0.75 * direct.length &&
+    Math.min(odd, even) <= 1
+      ? 2
+      : 1
+  const parity = odd >= even ? 1 : 0
 
-  const seqOf = new Map<number, number>()
-  for (const n of numbered) if (!seqOf.has(n.number)) seqOf.set(n.number, n.seq)
+  /** n is followed / preceded by a number of ANOTHER capture. */
+  const neighbour = (x: NumberedAt) =>
+    numbered.some(
+      (y) =>
+        y.seq !== x.seq &&
+        !y.inferred &&
+        Math.abs(y.number - x.number) === step,
+    )
+  const trusted = new Map<number, { seq: number; byNeighbour: boolean }>()
+  for (const x of numbered) {
+    if (x.inferred && !x.pair) {
+      // An inferred half counts only through its read half's trust.
+      continue
+    }
+    if (step === 2 && x.number % 2 !== parity) continue
+    const nb = neighbour(x)
+    if (!nb && !x.pair) continue
+    const prev = trusted.get(x.number)
+    if (!prev || (nb && !prev.byNeighbour))
+      trusted.set(x.number, { seq: x.seq, byNeighbour: nb })
+  }
+  // The inferred half of a trusted spread is trusted with it.
+  for (const s of ordered) {
+    const full2 = completeSpread(s.pages)
+    if (full2.length !== 2) continue
+    const nums = full2.map((p) => (p.state === 'read' ? p.number : undefined))
+    if (nums[0] === undefined || nums[1] === undefined) continue
+    const t0 = trusted.get(nums[0])
+    const t1 = trusted.get(nums[1])
+    if (t0 && !t1) trusted.set(nums[1], { seq: s.seq, byNeighbour: false })
+    if (t1 && !t0) trusted.set(nums[0], { seq: s.seq, byNeighbour: false })
+  }
 
-  // Unnumbered pages per capture: `none` covers a gap, `pending` defers it.
+  // Captures between two trusted numbers whose number is not trusted
+  // (none, or read but unconfirmed) may be the missing pages: they cover a
+  // gap of their count; `pending` (still being read) defers it.
+  const trustedSeqNums = new Set(
+    [...trusted.entries()].map(([n, t]) => `${t.seq}:${n}`),
+  )
   const unnumberedBetween = (s0: number, s1: number) => {
     const lo = Math.min(s0, s1)
     const hi = Math.max(s0, s1)
@@ -118,13 +186,19 @@ export function bookCoverage(
     for (const s of full) {
       if (s.seq <= lo || s.seq >= hi) continue
       for (const p of s.pages) {
-        if (p.state === 'none') none++
-        else if (p.state === 'pending') pending++
+        if (p.state === 'pending') pending++
+        else if (p.state === 'none') none++
+        else if (
+          p.number !== undefined &&
+          !trustedSeqNums.has(`${s.seq}:${p.number}`)
+        )
+          none++
       }
     }
     return { none, pending }
   }
 
+  const nums = [...trusted.keys()].sort((a, b) => a - b)
   const gaps: BookGap[] = []
   for (let i = 1; i < nums.length; i++) {
     const a = nums[i - 1]!
@@ -133,7 +207,10 @@ export function bookCoverage(
     if (step === 2 && (b - a) % 2 !== 0) continue
     const count = (b - a) / step - 1
     if (b - a - 1 > o.maxGap) continue
-    const { none, pending } = unnumberedBetween(seqOf.get(a)!, seqOf.get(b)!)
+    const ta = trusted.get(a)!
+    const tb = trusted.get(b)!
+    if (b - a - 1 > 2 && !(ta.byNeighbour && tb.byNeighbour)) continue
+    const { none, pending } = unnumberedBetween(ta.seq, tb.seq)
     if (pending > 0) continue // decided once those pages are read
     if (none >= count) continue // figure pages without a number
     gaps.push({ from: a + step, to: b - step, step })

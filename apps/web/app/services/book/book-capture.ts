@@ -35,8 +35,12 @@ import {
   findEdgeGutter,
   findSpreadGutter,
   newGaps,
+  folioZone,
+  learnedFolioZone,
   pageRangeLabel,
+  parsePageNumberToken,
   pickPageNumbers,
+  type FolioZone,
   quadAspect,
   sheetWithNumbers,
   splitSpreadQuad,
@@ -67,7 +71,7 @@ export const SWEEP_MS = 400
 /** Corners are compared with the frame this long ago. */
 const STILL_WINDOW_MS = 250
 /** Corner movement allowed while "still" (share of the frame's diagonal). */
-const STILL_CORNER = 0.025
+const STILL_CORNER = 0.03
 /** Mean grey change of the 32×24 view allowed while still (0..255). */
 const STILL_VIEW = 9
 /** The frame must cover this share of the picture to be a page. */
@@ -76,6 +80,10 @@ const MIN_AREA = 0.12
 const SAME_PAGE_INLIERS = 14
 /** Page number lines read with less confidence than this are ignored. */
 const MIN_NUMBER_CONF = 0.7
+/** Numbers further than this from every number read so far are not taken. */
+const FAR_NUMBER = 60
+/** Number lines lower than this (page px) are not read: too few pixels. */
+const MIN_NUMBER_PX = 3.5
 /** Long side the pages are kept at. */
 const PAGE_LONG = 1600
 
@@ -143,6 +151,23 @@ function dist(a: Point, b: Point): number {
   return Math.hypot(a.x - b.x, a.y - b.y)
 }
 
+function median3(v: number[]): number {
+  const s = [...v].sort((a, b) => a - b)
+  return s[Math.floor(s.length / 2)]!
+}
+
+/** Per-corner median of a few quads. */
+function medianQuad(qs: readonly Quad[]): Quad {
+  const k = ['tl', 'tr', 'br', 'bl'] as const
+  const out = {} as Record<(typeof k)[number], Point>
+  for (const c of k)
+    out[c] = {
+      x: median3(qs.map((q) => q[c].x)),
+      y: median3(qs.map((q) => q[c].y)),
+    }
+  return out
+}
+
 function quadArea(q: Quad): number {
   const p = [q.tl, q.tr, q.br, q.bl]
   let s = 0
@@ -193,6 +218,7 @@ export class BookCapture {
 
   // stillness
   #history: { t: number; quad: Quad }[] = []
+  #raw: Quad[] = []
   #view: Uint8ClampedArray | null = null
   #viewCanvas = canvas(32, 24)
   #stillSince = 0
@@ -202,6 +228,10 @@ export class BookCapture {
   #holdVerdict: 'new' | 'last' | 'dup' | null = null
   #frameTimes: number[] = []
   #prefer: OrtBackend
+  /** Where this book prints its numbers (folioZone of confirmed reads). */
+  #zones = new Map<FolioZone, number>()
+  #zoneOf = new Map<string, FolioZone>()
+  #zoneCounted = new Set<string>()
 
   constructor(onChange: () => void, prefer: OrtBackend = 'webgpu') {
     this.#onChange = onChange
@@ -405,23 +435,36 @@ export class BookCapture {
 
     // Still: corners and the picture both hold.
     const diag = Math.hypot(vw, vh)
-    this.#history.push({ t: now, quad: q })
-    while (this.#history.length > 0 && now - this.#history[0]!.t > 600)
+    // Corners as the median of the last 3 detections (the model's single-
+    // frame jumps — a corner on the thumb or the facing page for one frame —
+    // are not movement; Android CaptureActivity does the same), compared
+    // with the same median STILL_WINDOW_MS ago.
+    this.#raw.push(q)
+    if (this.#raw.length > 3) this.#raw.shift()
+    const mq = medianQuad(this.#raw)
+    this.state.quad = mq
+    this.#history.push({ t: now, quad: mq })
+    while (
+      this.#history.length > 1 &&
+      now - this.#history[0]!.t > STILL_WINDOW_MS
+    )
       this.#history.shift()
     const ref = this.#history[0]!.quad
     const moved =
       Math.max(
-        dist(ref.tl, q.tl),
-        dist(ref.tr, q.tr),
-        dist(ref.br, q.br),
-        dist(ref.bl, q.bl),
+        dist(ref.tl, mq.tl),
+        dist(ref.tr, mq.tr),
+        dist(ref.br, mq.br),
+        dist(ref.bl, mq.bl),
       ) / diag
     // Once the green line runs, hand shake twice as large keeps it running
     // (hysteresis: book-clip spread-land-wood's 1.6 s hold was lost to it).
     const k = this.#sweepStart > 0 || this.#stillSince > 0 ? 2 : 1
-    const still = inside && moved <= STILL_CORNER * k && viewDiff <= STILL_VIEW * k
+    const still =
+      inside && moved <= STILL_CORNER * k && viewDiff <= STILL_VIEW * k
     if (!still) {
-      if (this.#stillSince > 0) probe({ type: 'unstill', t: now, moved, viewDiff, inside })
+      if (this.#stillSince > 0)
+        probe({ type: 'unstill', t: now, moved, viewDiff, inside })
       this.#resetStill()
       this.state.tone = 'search'
       this.state.pill = inside ? '止めてください' : '本全体を入れてください'
@@ -468,7 +511,7 @@ export class BookCapture {
     this.state.pill = 'そのまま'
     this.state.sweep = Math.min(1, (now - this.#sweepStart) / SWEEP_MS)
     if (this.state.sweep >= 1) {
-      this.#capture(video, q, now)
+      this.#capture(video, mq, now)
       this.#holdVerdict = 'last'
       this.state.tone = 'done'
       this.state.sweep = 0
@@ -692,21 +735,45 @@ export class BookCapture {
     // Numbers, both halves of a spread at once.
     const reads = await Promise.all(made.map((p) => this.#readNumber(p.canvas)))
     const before = this.state.coverage.gaps
+    const zone = learnedFolioZone(this.#zones)
+    const chosen: (FolioZone | null)[] = []
     reads.forEach((lines, i) => {
-      const nums = lines
-        ? pickPageNumbers(
-            lines.filter((l) => l.conf >= MIN_NUMBER_CONF),
-            0.12,
-          )
-        : []
       const p = made[i]!
+      const side = p.side
+      // Too small to read reliably (Android: ~5 px numbers come back wrong
+      // as often as right), or outside the place this book prints numbers.
+      const ok = (lines ?? []).filter(
+        (l) =>
+          l.conf >= MIN_NUMBER_CONF &&
+          (l.box[3] - l.box[1]) * p.straight.height >= MIN_NUMBER_PX &&
+          (zone === null || folioZone(l.cx, l.cy, side) === zone),
+      )
+      // A number far from every number read so far is body text (a year,
+      // "1668."), once the book's numbers are known.
+      const known = this.pages
+        .filter((o) => o.read.state === 'read' && !o.read.inferred)
+        .map((o) => o.read.number!)
+      const plausible = ok.filter((l) => {
+        const v = parsePageNumberToken(l.text)?.value
+        return (
+          v === undefined ||
+          known.length < 2 ||
+          known.some((k) => Math.abs(k - v) <= FAR_NUMBER)
+        )
+      })
+      const nums = pickPageNumbers(plausible, 0.12)
       // A single page carries one number; a spread's half its own.
       const n =
         nums.length > 0
-          ? p.side === 'R' && nums.length === 2
+          ? side === 'R' && nums.length === 2
             ? nums[1]!
             : nums[0]!
           : undefined
+      const line =
+        n !== undefined
+          ? plausible.find((l) => parsePageNumberToken(l.text)?.value === n)
+          : undefined
+      chosen.push(line ? folioZone(line.cx, line.cy, side) : null)
       const r: BookPageRead =
         n !== undefined ? { state: 'read', number: n } : { state: 'none' }
       sheet.pages[i] = r
@@ -742,7 +809,23 @@ export class BookCapture {
     // The same page taken again (the picture differed enough to pass ORB):
     // drop it and say so.
     const twin = sheetWithNumbers(this.sheets, numbers, sheet.id)
-    if (twin) {
+    if (
+      twin &&
+      this.#inliers(sheet.orb, (twin as Sheet).orb) < SAME_PAGE_INLIERS
+    ) {
+      // Same number, different picture: the number is a misread (book clip
+      // spread-land-wood framed: 14・15 read as 4・5). Keep the page, drop
+      // the number.
+      probe({
+        type: 'numberConflict',
+        sheetId: sheet.id,
+        numbers,
+        twin: twin.id,
+      })
+      sheet.pages.forEach((_, i) => (sheet.pages[i] = { state: 'none' }))
+      made.forEach((p, i) => (p.read = sheet.pages[i]!))
+      numbers.splice(0)
+    } else if (twin) {
       this.#removeSheet(sheet.id)
       this.state.coverage = bookCoverage(this.sheets)
       this.#say('mute', [
@@ -754,6 +837,33 @@ export class BookCapture {
       return
     }
 
+    // A number another capture's number follows / precedes is right; its
+    // place on the page teaches where this book prints its numbers.
+    made.forEach((p, i) => {
+      const z = chosen[i]
+      if (z) this.#zoneOf.set(p.id, z)
+    })
+    for (const p of made) {
+      const r = p.read
+      if (r.state !== 'read' || r.inferred) continue
+      const n = r.number!
+      for (const o of this.pages) {
+        if (
+          o.sheetId === sheet.id ||
+          o.read.state !== 'read' ||
+          o.read.inferred
+        )
+          continue
+        if (Math.abs(o.read.number! - n) > 2) continue
+        for (const q of [p, o]) {
+          const z = this.#zoneOf.get(q.id)
+          if (z && !this.#zoneCounted.has(q.id)) {
+            this.#zoneCounted.add(q.id)
+            this.#zones.set(z, (this.#zones.get(z) ?? 0) + 1)
+          }
+        }
+      }
+    }
     this.state.coverage = bookCoverage(this.sheets)
     const after = this.state.coverage.gaps
     const fresh = newGaps(before, after)
