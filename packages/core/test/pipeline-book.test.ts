@@ -198,6 +198,54 @@ describe('bookCoverage (the mock ideal-capture.html flow)', () => {
     expect(numbersFitOrder([wrong, ...right], right[0]!.id)).toBe(true)
   })
 
+  it('two misreads that follow each other do not take out the right first page (book 1: 31, "3", 35, …, "4")', () => {
+    // Book 1 single-land-white at 720×960: "— 33 —" read as 3 and "— 47 —"
+    // as 4 confirm each other (3, 4); judged together with 31 they
+    // overtook it and all three were dropped at once. The two misreads are
+    // below the pages taken before them and go first; 31 then stands.
+    const s = [31, 3, 35, 39, 41, 43, 45, 4, 49].map((n) => sheet(read(n)))
+    const v = settleBookNumbers(s)
+    expect(v.get(s[0]!.id)).toBe('ok')
+    expect(v.get(s[1]!.id)).toBe('order')
+    expect(v.get(s[7]!.id)).toBe('order')
+    expect(v.get(s[8]!.id)).toBe('ok')
+  })
+
+  it('two spreads 2 apart do not follow each other (book 3 upright: 322・323 read "321・322" after 318・319)', () => {
+    const small = (n: number): BookPageRead => ({
+      state: 'read',
+      number: n,
+      px: 6,
+    })
+    const inferred = (n: number): BookPageRead => ({
+      state: 'read',
+      number: n,
+      inferred: true,
+    })
+    const tall = (n: number): BookPageRead => ({
+      state: 'read',
+      number: n,
+      px: 12,
+    })
+    // Held at 6 px either way; a tall 318・319 would confirm "321・322"
+    // under the 1–2 rule, and may not.
+    const s = [
+      sheet(tall(318), tall(319)),
+      sheet(none, none),
+      sheet(inferred(321), small(322)),
+    ]
+    expect(settleBookNumbers(s).get(s[2]!.id)).toBe('unsure')
+    // Single pages one side only still follow 2 apart (31, 33 confirm each
+    // other: 35 is red after 37), and a single page beside a spread either
+    // way.
+    const singles = [31, 33, 37, 39].map((n) => sheet(read(n)))
+    expect(bookCoverage(singles).gaps).toEqual([{ from: 35, to: 35, step: 2 }])
+    const mixed = [sheet(tall(34), tall(35)), sheet(tall(37))]
+    const v = settleBookNumbers(mixed)
+    expect(v.get(mixed[0]!.id)).toBe('ok')
+    expect(bookCoverage(mixed).gaps).toEqual([])
+  })
+
   it('skipping a spread and going back fits (holds 0,1,2,4,3,5,6)', () => {
     const order = [44, 46, 48, 52, 50, 54, 56].map((n) =>
       sheet(read(n), read(n + 1)),
@@ -250,7 +298,8 @@ describe('bookCoverage (the mock ideal-capture.html flow)', () => {
     expect(settleBookNumbers(big).get(big[0]!.id)).toBe('ok')
     // One half alone at 5 px, and the next spread's at 5 px too: two small
     // reads agreeing are not enough (book 2 720×960: 94・95 read as 98・99
-    // beside a right 96・97); a tall read on the next spread is.
+    // beside a right 96・97); a tall read on the next spread is, and so
+    // is a third capture on the middle one's other side.
     const two = [sheet(small(96), inferred(97)), sheet(small(98), inferred(99))]
     const v = settleBookNumbers(two)
     expect(v.get(two[0]!.id)).toBe('unsure')
@@ -259,6 +308,8 @@ describe('bookCoverage (the mock ideal-capture.html flow)', () => {
     const vt = settleBookNumbers(withTall)
     expect(vt.get(withTall[0]!.id)).toBe('ok')
     expect(vt.get(withTall[1]!.id)).toBe('ok')
+    const three = [...two, sheet(small(100), inferred(101))]
+    expect(settleBookNumbers(three).get(three[1]!.id)).toBe('ok')
     // The same number taken twice does not confirm itself.
     const twice = [
       sheet(small(328), inferred(329)),
@@ -631,7 +682,7 @@ describe('shotFrameQuad (the frame of the shot)', () => {
     quad: q(tlx, tly),
     peaks: [tlPeak, 0.9, 0.9, 0.9] as [number, number, number, number],
   })
-  it('takes each corner from the detections the model was surest of', () => {
+  it('takes each corner from the outermost place read often enough', () => {
     // Book 3 framed single page 137: the top-left corner read at the
     // paper's corner (71, 116) in 6 frames at peak 0.71–0.85 and a third
     // of the way down the edge (93, 320) in 7 frames at 0.42–0.69.
@@ -652,6 +703,25 @@ describe('shotFrameQuad (the frame of the shot)', () => {
     const s = shotFrameQuad(spell)!
     expect(s.tl).toEqual({ x: 71, y: 116 })
     expect(s.tr).toEqual({ x: 600, y: 80 })
+    // The same page at 1080×1920 (run12): the reading down the edge (128,
+    // 445) peaked HIGHER (0.70–0.77) than the corner's (0.58–0.73), and a
+    // lone flicker at (260, 277) peaked at 0.91. The corner is the
+    // outermost place read often enough; the flicker is not a place.
+    const own = [
+      det(260, 277, 0.91),
+      det(22, 306, 0.9),
+      det(9, 320, 0.85),
+      det(10, 321, 0.73),
+      det(128, 445, 0.77),
+      det(126, 445, 0.7),
+      det(140, 445, 0.77),
+      det(21, 324, 0.67),
+      det(9, 335, 0.68),
+      det(129, 458, 0.58),
+      det(9, 338, 0.64),
+      det(155, 460, 0.46),
+    ]
+    expect(shotFrameQuad(own)!.tl).toEqual({ x: 9, y: 324 })
   })
   it('follows the hand: the last sure detections, not the whole spell', () => {
     const spell = [
@@ -669,7 +739,7 @@ describe('shotFrameQuad (the frame of the shot)', () => {
     ]
     expect(shotFrameQuad(spell)!.tl).toEqual({ x: 74, y: 114 })
   })
-  it('a short spell counts every detection; an empty one gives null', () => {
+  it('a spell with no place read often enough takes the median of its last detections; an empty one gives null', () => {
     expect(shotFrameQuad([det(71, 116, 0.8), det(93, 320, 0.4)])!.tl).toEqual({
       x: 93,
       y: 320,
