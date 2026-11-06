@@ -327,6 +327,13 @@ jobs:
       # only at 1920x1440 and the preview stays black, so 1280x960 stays.
       FEED_SIZE: 1280x960
       FEED_LOG: /tmp/feed.log
+      # Branch book3-android-eval: the third untuned book of PR #12
+      # (scripts/eval/book-clips/book3.py, framed into book3-framed/).
+      BOOK_CLIPS_REL: scripts/eval/book-clips/book3-framed
+      BOOK_PLAN: book3-single-p book3-spread-paren-port
+      BOOK_LAST: book3-spread-topnum 0 1 2 4 3 5 6
+      BOOK_STILLS_SEQ: book3-spread-topnum 0 1 2 4 5 6
+      STILLS_BOOK: book3
 
     steps:
       - uses: actions/checkout@v4
@@ -368,7 +375,7 @@ jobs:
           sudo chmod 666 /dev/video0
           ls -l /dev/video*
           lsmod | grep v4l2loopback
-          nohup python3 -I scripts/android/camera-feed.py scripts/eval/book-clips/framed \
+          nohup python3 -I scripts/android/camera-feed.py "$BOOK_CLIPS_REL" --first book3-single-p \
             /tmp/feed.control /tmp/feed.status --size "$FEED_SIZE" --log "$FEED_LOG" >/tmp/camera-feed.log 2>&1 &
           for _ in $(seq 60); do [ -s /tmp/feed.status ] && break; sleep 2; done
           cat /tmp/camera-feed.log
@@ -384,8 +391,8 @@ jobs:
         continue-on-error: true
         run: |
           set -euo pipefail
-          sudo apt-get install -y -qq fonts-liberation fonts-ipafont-gothic python3-pil >/dev/null
-          python3 -I scripts/eval/book-clips/stills.py /tmp/stills --jobs 3 | grep -v ' / ' | tail -n 50
+          sudo apt-get install -y -qq fonts-liberation fonts-ipafont-gothic fonts-dejavu-core python3-pil >/dev/null
+          python3 -I scripts/eval/book-clips/stills.py /tmp/stills book3-spread-topnum book3-single-p book3-spread-paren-port --jobs 3 | grep -v ' / ' | tail -n 50
           ls -la /tmp/stills | head -n 5
           du -sh /tmp/stills
 
@@ -405,7 +412,7 @@ jobs:
           cores: 4
           disable-animations: true
           emulator-options: -no-window -gpu swiftshader_indirect -noaudio -no-boot-anim -camera-back webcam0 -camera-front emulated
-          script: bash scripts/android/emulator-check.sh AstarScan-android.apk emulator-out
+          script: BOOK_CLIPS="$PWD/$BOOK_CLIPS_REL" bash scripts/android/emulator-check.sh AstarScan-android.apk emulator-out
 
       - name: Score the run (what the screen said per page, corner error, numbers)
         if: always()
@@ -413,7 +420,7 @@ jobs:
           [ -d emulator-out ] || exit 0
           cp /tmp/camera-feed.log emulator-out/ 2>/dev/null || true
           [ -s emulator-out/feed.log ] || cp "$FEED_LOG" emulator-out/feed.log 2>/dev/null || true
-          python3 -I scripts/android/book-measure.py emulator-out scripts/eval/book-clips/framed --size "$FEED_SIZE" | tee -a "$GITHUB_STEP_SUMMARY"
+          python3 -I scripts/android/book-measure.py emulator-out "$BOOK_CLIPS_REL" --size "$FEED_SIZE" | tee -a "$GITHUB_STEP_SUMMARY"
 
       # The detector comparison behind the capture screen's choice, on the
       # same clips as the camera sees them (corner-compare.py).
@@ -432,7 +439,7 @@ jobs:
             echo
             echo "### Page-frame detectors on the book clips (clip px; camera window as the phone sees it)"
             echo
-            python3 -I scripts/eval/book-clips/corner-compare.py scripts/eval/book-clips/framed \
+            python3 -I scripts/eval/book-clips/corner-compare.py "$BOOK_CLIPS_REL" \
               --size "$FEED_SIZE" --docaligner /tmp/docaligner/docaligner-lcnet100.onnx --json emulator-out/corner-compare.json
           } | tee emulator-out/corner-compare.md | tee -a "$GITHUB_STEP_SUMMARY"
 
