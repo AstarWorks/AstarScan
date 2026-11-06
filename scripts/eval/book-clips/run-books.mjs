@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 /**
- * Runs book-e2e.mjs over the clips of books 1–5 (720x960 framed and the
+ * Runs book-e2e.mjs over the clips of books 1–6 (720x960 framed and the
  * original sizes, the skipped-page variants) one after another and
  * appends one JSON line per run to a results file — the raw results kept
  * in docs/book4-eval/*.jsonl.
@@ -109,28 +109,54 @@ const RUNS = {
     ['b4-o-ja-43', 'book4', 'book4-spread-ja-43', '--own-size'],
   ],
   5: [
-    ['b5-f-mono-skip', 'book5-framed', 'book5-spread-mono', '--skip-hold', '4'],
-    ['b5-f-single-roman', 'book5-framed', 'book5-single-roman'],
     [
-      'b5-f-ja-vert',
+      'b5-f-bracket-skip',
       'book5-framed',
-      'book5-spread-ja-vert',
-      '--no-folio',
-      '92,93',
+      'book5-spread-bracket',
+      '--skip-hold',
+      '4',
     ],
+    ['b5-f-single-mono', 'book5-framed', 'book5-single-mono'],
+    ['b5-f-ja-kanji', 'book5-framed', 'book5-spread-ja-kanji'],
     [
-      'b5-o-mono-skip',
+      'b5-o-bracket-skip',
       'book5',
-      'book5-spread-mono',
+      'book5-spread-bracket',
       '--skip-hold',
       '4',
       '--own-size',
     ],
-    ['b5-o-single-roman', 'book5', 'book5-single-roman', '--own-size'],
+    ['b5-o-single-mono', 'book5', 'book5-single-mono', '--own-size'],
+    ['b5-o-ja-kanji', 'book5', 'book5-spread-ja-kanji', '--own-size'],
+  ],
+  6: [
+    ['b6-f-head-skip', 'book6-framed', 'book6-spread-head', '--skip-hold', '4'],
+    ['b6-f-single-typewriter', 'book6-framed', 'book6-single-typewriter'],
     [
-      'b5-o-ja-vert',
-      'book5',
-      'book5-spread-ja-vert',
+      'b6-f-ja-mincho',
+      'book6-framed',
+      'book6-spread-ja-mincho',
+      '--no-folio',
+      '92,93',
+    ],
+    [
+      'b6-o-head-skip',
+      'book6',
+      'book6-spread-head',
+      '--skip-hold',
+      '4',
+      '--own-size',
+    ],
+    [
+      'b6-o-single-typewriter',
+      'book6',
+      'book6-single-typewriter',
+      '--own-size',
+    ],
+    [
+      'b6-o-ja-mincho',
+      'book6',
+      'book6-spread-ja-mincho',
       '--no-folio',
       '92,93',
       '--own-size',
