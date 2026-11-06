@@ -365,13 +365,27 @@ jobs:
           # upgrades on a fresh runner) and 30 s per stalled download.
           APT="sudo -E timeout 600 apt-get -o DPkg::Lock::Timeout=120 -o Acquire::Retries=3 -o Acquire::http::Timeout=30 -o Dpkg::Use-Pty=0"
           step() { echo "::group::$(date -u +%T) $1"; }
+          # Run 42300357620: the download of ffmpeg's 60-odd packages from the
+          # Azure mirror stalled after 30 of them and the whole 600 s went by
+          # (the run before took 12 s). Each install gets 4 minutes and three
+          # tries; a killed apt leaves dpkg half-configured, so it is tidied
+          # before the next try.
+          install_retry() {
+            for n in 1 2 3; do
+              step "apt-get install $* (try $n)"
+              if sudo timeout 240 apt-get -o DPkg::Lock::Timeout=120 -o Acquire::Retries=3 -o Acquire::http::Timeout=30 -o Dpkg::Use-Pty=0 \
+                   install -y -q --no-install-recommends "$@" > /tmp/apt-install.log 2>&1; then
+                tail -n 5 /tmp/apt-install.log; echo '::endgroup::'; return 0
+              fi
+              echo "try $n failed or timed out (rc $?)"; tail -n 20 /tmp/apt-install.log; echo '::endgroup::'
+              sudo timeout 120 dpkg --configure -a || true
+            done
+            return 1
+          }
           step 'apt-get update'
           $APT update -q || { echo "::error::apt-get update failed or timed out (rc $?)"; exit 1; }
           echo '::endgroup::'
-          step 'apt-get install ffmpeg v4l-utils'
-          $APT install -y -q --no-install-recommends ffmpeg v4l-utils | tail -n 20
-          [ "${PIPESTATUS[0]}" -eq 0 ] || { echo "::error::apt-get install failed or timed out"; exit 1; }
-          echo '::endgroup::'
+          install_retry ffmpeg v4l-utils || { echo "::error::apt-get install ffmpeg v4l-utils failed three times"; exit 1; }
           # OpenCV from pip (it carries its own FFmpeg): ubuntu-26.04's
           # python3-opencv has no FFmpeg video backend, so VideoCapture fell
           # to GStreamer, read the clip path as a pipeline ("no element
