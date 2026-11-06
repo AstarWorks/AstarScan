@@ -123,7 +123,10 @@ for (;;) {
     } else if (e.type === 'alert') {
       await page.waitForTimeout(100)
       await shot('red')
-    } else if (e.type === 'dupByNumber' || (e.type === 'hold' && e.verdict === 'dup'))
+    } else if (
+      e.type === 'dupByNumber' ||
+      (e.type === 'hold' && e.verdict === 'dup')
+    )
       await shot('taken-before')
   }
   await page.waitForTimeout(30)
@@ -150,7 +153,12 @@ const pdfPath = path.join(outDir, 'saved.pdf')
 await dl.saveAs(pdfPath)
 const info = execFileSync('pdfinfo', [pdfPath]).toString()
 fs.writeFileSync(path.join(outDir, 'pdfinfo.txt'), info)
-console.log(info.split('\n').filter((l) => /^(Pages|Page size)/.test(l)).join('\n'))
+console.log(
+  info
+    .split('\n')
+    .filter((l) => /^(Pages|Page size)/.test(l))
+    .join('\n'),
+)
 execFileSync('pdftoppm', [
   '-r',
   '40',
@@ -158,7 +166,10 @@ execFileSync('pdftoppm', [
   pdfPath,
   path.join(outDir, 'pdf-page'),
 ])
-await page.screenshot({ path: path.join(outDir, 'list-after-pdf.png'), fullPage: true })
+await page.screenshot({
+  path: path.join(outDir, 'list-after-pdf.png'),
+  fullPage: true,
+})
 if (wantMd) {
   const [dm] = await Promise.all([
     page.waitForEvent('download', { timeout: 20 * 60 * 1000 }),
@@ -167,13 +178,23 @@ if (wantMd) {
   const mdPath = path.join(outDir, 'saved.md')
   await dm.saveAs(mdPath)
   const md = fs.readFileSync(mdPath, 'utf8')
-  console.log(md.split('\n').filter((l) => l.startsWith('## ')).join('\n'))
-  await page.screenshot({ path: path.join(outDir, 'list-after-md.png'), fullPage: true })
+  console.log(
+    md
+      .split('\n')
+      .filter((l) => l.startsWith('## '))
+      .join('\n'),
+  )
+  await page.screenshot({
+    path: path.join(outDir, 'list-after-md.png'),
+    fullPage: true,
+  })
 }
 const probe = await page.evaluate(() => window.__probe)
 fs.writeFileSync(
   path.join(outDir, 'probe.json'),
-  JSON.stringify(probe.map((e) => (e.type === 'frame' ? { ...e, sig: undefined } : e))),
+  JSON.stringify(
+    probe.map((e) => (e.type === 'frame' ? { ...e, sig: undefined } : e)),
+  ),
 )
 await context.close()
 await browser.close()
