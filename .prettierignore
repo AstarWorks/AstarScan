@@ -38,8 +38,6 @@ scripts/eval/book-clips/book5/*.gt.json
 scripts/eval/book-clips/book5-framed/*.gt.json
 scripts/eval/book-clips/book6/*.gt.json
 scripts/eval/book-clips/book6-framed/*.gt.json
-scripts/eval/book-clips/book7/*.gt.json
-scripts/eval/book-clips/book7-framed/*.gt.json
 docs/ux/ideal-capture.html
 
 # Saved app output (Markdown save of the book capture, kept verbatim)
