@@ -15,7 +15,8 @@
 #
 # Why this and not NDLOCR's PARSeq: on the page numbers of the five book
 # clips (pages warped from the ground-truth corners, number boxes found the
-# same way) PARSeq-30 read 6 of 36 right, PP-OCRv4 48 of 60 (single picks;
+# same way) PARSeq-30 read at most 4 of 36 right whatever the crop, PP-OCRv4 48 of
+# 60 (single picks;
 # docs/book-eval.md "ページ番号の読み取り").
 
 set -euo pipefail

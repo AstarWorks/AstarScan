@@ -13,7 +13,7 @@
  *
  * NDLOCR-Lite's whole-page path (1024² layout + three PARSeq recognisers,
  * ~147 MB) is far too slow for "the number within a second", and its
- * PARSeq read these isolated numbers badly (6 of 36 on the book clips).
+ * PARSeq read these isolated numbers badly (at most 4 of 36 on the book clips).
  */
 
 import * as ort from 'onnxruntime-web/wasm'

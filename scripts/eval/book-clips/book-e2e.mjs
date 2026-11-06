@@ -29,6 +29,7 @@
  * frame showed is found by matching the app's 32×24 grey view of it against
  * the clip (no guessing when the fake camera started).
  */
+import { Buffer } from 'node:buffer'
 import { execFileSync } from 'node:child_process'
 import fs from 'node:fs'
 import path from 'node:path'

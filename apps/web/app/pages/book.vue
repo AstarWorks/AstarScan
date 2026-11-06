@@ -11,6 +11,16 @@
  * (WebGPU / WASM + threads) and the frame rate; `?backend=wasm` skips WebGPU.
  */
 import { jsPDF } from 'jspdf'
+import {
+  computed,
+  nextTick,
+  onBeforeUnmount,
+  onMounted,
+  ref,
+  shallowRef,
+  watch,
+} from 'vue'
+import { useRoute } from 'vue-router'
 import type { Quad } from '@astarworks/scan-core'
 import type { BookStripItem } from '@astarworks/scan-core/pipeline'
 

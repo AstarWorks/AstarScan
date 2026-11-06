@@ -25,7 +25,7 @@
  */
 
 import { ref, computed, onMounted } from 'vue'
-import { useRoute } from 'vue-router'
+import { useRoute, useRouter } from 'vue-router'
 import jsPDF from 'jspdf'
 import type { Quad } from '@astarworks/scan-core'
 import {
@@ -2050,7 +2050,7 @@ const nativeMode = isNativeScanner()
 // The browser opens on the book capture screen (pages/book.vue, agreed with
 // the client: docs/ux/ideal-capture.html). `?classic` keeps this screen.
 if (!nativeMode && route.query.classic === undefined)
-  void navigateTo({ path: '/book', query: route.query }, { replace: true })
+  void useRouter().replace({ path: '/book', query: route.query })
 
 /** Long side of the in-webview copy (preview + page-number OCR). */
 const NATIVE_PREVIEW_LONG_SIDE = 1600
