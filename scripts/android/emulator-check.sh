@@ -368,9 +368,10 @@ record_stop() {
 
 holds() { python3 -c 'import json,sys; d=json.load(open(sys.argv[1])); print(*range(sum(s["phase"]=="hold" for s in d["segments"])))' "$CLIPS/$1.gt.json"; }
 
-if [ -n "${BOOK_PLAN:-}" ]; then
+if [ -n "${BOOK_PLAN:-}${BOOK_LAST:-}" ]; then
   # BOOK_PLAN: clips scanned with every hold in order (space separated);
-  # BOOK_LAST: "<clip> <holds…>" for the last, recorded clip.
+  # BOOK_LAST: "<clip> <holds…>" for the last, recorded clip. A book of
+  # one clip (book 8) sets only BOOK_LAST.
   for c in $BOOK_PLAN; do
     # shellcheck disable=SC2046
     scan_clip "$c" $(holds "$c")
