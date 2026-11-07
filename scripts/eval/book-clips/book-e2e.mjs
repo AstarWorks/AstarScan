@@ -24,6 +24,10 @@
  *     <app-url> <clip-name> <out-dir> [--clips <dir>] [--viewport 390x844]
  *     [--record] [--query debug]
  *
+ * --rescore: no browser; the run in <out-dir> (probe.json, result.json,
+ * pages/) is scored again with the same clip arguments (after a change of
+ * the scoring, e.g. a capture on the first frames of a turn).
+ *
  * The models are loaded before the camera opens (`__astarBook.preload`),
  * so the clip's first loop is scored warm. Which clip frame each processed
  * frame showed is found by matching the app's 32×24 grey view of it against
@@ -47,6 +51,7 @@ const [vw, vh] = opt('--viewport', '390x844').split('x').map(Number)
 const record = args.includes('--record')
 const clipsDir = opt('--clips', path.join(__dirname, 'clips'))
 const query = opt('--query', 'debug')
+const rescore = args.includes('--rescore')
 if (!url || !clipName || !outDir) {
   console.error('usage: book-e2e.mjs <app-url> <clip-name> <out-dir> [...]')
   process.exit(2)
@@ -75,6 +80,7 @@ else if (skipHold !== null)
   order = origHolds.map((_, i) => i).filter((i) => i !== Number(skipHold))
 if (order) {
   const keep = []
+  const mjpegNeeded = !rescore
   order.forEach((k, j) => {
     const h = origHolds[k]
     for (let f = h.start_frame; f < h.end_frame; f += 1) keep.push(f)
@@ -87,8 +93,8 @@ if (order) {
       for (let f = turn.start_frame; f < turn.end_frame; f += 1) keep.push(f)
   })
   const dir = path.join(outDir, 'src-frames')
-  fs.mkdirSync(dir, { recursive: true })
-  if (!fs.existsSync(path.join(dir, '00001.jpg')))
+  if (mjpegNeeded) fs.mkdirSync(dir, { recursive: true })
+  if (mjpegNeeded && !fs.existsSync(path.join(dir, '00001.jpg')))
     execFileSync('ffmpeg', [
       '-y',
       '-loglevel',
@@ -99,16 +105,17 @@ if (order) {
       '3',
       path.join(dir, '%05d.jpg'),
     ])
-  fs.writeFileSync(
-    mjpeg,
-    Buffer.concat(
-      keep.map((f) =>
-        fs.readFileSync(
-          path.join(dir, `${String(f + 1).padStart(5, '0')}.jpg`),
+  if (mjpegNeeded)
+    fs.writeFileSync(
+      mjpeg,
+      Buffer.concat(
+        keep.map((f) =>
+          fs.readFileSync(
+            path.join(dir, `${String(f + 1).padStart(5, '0')}.jpg`),
+          ),
         ),
       ),
-    ),
-  )
+    )
   const frames2 = keep.map((f) => gt.frames[f])
   const segs = []
   keep.forEach((f, i) => {
@@ -120,11 +127,12 @@ if (order) {
   })
   gt.frames = frames2
   gt.segments = segs
-  fs.writeFileSync(
-    path.join(outDir, 'order.json'),
-    JSON.stringify({ order, keep: keep.length }),
-  )
-} else if (!fs.existsSync(mjpeg))
+  if (!rescore)
+    fs.writeFileSync(
+      path.join(outDir, 'order.json'),
+      JSON.stringify({ order, keep: keep.length }),
+    )
+} else if (!rescore && !fs.existsSync(mjpeg))
   execFileSync('ffmpeg', [
     '-y',
     '-loglevel',
@@ -143,7 +151,7 @@ if (order) {
 // The clip is scaled here, aspect kept, to fit inside the request (a clip
 // that fits — the 720×960 framed ones, 1440×1080, 1080×1440 — comes at its
 // own size); the ground truth is mapped by the size the app got.
-if (args.includes('--own-size')) {
+if (args.includes('--own-size') && !rescore) {
   const [fw, fh] = gt.H > gt.W ? [1080, 1920] : [1920, 1080]
   const k = Math.min(1, fw / gt.W, fh / gt.H)
   if (k < 1) {
@@ -173,7 +181,9 @@ const N = gt.frames.length
 const clipS = N / fps
 const SW = 32
 const SH = 24
-const raw = execFileSync(
+const raw = rescore
+  ? Buffer.alloc(0)
+  : execFileSync(
   'ffmpeg',
   [
     '-loglevel',
@@ -195,6 +205,29 @@ for (let i = 0; i < N; i += 1)
   clipSig.push(raw.subarray(i * SW * SH, (i + 1) * SW * SH))
 
 // --- run --------------------------------------------------------------------
+let probe
+let kept
+let pre
+let shots
+let logs
+let videoPath = null
+let wStream
+/** --rescore: each capture's clip frame / timings from the earlier scoring. */
+const earlier = new Map()
+if (rescore) {
+  const prev = JSON.parse(fs.readFileSync(path.join(outDir, 'result.json'), 'utf8'))
+  probe = JSON.parse(fs.readFileSync(path.join(outDir, 'probe.json'), 'utf8'))
+  for (const r of prev.capRows) earlier.set(r.sheetId, r)
+  const pageIds = fs.existsSync(path.join(outDir, 'pages'))
+    ? fs.readdirSync(path.join(outDir, 'pages')).filter((f) => f.endsWith('.jpg')).map((f) => f.replace(/\.jpg$/, ''))
+    : []
+  kept = pageIds.map((id) => ({ id, sheetId: id.replace(/[LRS]$/, '') }))
+  pre = { backend: prev.summary.backend, threads: prev.summary.threads }
+  shots = prev.shots ?? []
+  logs = prev.summary.logs ?? []
+  videoPath = prev.summary.video ?? null
+  wStream = prev.summary.wStream ?? 0
+} else {
 const browser = await chromium.launch({
   args: [
     '--use-fake-ui-for-media-stream',
@@ -215,7 +248,7 @@ const context = await browser.newContext({
     : {}),
 })
 const page = await context.newPage()
-const logs = []
+logs = []
 page.on('pageerror', (e) => logs.push(`pageerror: ${e.message}`))
 page.on('console', (m) => {
   if (m.type() === 'warning' || m.type() === 'error')
@@ -241,17 +274,17 @@ await page.addInitScript(() => {
 })
 await page.goto(`${url.replace(/\/$/, '')}/book${query ? `?${query}` : ''}`)
 await page.waitForLoadState('networkidle').catch(() => {})
-const pre = await page.evaluate(() => window.__astarBook.preload())
+pre = await page.evaluate(() => window.__astarBook.preload())
 await page.getByRole('button', { name: '撮影を始める' }).click()
 await page.waitForFunction(
   () => (document.querySelector('video')?.readyState ?? 0) >= 2,
   null,
   { timeout: 30000 },
 )
-const wStream = await page.evaluate(() => performance.now())
+wStream = await page.evaluate(() => performance.now())
 
 // Screenshots of the moments the PR shows: ✓ with a number, red, 撮影済み.
-const shots = []
+shots = []
 const shotKinds = new Set()
 const endMs = clipS * 1000 + 1500
 let seen = 0
@@ -320,8 +353,8 @@ if (await firstRow.count()) {
     fullPage: true,
   })
 }
-const probe = await page.evaluate(() => window.__probe)
-const kept = await page.evaluate(() => window.__astarBook.pages())
+probe = await page.evaluate(() => window.__probe)
+kept = await page.evaluate(() => window.__astarBook.pages())
 for (const p of kept) {
   const data = await page.evaluate((id) => window.__astarBook.image(id), p.id)
   if (data)
@@ -330,19 +363,22 @@ for (const p of kept) {
       Buffer.from(data.split(',')[1], 'base64'),
     )
 }
-const videoPath = record ? await page.video()?.path() : null
+videoPath = record ? await page.video()?.path() : null
 await context.close()
 await browser.close()
+}
 
 // --- which clip frame was each processed frame ----------------------------
-const frames = probe.filter((e) => e.type === 'frame' && e.sig?.length)
+const frames = probe.filter(
+  (e) => e.type === 'frame' && (rescore ? e.pos !== undefined : e.sig?.length),
+)
 const sad = (a, b) => {
   let s = 0
   for (let i = 0; i < a.length; i += 1) s += Math.abs(a[i] - b[i])
   return s
 }
 let offset = 0
-for (let pass = 0; pass < 2; pass += 1) {
+for (let pass = 0; pass < (rescore ? 0 : 2); pass += 1) {
   const deltas = []
   for (const f of frames) {
     const exp = ((f.wall - wStream) / 1000) * fps + offset
@@ -367,6 +403,10 @@ const posAt = (wall) => Math.round(((wall - wStream) / 1000) * fps + offset)
 const wallAt = (pos) => wStream + ((pos - offset) / fps) * 1000
 /** Clip frame shown by the processed frame nearest before `wall`. */
 const posOfWall = (wall) => {
+  if (rescore) {
+    const near = frames.filter((f) => f.wall <= wall + 1).sort((a, b) => b.wall - a.wall)[0]
+    return near ? near.pos : 0
+  }
   let best = null
   for (const f of frames)
     if (f.wall <= wall + 1 && (!best || f.wall > best.wall)) best = f
@@ -499,6 +539,32 @@ const keptIds = new Set(kept.map((p) => p.sheetId))
 
 const pageRows = []
 const checkAt = new Map() // page -> wall of its ✓
+/**
+ * The pages the camera sees on a clip frame. On the first frames of a
+ * turn the leaf still lies flat on the page it is about to turn over:
+ * the picture is the leaf's front page, and the static page under it is
+ * hidden (`occluded`). The ground truth lists both at the same corners;
+ * a capture on such a frame (the shot falls on the last still frame, the
+ * picture is drawn a frame later) is the leaf's page, as in a hold — not
+ * a misread of the page under it (run18: book 1's "-31-" read right and
+ * scored as 33 → 31). So: a static page hidden by more than a tenth is
+ * not seen, and the turning leaf is seen while nearly flat (progress up
+ * to 0.15 from the page before, from 0.85 on the page after).
+ */
+const LEAF_FLAT = 0.15
+function seenPages(fr) {
+  if (fr.phase !== 'turn') return fr.pages.map((g) => ({ g, asHold: true }))
+  const out = []
+  for (const g of fr.pages) {
+    if (g.state === 'turning') {
+      const flat =
+        fr.turn_progress !== null &&
+        (fr.turn_progress <= LEAF_FLAT || fr.turn_progress >= 1 - LEAF_FLAT)
+      if (flat) out.push({ g, asHold: true })
+    } else if ((g.occluded ?? 0) <= 0.1) out.push({ g, asHold: false })
+  }
+  return out
+}
 const capRows = []
 for (const c of captures) {
   const pos = posOfWall(c.t)
@@ -506,6 +572,7 @@ for (const c of captures) {
   const seg =
     holds.find((s) => pos >= s.start_frame && pos < s.end_frame) ?? null
   const num = numbers.get(c.sheetId)
+  const was = earlier.get(c.sheetId)
   const row = {
     sheetId: c.sheetId,
     spread: c.spread,
@@ -514,13 +581,17 @@ for (const c of captures) {
     kept: keptIds.has(c.sheetId),
     numbers: num?.numbers ?? [],
     numberS: num ? num.sinceShot / 1000 : null,
-    checkS: seg ? (c.t - wallAt(seg.start_frame)) / 1000 : null,
+    checkS: rescore
+      ? (was?.checkS ?? null)
+      : seg
+        ? (c.t - wallAt(seg.start_frame)) / 1000
+        : null,
     pages: [],
   }
   for (const p of c.pages) {
     const q = toClip(p.quad)
     let best = null
-    for (const g of fr.pages) {
+    for (const { g, asHold } of seenPages(fr)) {
       const cv = cover(q, g.corners)
       if (!best || cv > best.cover)
         best = {
@@ -528,13 +599,14 @@ for (const c of captures) {
           cover: cv,
           err: cornerErr(q, g.corners),
           target: g.target,
+          asHold,
         }
     }
+    if (!best) continue
     row.pages.push({ id: p.id, side: p.side, ...best })
     if (
-      best &&
       best.cover >= COVER_PAGE &&
-      fr.phase === 'hold' &&
+      best.asHold &&
       !checkAt.has(best.page)
     )
       checkAt.set(best.page, c.t)
@@ -563,7 +635,7 @@ for (const c of captures) {
 const readOf = new Map()
 for (const r of capRows) {
   r.pages.forEach((p, i) => {
-    if (!p || p.cover < COVER_PAGE) return
+    if (!p || p.cover < COVER_PAGE || !p.asHold) return
     const n =
       r.numbers.length === r.pages.length
         ? r.numbers[i]
@@ -684,13 +756,16 @@ const summary = {
   ),
   logs: [...new Set(logs)].slice(0, 10),
   video: videoPath,
+  wStream,
+  rescored: rescore || undefined,
 }
-fs.writeFileSync(
-  path.join(outDir, 'probe.json'),
-  JSON.stringify(
-    probe.map((e) => (e.type === 'frame' ? { ...e, sig: undefined } : e)),
-  ),
-)
+if (!rescore)
+  fs.writeFileSync(
+    path.join(outDir, 'probe.json'),
+    JSON.stringify(
+      probe.map((e) => (e.type === 'frame' ? { ...e, sig: undefined } : e)),
+    ),
+  )
 fs.writeFileSync(
   path.join(outDir, 'result.json'),
   JSON.stringify({ summary, pageRows, capRows, shots }, null, 2),
