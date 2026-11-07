@@ -123,6 +123,16 @@ export function toFrame<P extends Point>(
  * cost a whole search on every flip), then the whole picture, then
  * `perFrame` of the other views, taken in turn from one frame to the
  * next. Once the whole picture finds the paper it is the first view again.
+ *
+ * The padded picture never comes before the whole picture: it is the
+ * whole picture with margins, drawn in five pieces (books 1–7 at run20:
+ * 150–170 ms a frame against 110–120, and its corners sit up to 50 px off
+ * the whole picture's), and it found the paper on frames the whole
+ * picture would have found too — once it had found the paper it was tried
+ * first, and the two flipped (book 2's single page at 1080×1920: 73 / 40
+ * frames, two model calls on most, 3.7 fps against 5.5 on the code
+ * before). It is wanted only when the whole picture shows nothing (the
+ * open book of a landscape single page), so it follows the whole picture.
  */
 export class ViewSearch {
   /** Views that found the paper, the most recent first. */
@@ -140,8 +150,10 @@ export class ViewSearch {
     const recent = this.#recent
       .map((name) => views.find((v) => v.name === name))
       .filter((v): v is DetectView => v !== undefined)
-    const out: DetectView[] = [...recent]
+    const pad = recent.find((v) => v.pad > 0 && v.w === full.w)
+    const out: DetectView[] = recent.filter((v) => v !== pad)
     if (!out.includes(full)) out.push(full)
+    if (pad) out.push(pad)
     const rest = views.filter((v) => !out.includes(v))
     const n = Math.min(this.#perFrame, rest.length)
     for (let k = 0; k < n; k++) out.push(rest[(this.#turn + k) % rest.length]!)

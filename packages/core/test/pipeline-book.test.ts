@@ -904,6 +904,16 @@ describe('detectViews / onCutEdge / ViewSearch (where the model looks)', () => {
     s.found(views[0]!) // the whole picture again: it alone comes first
     expect(names()).toEqual(['full', 'left', 'centre'])
   })
+  it('the padded picture follows the whole picture even when it found the paper last', () => {
+    const views = detectViews(1920, 1080)
+    const s = new ViewSearch()
+    const names = () => s.order(views).map((x) => x.name)
+    s.found(views[1]!) // pad
+    expect(names()).toEqual(['full', 'pad', 'right', 'left'])
+    s.found(views[4]!) // centre, then pad again: the window first, the whole picture, the padded one
+    s.found(views[1]!)
+    expect(names()).toEqual(['centre', 'full', 'pad', 'right', 'left'])
+  })
 })
 
 describe('settleBookNumbers: room for the captures between (book 4 at 720×960)', () => {
