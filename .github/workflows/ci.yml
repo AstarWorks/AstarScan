@@ -203,7 +203,9 @@ jobs:
     # WebKit (iOS Safari's engine on a desktop): does it open, is it
     # cross-origin isolated, do the models load, what does the camera say.
     if: github.event_name == 'push' && github.ref != 'refs/heads/main' && needs.preview.outputs.alias_url != ''
-    runs-on: ubuntu-latest
+    # Pinned: ubuntu-latest moved to 26.04, which Playwright 1.56.1 does not
+    # support ("does not support chromium on ubuntu26.04-x64", run 42360806798).
+    runs-on: ubuntu-24.04
     timeout-minutes: 25
     env:
       ALIAS_URL: ${{ needs.preview.outputs.alias_url }}
