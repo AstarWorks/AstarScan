@@ -44,10 +44,12 @@ const context = await browser.newContext({
   userAgent:
     'Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 Mobile/15E148 Safari/604.1',
 })
-try {
-  await context.grantPermissions(['camera'])
-} catch (e) {
-  r.camera = { permission: `grant failed: ${e.message.split('\n')[0]}` }
+// Playwright's WebKit knows no 'camera' permission: grantPermissions
+// throws, and a grant left pending makes newPage fail too ("Unknown
+// permission: camera", run 42363025036). So nothing is granted; what
+// getUserMedia then says is recorded below.
+r.camera = {
+  permission: 'not granted (Playwright WebKit has no camera permission)',
 }
 const page = await context.newPage()
 page.on('pageerror', (e) => r.pageErrors.push(e.message))
