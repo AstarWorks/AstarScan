@@ -239,6 +239,8 @@ jobs:
           NODE_PATH: /tmp/pw/node_modules
         run: |
           set -euo pipefail
+          # tee opens its file before book-e2e.mjs makes the directory.
+          mkdir -p preview-book
           # shellcheck disable=SC2086
           node scripts/eval/book-clips/book-e2e.mjs "$ALIAS_URL" "$CLIP" preview-book --clips "$CLIPS_DIR" $CLIP_ARGS | tee preview-book/summary.json
           {
