@@ -507,6 +507,24 @@ export function settleBookNumbers(
   /** The other captures whose numbers follow this one's (`followGaps`). */
   const partners = (s: BookSheet) =>
     work.filter((x) => x.id !== s.id && follows(s, x))
+  // A partner on the side its place in capture order says: pages are
+  // turned forward, so a capture taken before holds lower numbers and one
+  // taken after higher (96・97 then 98・99 then 100・101). A partner that
+  // follows backwards (taken after, holding lower numbers) is a go-back —
+  // or this capture is a misread of a number ahead: book 2 at 720×960
+  // (run23), 94・95 read as "98・99" at 7.4 px, then 96・97 at 8.8 px
+  // (tall), and the real 98・99 last with no number read; 96・97 made the
+  // misread sure and "✓ 98・99" was shown on 94・95. Such a partner does
+  // not confirm.
+  const forwardPartners = (s: BookSheet) => {
+    const own = countedNumbers(s)
+    return partners(s).filter((x) => {
+      const nx = countedNumbers(x)
+      return x.seq < s.seq
+        ? Math.max(...nx) < Math.min(...own)
+        : Math.min(...nx) > Math.max(...own)
+    })
+  }
   // A read under surePx is wrong as often as right; one such read agreeing
   // with another is weak evidence (book 2 720×960: 94・95 read as 98・99
   // at 6 px beside a right 96・97 at 6 px, both shown, 94・95 red). It
@@ -516,7 +534,7 @@ export function settleBookNumbers(
   // 720×960 (run20), 48・49 and 54・55 both read as "4・5" at 7 px made
   // 56・57 read as "6・7" sure, and "✓ 6・7" was shown.
   const confirmed = (s: BookSheet) => {
-    const ps = partners(s)
+    const ps = forwardPartners(s)
     const held = new Set(ps.map((x) => countedNumbers(x).join(',')))
     return held.size >= 2 || ps.some(tallRead)
   }

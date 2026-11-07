@@ -461,6 +461,59 @@ describe('bookCoverage (the mock ideal-capture.html flow)', () => {
     expect(w).toEqual(['ok', 'unsure', 'unsure', 'ok'])
   })
 
+  it('a partner that follows backwards does not confirm a small read (book 2 720×960, run23: 94・95 as 98・99, then a tall 96・97, the real 98・99 unread)', () => {
+    const t = (n: number): BookPageRead => ({
+      state: 'read',
+      number: n,
+      px: 8.8,
+    })
+    const small = (n: number): BookPageRead => ({
+      state: 'read',
+      number: n,
+      px: 7.4,
+    })
+    const inferred = (n: number): BookPageRead => ({
+      state: 'read',
+      number: n,
+      inferred: true,
+    })
+    // 88・89 and 92・93 unread, 90・91 small, 94・95 read as "98・99" (the
+    // right half at 7.4 px), 96・97 read tall on the right, the real
+    // 98・99 unread: nothing holds 98・99 twice, so only the confirmation
+    // decides. 96・97 is taken after "98・99" and holds lower numbers — it
+    // follows the misread backwards and must not make it sure.
+    const s = [
+      sheet(none, none),
+      sheet(small(90), inferred(91)),
+      sheet(none, none),
+      sheet(inferred(98), small(99)),
+      sheet(inferred(96), t(97)),
+      sheet(none, none),
+    ]
+    const v = s.map((x) => settleBookNumbers(s).get(x.id))
+    expect(v).toEqual(['ok', 'unsure', 'ok', 'unsure', 'unsure', 'ok'])
+    // The same reads in the forward order (96・97 then 98・99): the tall
+    // 96・97 before it confirms the small 98・99, as before.
+    const fwd = [
+      sheet(none, none),
+      sheet(inferred(96), t(97)),
+      sheet(inferred(98), small(99)),
+    ]
+    const w = fwd.map((x) => settleBookNumbers(fwd).get(x.id))
+    expect(w).toEqual(['ok', 'unsure', 'ok'])
+    // Going back to fill a gap keeps its forward partner: 164・165, 168・169,
+    // then 166・167 — 166・167 is confirmed by the tall 164・165 before it,
+    // 168・169 by 170・171 after it.
+    const back = [
+      sheet(t(164), t(165)),
+      sheet(inferred(168), small(169)),
+      sheet(inferred(166), small(167)),
+      sheet(t(170), t(171)),
+    ]
+    const b = back.map((x) => settleBookNumbers(back).get(x.id))
+    expect(b).toEqual(['ok', 'ok', 'ok', 'ok'])
+  })
+
   it('a spread whose left page has the wrong parity for the book is unsure', () => {
     const t = (n: number): BookPageRead => ({
       state: 'read',
