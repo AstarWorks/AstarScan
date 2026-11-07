@@ -4,5 +4,9 @@
 name = "astar-scan"
 compatibility_date = "2025-07-15"
 
+# Branch previews: `wrangler versions upload --preview-alias <branch>`
+# (CI preview job) is served at <alias>-astar-scan.<subdomain>.workers.dev.
+preview_urls = true
+
 [assets]
 directory = "apps/web/.output/public"

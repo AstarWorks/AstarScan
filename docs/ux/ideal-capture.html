@@ -1,0 +1,347 @@
+<!doctype html>
+<html lang="ja">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>本の撮影 理想の体験（合意用モック）</title>
+<style>
+  :root { --ok:#22c55e; --warn:#f59e0b; --bad:#ef4444; --mute:#9ca3af; --ink:#111827; --sub:#6b7280; --line:#e5e7eb; }
+  * { box-sizing:border-box; }
+  html,body { margin:0; height:100%; background:#f3f4f6; color:var(--ink);
+    font-family:"Noto Sans CJK JP","Noto Sans JP","Hiragino Sans","Yu Gothic UI",sans-serif; }
+  #app { display:flex; gap:28px; justify-content:center; align-items:flex-start; padding:20px; min-height:100%; }
+  #stage { flex:none; width:390px; }
+  #phone { position:relative; width:390px; height:780px; border-radius:42px; background:#000; padding:10px; box-shadow:0 12px 34px rgba(0,0,0,.28); }
+  #screen { position:relative; width:370px; height:760px; border-radius:33px; overflow:hidden; background:#000; }
+  #screen svg { position:absolute; inset:0; width:100%; height:100%; display:block; }
+  #controls { display:flex; align-items:center; gap:10px; margin-top:12px; }
+  #controls button { font:inherit; font-size:13px; height:32px; padding:0 12px; border:1px solid #d1d5db; border-radius:6px; background:#fff; cursor:pointer; }
+  #seek { flex:1; min-width:0; }
+  #side { flex:0 1 460px; min-width:0; }
+  h1 { font-size:18px; margin:2px 0 12px; }
+  h2 { font-size:13px; margin:18px 0 6px; color:var(--sub); font-weight:600; }
+  #signal { display:flex; gap:8px; height:30px; align-items:center; font-size:13px; font-weight:600; }
+  .sig { padding:3px 10px; border-radius:99px; background:#e5e7eb; color:#9ca3af; }
+  .sig.on { background:var(--ink); color:#fff; }
+  .sig.bad.on { background:var(--bad); }
+  table { width:100%; border-collapse:collapse; font-size:13px; background:#fff; }
+  th,td { text-align:left; padding:6px 8px; border-bottom:1px solid var(--line); vertical-align:top; }
+  th { color:var(--sub); font-weight:600; font-size:12px; }
+  #scenes tr { cursor:pointer; }
+  #scenes tr.cur { background:#111827; color:#fff; }
+  #scenes td:first-child { white-space:nowrap; font-variant-numeric:tabular-nums; color:var(--sub); }
+  #scenes tr.cur td:first-child { color:#d1d5db; }
+  @media (max-width:880px) { #app { flex-direction:column; align-items:center; } #side { width:100%; max-width:390px; flex:none; } }
+</style>
+</head>
+<body>
+<div id="app">
+  <div id="stage">
+    <div id="phone"><div id="screen"><svg id="s" viewBox="0 0 370 760" xmlns="http://www.w3.org/2000/svg"></svg></div></div>
+    <div id="controls">
+      <button id="play">一時停止</button>
+      <input id="seek" type="range" min="0" step="0.05" value="0" aria-label="再生位置">
+      <button id="rate">1倍</button>
+    </div>
+  </div>
+  <div id="side">
+    <h1>本の撮影 理想の体験（合意用モック）</h1>
+    <div id="signal"><span class="sig" id="sigSound">音</span><span class="sig" id="sigVib">振動</span><span class="sig bad" id="sigBad">警告の振動 2 回</span></div>
+    <h2>流れ</h2>
+    <table><tbody id="scenes"></tbody></table>
+    <h2>合意したいこと</h2>
+    <table>
+      <thead><tr><th>項目</th><th>理想</th><th>今の Android 版</th></tr></thead>
+      <tbody>
+        <tr><td>「撮れた」まで</td><td>静止から 1 秒以内。番号を待たずにめくれる</td><td>撮影と同時に出る</td></tr>
+        <tr><td>番号が出るまで</td><td>撮影後 1 秒以内</td><td>中央値 約 8 秒（エミュレーター）</td></tr>
+        <tr><td>シャッター</td><td>自動。ボタンは押さない</td><td>自動</td></tr>
+        <tr><td>抜けたとき</td><td>次を撮った瞬間に赤と振動 2 回。戻れば自動で埋まる</td><td>赤の案内。実機では未確認</td></tr>
+        <tr><td>撮影済みの見開きに戻ったとき</td><td>撮り直さず、撮影済みと出す</td><td>未確認</td></tr>
+        <tr><td>図版など番号の無いページ</td><td>灰色で「番号なし」。抜けとは扱わない</td><td>一覧で灰色</td></tr>
+        <tr><td>見開きの保存</td><td>1 回で撮り、綴じ目で 2 ページに分ける。一覧も PDF も 1 ページずつ</td><td>見開きのまま 1 枚</td></tr>
+        <tr><td>見開きと片ページ</td><td>本の寄せ方で自動で切り替わる</td><td>未確認</td></tr>
+        <tr><td>「— 44 —」型の番号</td><td>普通の番号と同じように読む</td><td>スマホと同じ解像度の画像で読めた</td></tr>
+      </tbody>
+    </table>
+  </div>
+</div>
+<script>
+const clamp=(x,a=0,b=1)=>Math.min(b,Math.max(a,x));
+const ease=x=>{x=clamp(x);return x*x*(3-2*x)};
+const rnd=(seed)=>{let x=Math.sin(seed*127.1+11.7)*43758.5453;return x-Math.floor(x)};
+
+// 流れ。type が画面の出し方を決める。spread は見開きの左ページ番号。
+const SCENES=[
+ {type:'search',dur:4.6,label:'本を探す',cap:'枠は紙を追い続ける。本が入るまで橙、入ったら「そのまま」'},
+ {type:'capture',spread:34,dur:2.6,label:'撮れた',cap:'止めると緑の線が一周して自動で撮る。先に ✓、番号はすぐ後から出る'},
+ {type:'flip',from:34,to:36,dur:1.5,label:'めくる',cap:'めくる動きを検知。枠を消して待つ'},
+ {type:'capture',spread:36,dur:2.2,label:'次を撮る',cap:'止めるだけ。画面を見なくても音と振動で分かる'},
+ {type:'flip',from:36,to:40,dur:1.5,label:'2 枚めくってしまう',cap:'38・39 を飛ばす'},
+ {type:'capture',spread:40,alert:true,dur:3.2,label:'抜けを知らせる',cap:'撮った瞬間に赤と振動 2 回。下の列に赤い空きが残る'},
+ {type:'flip',from:40,to:38,dur:1.5,label:'戻る',cap:'赤は消えず、戻るのを待つ'},
+ {type:'capture',spread:38,fill:true,dur:2.4,label:'抜けが埋まる',cap:'戻って撮ると赤い空きが緑に変わる'},
+ {type:'flip',from:38,to:40,dur:1.4,label:'進む',cap:''},
+ {type:'dup',spread:40,dur:1.5,label:'撮影済みに戻る',cap:'同じ見開きは撮り直さず、灰色の枠で「撮影済み」'},
+ {type:'flip',from:40,to:42,dur:1.4,label:'進む',cap:''},
+ {type:'capture',spread:42,nonum:true,dur:2.6,label:'番号の無いページ',cap:'図版ページは灰色の「番号なし」。赤にはしない'},
+ {type:'flip',from:42,to:44,dur:1.4,label:'進む',cap:''},
+ {type:'capture',spread:44,dash:true,dur:2.4,label:'「— 44 —」型の番号',cap:'ページ中央の下にダッシュ付きで印字された番号も読む。読んだ番号を緑で囲む'},
+ {type:'flip',from:44,to:46,dur:1.4,label:'進む',cap:''},
+ {type:'move',spread:46,fromSingle:null,toSingle:'L',dur:1.3,label:'片ページで撮る',cap:'本に寄ると 1 ページだけを枠で囲む。見開きか片ページかは選ばなくてよい'},
+ {type:'capture',spread:46,page:46,single:'L',dur:2.3,label:'片ページの ✓',cap:'撮れたら隣のページへ移す'},
+ {type:'move',spread:46,fromSingle:'L',toSingle:'R',dur:1.2,label:'隣のページへ',cap:''},
+ {type:'capture',spread:46,page:47,single:'R',dur:2.3,label:'次のページの ✓',cap:'見開きの右まで撮れたらめくる案内'},
+ {type:'finish',spread:46,single:'R',dur:1.1,label:'終わる',cap:'「終わる」を押すと一覧へ'},
+ {type:'list',dur:7,label:'結果を確かめて保存',cap:'曲がりを直した結果を確かめ、PDF・Markdown で保存、書類置場へ送る'},
+];
+let acc=0; SCENES.forEach(s=>{s.t0=acc;acc+=s.dur}); const TOTAL=acc;
+
+const pageNums=sp=>sp+'・'+(sp+1);
+
+// 本。原点が綴じ目の中央。
+function pageLines(n,side){
+  const x0=side<0?-148:14; let o='';
+  if(n===42||n===43){ // 図版のページ（番号なし）
+    return `<rect x="${x0+6}" y="-88" width="122" height="${n===42?150:96}" fill="#c9d3dc"/><path d="M${x0+20} ${n===42?40:-10} l30 -46 l26 30 l18 -20 l28 36 z" fill="#8fa3b5"/>`+
+      (n===43?[0,1,2,3,4].map(i=>`<rect x="${x0}" y="${26+i*13}" width="${134-rnd(n+i)*30}" height="4" fill="#4b5563" opacity=".55"/>`).join(''):'');
+  }
+  for(let i=0;i<15;i++){ const w=i%7===6?70+rnd(n+i)*30:120+rnd(n+i)*14;
+    o+=`<rect x="${x0}" y="${-94+i*12}" width="${w}" height="4" fill="#4b5563" opacity=".55"/>`; }
+  if(n===44||n===45){ o+=`<text x="${side*80}" y="104" font-size="10" fill="#374151" font-family="serif" text-anchor="middle">— ${n} —</text>`; return o; }
+  const nx=side<0?-146:136;
+  o+=`<text x="${nx}" y="104" font-size="10" fill="#374151" font-family="serif" text-anchor="${side<0?'start':'end'}">${n}</text>`;
+  return o;
+}
+const leftPagePath='M0 -104 Q-40 -116 -160 -112 L-160 112 Q-40 116 0 106 Z';
+const rightPagePath='M0 -104 Q40 -116 160 -112 L160 112 Q40 116 0 106 Z';
+const page=(n,side)=>`<path d="${side<0?leftPagePath:rightPagePath}" fill="#f6f1e4"/><path d="M0 -104 L${side*22} -112 L${side*22} 112 L0 106 Z" fill="#000" opacity=".07"/>${pageLines(n,side)}`;
+function book(left,right,flip){
+  let o=`<path d="M-168 -118 L168 -118 L170 121 L-170 121 Z" fill="#3f2a1a"/><path d="M-164 -114 L164 -114 L166 117 L-166 117 Z" fill="#d8d0bc"/>`;
+  o+=`<g>${page(left,-1)}</g><g>${page(right,1)}</g>`;
+  if(flip){ const c=Math.cos(Math.PI*flip.p), lift=Math.sin(Math.PI*flip.p);
+    const inner=c>0?page(flip.front,1):page(flip.back,-1);
+    const sx=Math.abs(c)<.02?.02:Math.abs(c);
+    o+=`<path d="M0 -112 L${160*c} -112 L${160*c} 112 L0 112 Z" fill="#000" opacity="${.16*lift}" transform="translate(${10*lift},8)"/>`;
+    o+=`<g transform="skewY(${(c>0?-1:1)*7*lift}) scale(${sx},1)">${inner}<rect x="${c>0?0:-160}" y="-114" width="160" height="228" fill="#000" opacity="${.14*lift}"/></g>`;
+    const hx=160*c+(c>0?6:-6), hy=88-lift*16;
+    o+=`<g transform="translate(${hx},${hy}) rotate(${c>0?-18:18})"><rect x="-13" y="-8" width="26" height="74" rx="13" fill="#e0b394"/><rect x="-12" y="-8" width="24" height="20" rx="11" fill="#eec7ab"/></g>`;
+  }
+  return o;
+}
+
+function bookPose(t,scene,lt){
+  const wob=1.3*Math.sin(t*1.7)+.8*Math.sin(t*3.1), wob2=1.2*Math.cos(t*1.3);
+  if(scene.type==='search'){
+    const a=ease(lt/2.2);
+    let x=185+95*(1-a), y=350+170*(1-a), r=-11*(1-a), s=.68+.32*a;
+    if(lt>1.0&&lt<2.9){ const k=Math.sin((lt-1)/1.9*Math.PI); x+=9*k*Math.sin(lt*16); y+=6*k*Math.cos(lt*19); }
+    return {x:x+wob,y:y+wob2,r,s};
+  }
+  const SP={x:185,y:350,s:1}, L={x:185+80*1.7,y:300,s:1.7}, R={x:185-80*1.7,y:300,s:1.7};
+  const of=k=>k==='L'?L:k==='R'?R:SP;
+  if(scene.type==='move'){ const a=of(scene.fromSingle),b=of(scene.toSingle),e=ease(lt/(scene.dur-.1));
+    return {x:a.x+(b.x-a.x)*e+wob*.6,y:a.y+(b.y-a.y)*e+wob2*.6,r:0,s:a.s+(b.s-a.s)*e}; }
+  const base=of(scene.single);
+  return {x:base.x+wob*.45,y:base.y+wob2*.45,r:0,s:base.s};
+}
+function poseCorners(p,single){ const rad=p.r*Math.PI/180,c=Math.cos(rad),q=Math.sin(rad);
+  const box=single==='L'?[[-162,-114],[0,-106],[0,108],[-162,114]]:single==='R'?[[0,-106],[162,-114],[162,114],[0,108]]:[[-170,-120],[170,-120],[172,122],[-172,122]];
+  return box.map(([a,b])=>[p.x+p.s*(a*c-b*q),p.y+p.s*(a*q+b*c)]); }
+const quadPath=q=>'M'+q.map(c=>c[0].toFixed(1)+' '+c[1].toFixed(1)).join(' L')+' Z';
+function brackets(q,col){ let o='';
+  q.forEach((c,i)=>{ const n=q[(i+1)%4],m=q[(i+3)%4];
+    const u=(d)=>{const dx=d[0]-c[0],dy=d[1]-c[1],l=Math.hypot(dx,dy);return [c[0]+dx/l*20,c[1]+dy/l*20]};
+    const a=u(n),b=u(m);
+    o+=`<path d="M${a[0]} ${a[1]} L${c[0]} ${c[1]} L${b[0]} ${b[1]}" fill="none" stroke="${col}" stroke-width="5" stroke-linecap="round" stroke-linejoin="round"/>`; });
+  return o; }
+
+// 撮れた分の状態を時刻から求める。下の列はページ順に並ぶ。
+function stripAt(t){
+  const items=[]; const set=(sp,st)=>{const i=items.find(x=>x.sp===sp); if(i) i.st=st; else items.push({sp,st})};
+  for(const s of SCENES){
+    if(s.type!=='capture') continue;
+    if(t<s.t0+.75) break;
+    if(s.alert) set(38,'gap');
+    set(s.page??s.spread,s.nonum?'nonum':s.single?'okSingle':'ok');
+  }
+  return items.sort((a,b)=>a.sp-b.sp);
+}
+const stripOff=items=>Math.max(0,items.length*54+14-362);
+function strip(items,t){
+  let o=`<rect x="0" y="622" width="370" height="138" fill="#000" opacity=".72"/>`;
+  const w=46,h=34,x0=14-stripOff(items);
+  items.forEach((it,i)=>{ const x=x0+i*(w+8),y=634;
+    const col=it.st==='ok'||it.st==='okSingle'?'#22c55e':it.st==='gap'?'#ef4444':'#9ca3af';
+    if(it.st==='gap') o+=`<rect x="${x}" y="${y}" width="${w}" height="${h}" rx="3" fill="#ef4444" fill-opacity=".18" stroke="#ef4444" stroke-width="2" stroke-dasharray="4 3"/>`;
+    else o+=`<rect x="${x}" y="${y}" width="${w}" height="${h}" rx="3" fill="#f6f1e4"/><rect x="${x+w/2-.5}" y="${y}" width="1" height="${h}" fill="#bbb"/>`+
+      [0,1,2,3].map(k=>`<rect x="${x+4}" y="${y+5+k*6}" width="${w/2-8}" height="2" fill="#6b7280"/><rect x="${x+w/2+4}" y="${y+5+k*6}" width="${w/2-8}" height="2" fill="#6b7280"/>`).join('');
+    o+=`<text x="${x+w/2}" y="${y+h+14}" font-size="10" fill="${col}" text-anchor="middle" font-weight="700">${it.st==='nonum'?'番号なし':it.st==='okSingle'?it.sp:it.sp+'・'+(it.sp+1)}</text>`;
+  });
+  return o;
+}
+const pill=(x,y,text,bg,fg='#fff',fs=14)=>{ const w=[...text].length*fs*.98+26; return `<g transform="translate(${x-w/2},${y})"><rect width="${w}" height="${fs+16}" rx="${(fs+16)/2}" fill="${bg}"/><text x="${w/2}" y="${fs+3.5}" font-size="${fs}" font-weight="700" text-anchor="middle" fill="${fg}">${text}</text></g>`; };
+function banner(lines,bg,y=508,op=1){ // 目を離しても読める大きさ
+  const h=26+lines.length*27;
+  let o=`<g opacity="${op}"><rect x="14" y="${y}" width="342" height="${h}" rx="14" fill="${bg}"/>`;
+  lines.forEach((l,i)=>{o+=`<text x="185" y="${y+33+i*27}" font-size="${i===0?20:16}" font-weight="700" fill="#fff" text-anchor="middle">${l}</text>`});
+  return o+'</g>';
+}
+
+function renderCamera(t,scene,lt){
+  let left=34,right=35,flip=null;
+  const sp=scene.spread!=null?scene.spread:null;
+  if(sp!=null){left=sp;right=sp+1}
+  if(scene.type==='flip'){
+    const p=ease((lt-.1)/(scene.dur-.25));
+    const fwd=scene.to>scene.from; const a=fwd?scene.from:scene.to,b=fwd?scene.to:scene.from;
+    const q=fwd?p:1-p;
+    left=a;right=b+1;
+    flip={p:q,front:a+1,back:b};
+  }
+  const pose=bookPose(t,scene,lt);
+  const lagScene=scene.type==='search';
+  const lagPose=lagScene?bookPose(t-.13,scene,Math.max(0,lt-.13)):pose;
+  const q=poseCorners(lagPose,scene.single);
+  let o=`<defs><linearGradient id="desk" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#5a4635"/><stop offset="1" stop-color="#3b2d22"/></linearGradient></defs><rect width="370" height="760" fill="url(#desk)"/>`;
+  let mark='';
+  if(scene.type==='capture'&&lt>=1.3&&!scene.nonum){
+    const nb=(cx)=>`<rect x="${cx-(scene.dash?26:12)}" y="93" width="${scene.dash?52:24}" height="15" rx="3" fill="none" stroke="#16a34a" stroke-width="1.6"/>`;
+    const lx=scene.dash?-80:-137,rx=scene.dash?80:127;
+    if(scene.single==='L') mark=nb(lx); else if(scene.single==='R') mark=nb(rx); else mark=nb(lx)+nb(rx);
+  }
+  o+=`<g transform="translate(${pose.x},${pose.y}) rotate(${pose.r}) scale(${pose.s})">${book(left,right,flip)}${mark}</g>`;
+  // 枠
+  if(scene.type==='search'){
+    const inFrame=lt>2.9;
+    if(inFrame){
+      const r=clamp((lt-2.9)/1.7);
+      o+=`<path d="${quadPath(q)}" fill="#22c55e" fill-opacity=".05" stroke="#22c55e" stroke-opacity=".35" stroke-width="3"/>`;
+      o+=`<path d="${quadPath(q)}" fill="none" stroke="#22c55e" stroke-width="5" pathLength="100" stroke-dasharray="${r*100} 100"/>`;
+      o+=brackets(q,'#22c55e');
+      o+=pill(185,62,'そのまま','#16a34a');
+    } else {
+      o+=`<path d="${quadPath(q)}" fill="#f59e0b" fill-opacity=".1" stroke="#f59e0b" stroke-width="3" stroke-dasharray="9 7"/>`+brackets(q,'#f59e0b');
+      o+=pill(185,62,lt<1?'本全体を入れてください':'止めてください','#b45309');
+    }
+  }
+  if(scene.type==='capture'){
+    const cls=scene.nonum?'#9ca3af':'#22c55e';
+    if(lt<.75){ // 撮る直前の一周
+      const r=clamp(lt/.7);
+      o+=`<path d="${quadPath(q)}" fill="#22c55e" fill-opacity=".05" stroke="#22c55e" stroke-opacity=".35" stroke-width="3"/>`;
+      o+=`<path d="${quadPath(q)}" fill="none" stroke="#22c55e" stroke-width="5" pathLength="100" stroke-dasharray="${r*100} 100"/>`+brackets(q,'#22c55e');
+      o+=pill(185,62,'そのまま','#16a34a');
+    } else {
+      o+=`<path d="${quadPath(q)}" fill="${cls}" fill-opacity=".07" stroke="${cls}" stroke-width="5"/>`+brackets(q,cls);
+    }
+    if(lt>=.75){
+      const hasNum=lt>=1.3;
+      if(scene.alert&&lt>=1.15){
+        o+=banner(['⚠ 38・39 ページが抜けています','戻ってください'],'#dc2626');
+      } else if(scene.nonum){
+        o+=banner(['✓ 撮れた（番号なし）','めくってください'],'#4b5563');
+      } else if(scene.fill&&lt>=1.3){
+        o+=banner(['✓ 38・39 ページを埋めました','40・41 は撮影済みです'],'#15803d');
+      } else {
+        const nums=scene.page!=null?scene.page:pageNums(sp);
+        o+=banner([hasNum?`✓ ${nums} ページ 撮れた`:'✓ 撮れた',scene.single==='L'?'隣のページへ':'めくってください'],'#15803d');
+      }
+    }
+    // フラッシュとサムネイルの飛び
+    const fl=lt-.72; if(fl>=0&&fl<.18) o+=`<rect width="370" height="760" fill="#fff" opacity="${(1-fl/.18)*.85}"/>`;
+    const fy=(lt-.78)/.42;
+    if(fy>0&&fy<1){ const items=stripAt(t); const idx=items.findIndex(x=>x.sp===(scene.page??sp));
+      const tx=14-stripOff(items)+idx*54,ty=634, e=ease(fy);
+      const x=20+(tx-20)*e,y=232+(ty-232)*e,w=330+(46-330)*e,h=236+(34-236)*e;
+      o+=`<rect x="${x}" y="${y}" width="${w}" height="${h}" fill="#f6f1e4" stroke="#fff" stroke-width="2" opacity=".9"/>`; }
+  }
+  if(scene.type==='flip'){
+    o+=pill(185,62,'めくり中','rgba(17,24,39,.85)');
+    if(scene.from===40&&scene.to===38) o+=banner(['⚠ 38・39 ページが抜けています'],'#dc2626',524);
+  }
+  if(scene.type==='move') o+=pill(185,62,scene.fromSingle?'隣のページへ':'片ページに切り替え','rgba(17,24,39,.85)');
+  if(scene.type==='dup'){
+    o+=`<path d="${quadPath(q)}" fill="#9ca3af" fill-opacity=".14" stroke="#9ca3af" stroke-width="4"/>`+brackets(q,'#9ca3af');
+    o+=banner(['40・41 は撮影済みです','めくってください'],'#4b5563');
+  }
+  if(scene.type==='finish'){
+    o+=`<path d="${quadPath(q)}" fill="none" stroke="#9ca3af" stroke-width="3"/>`+brackets(q,'#9ca3af');
+  }
+  // 上の帯
+  const items=stripAt(t); const gaps=items.filter(x=>x.st==='gap').length, done=items.length-gaps;
+  o+=`<rect width="370" height="50" fill="#000" opacity=".55"/><text x="20" y="33" font-size="20" fill="#fff">×</text>`;
+  o+=`<text x="350" y="32" font-size="14" font-weight="700" fill="#fff" text-anchor="end">${done} 枚</text>`;
+  if(gaps) o+=`<text x="270" y="32" font-size="14" font-weight="700" fill="#fca5a5" text-anchor="end">抜け ${gaps}</text>`;
+  o+=strip(items,t);
+  const press=scene.type==='finish'&&lt>.25&&lt<.7;
+  o+=`<rect x="115" y="696" width="140" height="44" rx="22" fill="${press?'#d1d5db':'#fff'}"/><text x="185" y="724" font-size="16" font-weight="700" text-anchor="middle" fill="#111827">終わる</text>`;
+  if(press) o+=`<circle cx="185" cy="718" r="26" fill="#111827" opacity=".18"/>`;
+  return o;
+}
+
+function renderList(lt){
+  const rows=[34,35,36,37,38,39,40,41].map(n=>[n,'ok']).concat([[42,'nonum'],[43,'nonum'],[44,'ok'],[45,'ok'],[46,'ok'],[47,'ok']]);
+  let o=`<rect width="370" height="760" fill="#fff"/>`;
+  o+=`<text x="18" y="46" font-size="18" font-weight="700" fill="#111827">撮影結果</text><text x="352" y="46" font-size="14" font-weight="700" fill="#15803d" text-anchor="end">14 ページ・抜け 0</text>`;
+  o+=`<line x1="0" y1="62" x2="370" y2="62" stroke="#e5e7eb"/>`;
+  const sel=lt>1.2?4:-1;
+  rows.forEach(([sp,st],i)=>{ const y=62+i*18;
+    if(sel>=0&&(i===sel||i===sel+1)) o+=`<rect x="0" y="${y}" width="370" height="18" fill="#f3f4f6"/>`;
+    o+=`<rect x="16" y="${y+3}" width="9" height="12" fill="#f6f1e4" stroke="#d1d5db"/>`;
+    o+=`<text x="38" y="${y+13.5}" font-size="12" font-weight="600" fill="#111827">${sp}${st==='nonum'?'（番号なし）':''}</text>`;
+    o+=`<text x="200" y="${y+13.5}" font-size="12" font-weight="700" fill="${st!=='nonum'?'#15803d':'#6b7280'}">${st!=='nonum'?'✓ 撮れた':'撮れた'}</text>`;
+    o+=`<text x="352" y="${y+13.5}" font-size="11" fill="#6b7280" text-anchor="end">補正済み</text>`;
+    o+=`<line x1="0" y1="${y+18}" x2="370" y2="${y+18}" stroke="#e5e7eb"/>`; });
+  // 補正の前後
+  const py=318;
+  o+=`<text x="18" y="${py+16}" font-size="13" font-weight="700" fill="#374151">38・39 ページ</text>`;
+  const wipe=ease((lt-1.6)/1.6);
+  const px=18,pw=334,ph=204,yy=py+26;
+  const curved=`<rect x="${px}" y="${yy}" width="${pw}" height="${ph}" fill="#4b3a2b"/><g transform="translate(${px+pw/2},${yy+ph/2}) scale(.92)">${book(38,39,null)}</g>`;
+  const lines=(x,w)=>{let s='';for(let i=0;i<14;i++)s+=`<rect x="${x+12}" y="${yy+14+i*13}" width="${w-26-rnd(i+x)*18}" height="4" fill="#4b5563" opacity=".6"/>`;return s};
+  const flat=`<rect x="${px}" y="${yy}" width="${pw}" height="${ph}" fill="#ffffff"/><rect x="${px}" y="${yy}" width="${pw/2-5}" height="${ph}" fill="#faf7ee" stroke="#d1d5db"/><rect x="${px+pw/2+5}" y="${yy}" width="${pw/2-5}" height="${ph}" fill="#faf7ee" stroke="#d1d5db"/>${lines(px,pw/2-5)}${lines(px+pw/2+5,pw/2-5)}`;
+  o+=`<clipPath id="cpAll"><rect x="${px}" y="${yy}" width="${pw}" height="${ph}"/></clipPath><clipPath id="cp"><rect x="${px}" y="${yy}" width="${pw*wipe}" height="${ph}"/></clipPath><g clip-path="url(#cpAll)">${curved}</g><g clip-path="url(#cp)">${flat}</g>`;
+  if(wipe>0&&wipe<1) o+=`<rect x="${px+pw*wipe-1}" y="${yy}" width="2" height="${ph}" fill="#22c55e"/>`;
+  o+=`<text x="${px+8}" y="${yy+ph+18}" font-size="12" fill="#6b7280">${wipe>=1?'曲がりを直し、38 と 39 の 2 ページに分けた結果':wipe>0?'曲がりを補正中':'撮影したまま'}</text>`;
+  // 保存
+  const by=590;
+  const saved=lt>4.4, md=lt>5.2, sent=lt>6.0;
+  const btn=(x,w,label,on,pressed)=>`<rect x="${x}" y="${by}" width="${w}" height="44" rx="8" fill="${pressed?'#1f2937':on?'#dcfce7':'#fff'}" stroke="${on?'#16a34a':'#d1d5db'}"/><text x="${x+w/2}" y="${by+27}" font-size="14" font-weight="700" text-anchor="middle" fill="${pressed?'#fff':on?'#15803d':'#111827'}">${on?'✓ ':''}${label}</text>`;
+  o+=btn(18,160,'PDF 保存',saved,lt>4.0&&lt<=4.4)+btn(192,160,'Markdown 保存',md,lt>4.8&&lt<=5.2);
+  o+=`<rect x="18" y="${by+56}" width="334" height="48" rx="8" fill="${sent?'#15803d':'#111827'}"/><text x="185" y="${by+86}" font-size="15" font-weight="700" fill="#fff" text-anchor="middle">${sent?'✓ 書類置場に送りました':'書類置場に送る'}</text>`;
+  return o;
+}
+
+function sceneAt(t){ for(const s of SCENES) if(t<s.t0+s.dur) return s; return SCENES[SCENES.length-1]; }
+const $=id=>document.getElementById(id);
+const svg=$('s'),phone=$('phone');
+const rows=[];
+SCENES.forEach(s=>{ const tr=document.createElement('tr');
+  tr.innerHTML=`<td>${s.t0.toFixed(0)}秒</td><td><b>${s.label}</b>${s.cap?'<br>'+s.cap:''}</td>`;
+  tr.onclick=()=>{cur=s.t0;draw()}; $('scenes').appendChild(tr); rows.push(tr); });
+let cur=0,playing=true,rate=1,last=null;
+function draw(){
+  const t=clamp(cur,0,TOTAL-.001), sc=sceneAt(t), lt=t-sc.t0;
+  svg.innerHTML=sc.type==='list'?renderList(lt):renderCamera(t,sc,lt);
+  // 音と振動（モック上の表示と本体の揺れ）
+  let vib=0,bad=false;
+  if(sc.type==='capture'){ if(lt>.72&&lt<1.0) vib=1; if(sc.alert&&lt>=1.15&&lt<1.8){bad=true; vib=(lt<1.35||(lt>1.5&&lt<1.7))?1.8:0;} }
+  phone.style.transform=vib?`translateX(${Math.sin(t*90)*vib*1.6}px)`:'';
+  $('sigSound').classList.toggle('on',sc.type==='capture'&&lt>.72&&lt<1.15);
+  $('sigVib').classList.toggle('on',sc.type==='capture'&&!sc.alert&&lt>.72&&lt<1.1);
+  $('sigBad').classList.toggle('on',bad);
+  rows.forEach((r,i)=>r.classList.toggle('cur',SCENES[i]===sc));
+  $('seek').value=t;
+}
+function loop(ts){ if(playing){ if(last!=null) cur+=(ts-last)/1000*rate; if(cur>=TOTAL) cur=0; draw(); } last=ts; requestAnimationFrame(loop); }
+$('seek').max=TOTAL;
+$('seek').oninput=e=>{cur=+e.target.value;draw()};
+$('play').onclick=()=>{playing=!playing;$('play').textContent=playing?'一時停止':'再生'};
+$('rate').onclick=()=>{rate=rate===1?.5:1;$('rate').textContent=rate===1?'1倍':'0.5倍'};
+window.__seek=t=>{playing=false;cur=t;draw()};
+window.__total=TOTAL;
+requestAnimationFrame(loop);
+</script>
+</body>
+</html>

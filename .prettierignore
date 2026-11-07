@@ -24,3 +24,26 @@ test-results
 
 # OS / editor
 .DS_Store
+
+# Generated eval ground truth (minified on purpose)
+scripts/eval/book-clips/clips/*.gt.json
+scripts/eval/book-clips/framed/*.gt.json
+scripts/eval/book-clips/book2/*.gt.json
+scripts/eval/book-clips/book2-framed/*.gt.json
+scripts/eval/book-clips/book3/*.gt.json
+scripts/eval/book-clips/book3-framed/*.gt.json
+scripts/eval/book-clips/book4/*.gt.json
+scripts/eval/book-clips/book4-framed/*.gt.json
+scripts/eval/book-clips/book5/*.gt.json
+scripts/eval/book-clips/book5-framed/*.gt.json
+scripts/eval/book-clips/book6/*.gt.json
+scripts/eval/book-clips/book6-framed/*.gt.json
+scripts/eval/book-clips/book7/*.gt.json
+scripts/eval/book-clips/book7-framed/*.gt.json
+docs/ux/ideal-capture.html
+
+# Saved app output (Markdown save of the book capture, kept verbatim)
+docs/book3-eval/*.md
+
+# Saved app output (book 4 Markdown save, kept verbatim)
+docs/book4-eval/*.md

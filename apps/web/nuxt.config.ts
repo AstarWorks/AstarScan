@@ -36,9 +36,18 @@ export default defineNuxtConfig({
 
   vite: {
     plugins: [tailwindcss()],
-    server: { hmr: { overlay: false } },
+    server: {
+      hmr: { overlay: false },
+      // Module workers (the page-number reader) must carry COEP themselves
+      // under an isolated page; routeRules do not reach Vite's /_nuxt/ files.
+      headers: {
+        'Cross-Origin-Opener-Policy': 'same-origin',
+        'Cross-Origin-Embedder-Policy': 'require-corp',
+      },
+    },
     worker: { format: 'es' as const },
     optimizeDeps: {
+      include: ['jspdf'],
       exclude: ['onnxruntime-web', 'onnxruntime-web/wasm'],
     },
   },
@@ -52,6 +61,17 @@ export default defineNuxtConfig({
 
   nitro: {
     preset: 'static',
+  },
+
+  // Same cross-origin isolation as public/_headers (production), for
+  // `nuxt dev`: threaded WASM for onnxruntime-web needs SharedArrayBuffer.
+  routeRules: {
+    '/**': {
+      headers: {
+        'Cross-Origin-Opener-Policy': 'same-origin',
+        'Cross-Origin-Embedder-Policy': 'require-corp',
+      },
+    },
   },
 
   typescript: {

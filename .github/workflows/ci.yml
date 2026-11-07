@@ -1,10 +1,10 @@
 name: CI
 
 on:
+  # Every branch: main deploys to production, other branches upload a
+  # preview version (see the `preview` job) without touching production.
   push:
-    branches: [main]
   pull_request:
-    branches: [main]
   workflow_dispatch:
 
 concurrency:
@@ -48,6 +48,10 @@ jobs:
 
       - run: bun install
 
+      # opencv.js / ort WASM are git-ignored; see the script for the list.
+      - name: Fetch public assets
+        run: bash scripts/fetch-public-assets.sh
+
       - name: Build
         run: bun run build
 
@@ -59,13 +63,150 @@ jobs:
           packageManager: bun
           command: deploy
 
-  android:
-    name: Build Android APK (experimental)
+  preview:
+    name: Preview upload (non-main branches)
     needs: ci
-    continue-on-error: true
-    if: github.ref == 'refs/heads/main' && github.event_name == 'push'
+    # Uploads a new Worker version with a branch preview alias. Uses
+    # `wrangler versions upload`, which never changes the version serving
+    # production traffic (only `wrangler deploy` on main does that).
+    if: github.event_name == 'push' && github.ref != 'refs/heads/main'
     runs-on: ubuntu-latest
-    timeout-minutes: 45
+    timeout-minutes: 15
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: latest
+
+      - run: bun install
+
+      # opencv.js / ort WASM are git-ignored; see the script for the list.
+      - name: Fetch public assets
+        run: bash scripts/fetch-public-assets.sh
+
+      - name: Build
+        run: bun run build
+
+      - name: Compute preview alias
+        id: alias
+        env:
+          BRANCH: ${{ github.ref_name }}
+        run: |
+          # lowercase, [a-z0-9-] only, no leading/trailing/double dashes.
+          alias=$(printf '%s' "$BRANCH" | tr '[:upper:]' '[:lower:]' | sed -E 's/[^a-z0-9-]+/-/g; s/-+/-/g; s/^-+//; s/-+$//')
+          # Alias must start with a letter.
+          case "$alias" in [a-z]*) ;; *) alias="b-$alias" ;; esac
+          # <alias>-astar-scan must fit in a 63-char DNS label.
+          alias=$(printf '%s' "$alias" | cut -c1-50 | sed -E 's/-+$//')
+          echo "alias=$alias" >> "$GITHUB_OUTPUT"
+
+      - name: Upload preview version
+        id: upload
+        uses: cloudflare/wrangler-action@v3
+        with:
+          apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          accountId: ${{ vars.CLOUDFLARE_ACCOUNT_ID }}
+          packageManager: bun
+          wranglerVersion: '4.40.0'
+          command: versions upload --preview-alias ${{ steps.alias.outputs.alias }}
+
+      - name: Write preview URL to job summary
+        id: summary
+        env:
+          OUTPUT: ${{ steps.upload.outputs.command-output }}
+          ALIAS: ${{ steps.alias.outputs.alias }}
+          BRANCH: ${{ github.ref_name }}
+        run: |
+          alias_url=$(printf '%s\n' "$OUTPUT" | grep -oE 'https://[^ ]+' | grep -E "^https://$ALIAS-" | head -n1 || true)
+          version_url=$(printf '%s\n' "$OUTPUT" | grep -oE 'https://[^ ]+\.workers\.dev' | grep -vE "^https://$ALIAS-" | head -n1 || true)
+          version_id=$(printf '%s\n' "$OUTPUT" | grep -oE 'Worker Version ID: [0-9a-f-]+' | head -n1 | sed 's/.*: //' || true)
+          {
+            echo "## Preview (production is NOT changed)"
+            echo ""
+            echo "| | |"
+            echo "|---|---|"
+            echo "| Branch | \`$BRANCH\` |"
+            echo "| Alias URL | ${alias_url:-not found in wrangler output} |"
+            echo "| Version URL | ${version_url:-not found in wrangler output} |"
+            echo "| Version ID | \`${version_id:-unknown}\` |"
+            echo ""
+            echo "Uploaded with \`wrangler versions upload\`; production keeps serving the version last deployed from main."
+          } >> "$GITHUB_STEP_SUMMARY"
+          echo "alias_url=$alias_url" >> "$GITHUB_OUTPUT"
+          if [ -z "$alias_url" ]; then
+            echo "::warning::Preview alias URL not found in wrangler output"
+            printf '%s\n' "$OUTPUT"
+          fi
+
+      - name: Check preview opens and differs from production
+        if: steps.summary.outputs.alias_url != ''
+        env:
+          ALIAS_URL: ${{ steps.summary.outputs.alias_url }}
+          PROD_URL: https://scan.astarworks.com
+        run: |
+          local_build=$(jq -r '.id' apps/web/.output/public/_nuxt/builds/latest.json)
+          status=000
+          preview_build=unknown
+          # A new version takes a while to reach the alias (it can still
+          # serve the previous upload, e.g. the push and pull_request runs
+          # of the same commit), so wait until it serves this build.
+          for i in $(seq 1 24); do
+            status=$(curl -sS -o page.html -w '%{http_code}' "$ALIAS_URL/" || echo 000)
+            preview_build=$(curl -sS "$ALIAS_URL/_nuxt/builds/latest.json" | jq -r '.id' || echo unknown)
+            [ "$status" = 200 ] && [ "$preview_build" = "$local_build" ] && break
+            sleep 5
+          done
+          prod_build=$(curl -sS "$PROD_URL/_nuxt/builds/latest.json" | jq -r '.id' || echo unknown)
+          has_app=no
+          grep -q 'id="__nuxt"' page.html && has_app=yes
+          opencv_status=$(curl -sS -o /dev/null -w '%{http_code}' "$ALIAS_URL/opencv.js" || echo 000)
+          ort_status=$(curl -sS -o /dev/null -w '%{http_code}' "$ALIAS_URL/ort/ort-wasm-simd-threaded.jsep.wasm" || echo 000)
+          {
+            echo ""
+            echo "### Check"
+            echo ""
+            echo "| | |"
+            echo "|---|---|"
+            echo "| Preview HTTP status | $status |"
+            echo "| Preview serves the Nuxt app shell | $has_app |"
+            echo "| \`/opencv.js\` HTTP status | $opencv_status |"
+            echo "| \`/ort/ort-wasm-simd-threaded.jsep.wasm\` HTTP status | $ort_status |"
+            echo "| Build ID of this commit | \`$local_build\` |"
+            echo "| Build ID served by preview | \`$preview_build\` |"
+            echo "| Build ID served by production ($PROD_URL) | \`$prod_build\` |"
+          } >> "$GITHUB_STEP_SUMMARY"
+          echo "status=$status app=$has_app local=$local_build preview=$preview_build prod=$prod_build opencv=$opencv_status ort=$ort_status"
+          if [ "$status" != 200 ] || [ "$has_app" != yes ] || [ "$preview_build" != "$local_build" ]; then
+            echo "::error::Preview does not serve this commit's build"
+            exit 1
+          fi
+          if [ "$opencv_status" != 200 ] || [ "$ort_status" != 200 ]; then
+            echo "::error::Preview is missing runtime assets (opencv.js=$opencv_status, ort jsep wasm=$ort_status)"
+            exit 1
+          fi
+          if [ "$prod_build" = "$local_build" ]; then
+            echo "::error::Production serves this preview build — production was changed"
+            exit 1
+          fi
+
+  android:
+    name: Build Android APK
+    needs: ci
+    # Every pushed branch: build a debug-signed APK and publish it as a
+    # per-branch GitHub prerelease ("android-<branch>") with a stable URL.
+    if: github.event_name == 'push'
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    permissions:
+      contents: write
+    outputs:
+      tag: ${{ steps.release.outputs.tag }}
+    env:
+      # The NDLOCR models (page-number reading) are not in the APK; the app
+      # fetches them once from the upstream repo (CORS *) and caches them.
+      VITE_MODEL_BASE_URL: https://raw.githubusercontent.com/ogwata/ndlocr-lite-web-ai/main/public/models
 
     steps:
       - uses: actions/checkout@v4
@@ -77,7 +218,8 @@ jobs:
       - uses: actions-rust-lang/setup-rust-toolchain@v1
         with:
           toolchain: stable
-          target: aarch64-linux-android
+          target: aarch64-linux-android,x86_64-linux-android
+          cache-workspaces: src-tauri -> target
 
       - uses: actions/setup-java@v4
         with:
@@ -86,19 +228,316 @@ jobs:
 
       - name: Setup Android SDK
         uses: android-actions/setup-android@v3
+        with:
+          # The default also asks for the long-removed "tools" package.
+          packages: platform-tools
 
       - name: Install Android NDK
         run: sdkmanager "ndk;27.0.12077973"
 
       - run: bun install
 
-      - name: Build frontend
-        run: bun run build
+      # opencv.js / ort WASM are git-ignored; see the script for the list.
+      - name: Fetch public assets
+        run: bash scripts/fetch-public-assets.sh
+
+      # DocAligner page-corner model for the capture screen (plugin assets,
+      # git-ignored; sha256-pinned).
+      - name: Fetch the DocAligner model
+        run: bash scripts/android/fetch-docaligner.sh
 
       - name: Initialize Android project
-        run: bun run tauri:android:init || true
-
-      - name: Build Android APK
-        run: bun run tauri:android:build
+        run: bunx tauri android init --ci
         env:
           NDK_HOME: ${{ env.ANDROID_SDK_ROOT }}/ndk/27.0.12077973
+
+      # arm64 for phones, x86_64 for the emulator check.
+      - name: Build Android APK
+        run: bunx tauri android build --apk --ci --target aarch64 --target x86_64
+        env:
+          NDK_HOME: ${{ env.ANDROID_SDK_ROOT }}/ndk/27.0.12077973
+
+      # Same debug key across runs so a newer APK installs over an older
+      # one. It is a throwaway debug key generated here, never committed.
+      - name: Restore debug keystore
+        uses: actions/cache@v4
+        with:
+          path: ~/.android-debug-keystore
+          key: android-debug-keystore-v1
+
+      - name: Sign APK with the debug key
+        run: |
+          set -euo pipefail
+          ks=~/.android-debug-keystore/debug.keystore
+          if [ ! -f "$ks" ]; then
+            mkdir -p "$(dirname "$ks")"
+            keytool -genkeypair -keystore "$ks" -alias androiddebugkey -storepass android -keypass android \
+              -keyalg RSA -keysize 2048 -validity 10000 -dname "CN=Android Debug,O=Android,C=US"
+          fi
+          bt=$(ls "$ANDROID_SDK_ROOT/build-tools" | sort -V | tail -n1)
+          unsigned=$(find src-tauri/gen/android/app/build/outputs/apk -name '*universal-release-unsigned.apk' | head -n1)
+          echo "unsigned: $unsigned (build-tools $bt)"
+          "$ANDROID_SDK_ROOT/build-tools/$bt/zipalign" -f -p 4 "$unsigned" aligned.apk
+          "$ANDROID_SDK_ROOT/build-tools/$bt/apksigner" sign --ks "$ks" --ks-pass pass:android --key-pass pass:android \
+            --out AstarScan-android.apk aligned.apk
+          "$ANDROID_SDK_ROOT/build-tools/$bt/apksigner" verify --print-certs AstarScan-android.apk
+          ls -l AstarScan-android.apk
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: android-apk
+          path: AstarScan-android.apk
+
+      - name: Publish prerelease
+        id: release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          BRANCH: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          alias=$(printf '%s' "$BRANCH" | tr '[:upper:]' '[:lower:]' | sed -E 's/[^a-z0-9-]+/-/g; s/-+/-/g; s/^-+//; s/-+$//')
+          tag="android-$alias"
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
+          git tag -f "$tag" "$GITHUB_SHA"
+          git push -f origin "refs/tags/$tag"
+          notes="Android 版 AstarScan（自前の撮影画面: DocAligner の枠 + ML Kit の番号読み取り）。ブランチ \`$BRANCH\` の ${GITHUB_SHA:0:7} から CI が作った debug 署名の APK です。"
+          if gh release view "$tag" >/dev/null 2>&1; then
+            gh release edit "$tag" --prerelease --title "Android $BRANCH" --notes "$notes"
+          else
+            gh release create "$tag" --prerelease --title "Android $BRANCH" --notes "$notes" --verify-tag
+          fi
+          gh release upload "$tag" AstarScan-android.apk --clobber
+          url="https://github.com/$GITHUB_REPOSITORY/releases/download/$tag/AstarScan-android.apk"
+          echo "APK: $url" >> "$GITHUB_STEP_SUMMARY"
+          echo "$url"
+
+  android-emulator:
+    name: Android emulator check (capture screen, book clips on the camera)
+    needs: android
+    if: github.event_name == 'push'
+    # Pinned: ubuntu-latest moved to 26.04 (run 42300357620 spent the whole
+    # 10 minutes of the apt limit downloading ffmpeg's packages and never
+    # reached the emulator; 42287531434's python3-opencv had no FFmpeg).
+    runs-on: ubuntu-24.04
+    # One run reads to the end: the camera step has 25 minutes, the stills
+    # 25, the emulator 80 (book 3's 23 holds took 42; a book is 20–30
+    # holds), the scoring 10. The job's limit is their sum and a little.
+    timeout-minutes: 150
+    permissions:
+      contents: write
+    env:
+      # Webcam frame size; the phone sees its left 3:4 (1280x960 -> a
+      # 720x960 window, page-number digits 4-10 px): the back camera is
+      # mounted at 90° and the emulator hands the app that window upright.
+      # Run 10 tried 1920x1440: the emulator then offers the back camera
+      # only at 1920x1440 and the preview stays black, so 1280x960 stays.
+      FEED_SIZE: 1280x960
+      FEED_LOG: /tmp/feed.log
+      # Which book the camera plays: the five clips of book 1 by default.
+      # An eval branch of another book sets these (book 4: book4-framed,
+      # BOOK_PLAN "book4-single-dash book4-spread-ja-43", BOOK_LAST and
+      # BOOK_STILLS_SEQ "book4-spread-inner 0 1 3 4 5" (62・63 skipped),
+      # STILLS_BOOK book4, FEED_FIRST book4-single-dash, STILLS_CLIPS the
+      # three clip names); emulator-check.sh and stills.py read them.
+      BOOK_CLIPS_REL: scripts/eval/book-clips/framed
+      BOOK_PLAN: ''
+      BOOK_LAST: ''
+      BOOK_STILLS_SEQ: ''
+      STILLS_BOOK: ''
+      STILLS_CLIPS: ''
+      FEED_FIRST: spread-land-wood
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: latest
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: android-apk
+
+      - name: Enable KVM
+        run: |
+          echo "runner: $(nproc) CPUs, $(free -g | awk '/Mem:/ {print $2}') GB RAM"
+          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm4all.rules
+          sudo udevadm control --reload-rules
+          sudo udevadm trigger --name-match=kvm
+
+      # The emulator's back camera is a v4l2loopback webcam that plays the
+      # book clips (scripts/eval/book-clips) — see camera-feed.py.
+      # Run 42271420796 sat in this step for 45 minutes without a line of
+      # output (every command's output went to /dev/null) until the run was
+      # cancelled; cv2 was missing afterwards, so it never got past apt. Each
+      # command now has a time limit, says what it is doing and keeps its
+      # output, and the step itself stops after 20 minutes.
+      - name: Virtual webcam (v4l2loopback) playing the book clips
+        id: cam
+        timeout-minutes: 25
+        env:
+          DEBIAN_FRONTEND: noninteractive
+          NEEDRESTART_MODE: l
+        run: |
+          set -uo pipefail
+          # apt waits at most 2 minutes for the dpkg lock (unattended
+          # upgrades on a fresh runner) and 30 s per stalled download; a
+          # whole install may take 15 minutes (a slow mirror: run
+          # 42300357620 was still fetching ffmpeg's packages at 10).
+          APT="sudo -E timeout 900 apt-get -o DPkg::Lock::Timeout=120 -o Acquire::Retries=3 -o Acquire::http::Timeout=30 -o Dpkg::Use-Pty=0"
+          step() { echo "::group::$(date -u +%T) $1"; }
+          # Run 42300357620: the download of ffmpeg's 60-odd packages from the
+          # Azure mirror stalled after 30 of them and the whole 600 s went by
+          # (the run before took 12 s). Each install gets 4 minutes and three
+          # tries; a killed apt leaves dpkg half-configured, so it is tidied
+          # before the next try.
+          install_retry() {
+            for n in 1 2 3; do
+              step "apt-get install $* (try $n)"
+              if sudo timeout 240 apt-get -o DPkg::Lock::Timeout=120 -o Acquire::Retries=3 -o Acquire::http::Timeout=30 -o Dpkg::Use-Pty=0 \
+                   install -y -q --no-install-recommends "$@" > /tmp/apt-install.log 2>&1; then
+                tail -n 5 /tmp/apt-install.log; echo '::endgroup::'; return 0
+              fi
+              echo "try $n failed or timed out (rc $?)"; tail -n 20 /tmp/apt-install.log; echo '::endgroup::'
+              sudo timeout 120 dpkg --configure -a || true
+            done
+            return 1
+          }
+          step 'apt-get update'
+          $APT update -q || { echo "::error::apt-get update failed or timed out (rc $?)"; exit 1; }
+          echo '::endgroup::'
+          install_retry ffmpeg v4l-utils || { echo "::error::apt-get install ffmpeg v4l-utils failed three times"; exit 1; }
+          # OpenCV from pip (it carries its own FFmpeg): ubuntu-26.04's
+          # python3-opencv has no FFmpeg video backend, so VideoCapture fell
+          # to GStreamer, read the clip path as a pipeline ("no element
+          # scripts") and camera-feed.py got 0 frames (run 42287531434).
+          step 'pip install opencv-python-headless numpy'
+          sudo -H timeout 600 python3 -m pip install --quiet --break-system-packages opencv-python-headless numpy \
+            || { echo "::error::pip install opencv-python-headless failed or timed out"; exit 1; }
+          clip=$(ls "${BOOK_CLIPS_REL:-scripts/eval/book-clips/framed}"/*.mp4 | head -n 1)
+          python3 -I -c 'import cv2, sys; c = cv2.VideoCapture(sys.argv[1]); ok = c.read()[0]; print("cv2", cv2.__version__, "reads", sys.argv[1], ok); sys.exit(0 if ok else 1)' "$clip" \
+            || { echo "::error::OpenCV cannot decode the book clips"; exit 1; }
+          echo '::endgroup::'
+          # udev would reset the node to root:video 0660 after a plain chmod.
+          echo 'KERNEL=="video[0-9]*", MODE="0666"' | sudo tee /etc/udev/rules.d/99-video4all.rules
+          sudo udevadm control --reload-rules
+          load() { sudo timeout 60 modprobe v4l2loopback devices=1 video_nr=0 card_label=BookCam exclusive_caps=1; }
+          step 'modprobe v4l2loopback'
+          if ! load; then
+            step "apt-get install linux-modules-extra-$(uname -r)"
+            $APT install -y -q "linux-modules-extra-$(uname -r)" | tail -n 20 || true
+            if ! load; then
+              step 'apt-get install v4l2loopback-dkms (module build)'
+              $APT install -y -q v4l2loopback-dkms "linux-headers-$(uname -r)" | tail -n 40
+              load || { echo "::error::v4l2loopback could not be loaded"; exit 1; }
+            fi
+          fi
+          echo '::endgroup::'
+          timeout 60 sudo udevadm settle
+          sudo chmod 666 /dev/video0
+          ls -l /dev/video*
+          lsmod | grep v4l2loopback
+          nohup python3 -I scripts/android/camera-feed.py "$BOOK_CLIPS_REL" --first "$FEED_FIRST" \
+            /tmp/feed.control /tmp/feed.status --size "$FEED_SIZE" --log "$FEED_LOG" >/tmp/camera-feed.log 2>&1 &
+          for _ in $(seq 60); do [ -s /tmp/feed.status ] && break; sleep 2; done
+          cat /tmp/camera-feed.log
+          v4l2-ctl -d /dev/video0 --all | head -30
+          test -s /tmp/feed.status
+
+      # The middle frame of every hold rendered again by the clip generator at
+      # a phone's still size (3000x4000 page / 4000x3000 spread): the check
+      # reads them after the live clips with the capture screen's own page
+      # cut and number read (StillsCheck.kt), since the emulator camera's
+      # 960x1280 leaves a spread's folio ~6 px tall.
+      - name: Phone-resolution stills of the book clips
+        continue-on-error: true
+        timeout-minutes: 25
+        env:
+          DEBIAN_FRONTEND: noninteractive
+        run: |
+          set -euo pipefail
+          sudo -E timeout 600 apt-get -o DPkg::Lock::Timeout=120 -o Acquire::http::Timeout=30 install -y -q \
+            fonts-liberation fonts-ipafont-gothic fonts-dejavu-core fonts-crosextra-caladea fonts-crosextra-carlito \
+            fonts-freefont-ttf fonts-inter xfonts-scalable fonts-wqy-zenhei fonts-jetbrains-mono fonts-ipafont-mincho \
+            fonts-tlwg-loma-otf fonts-ebgaramond fonts-lato fonts-noto-cjk \
+            python3-pil | tail -n 5
+          # shellcheck disable=SC2086
+          python3 -I scripts/eval/book-clips/stills.py /tmp/stills $STILLS_CLIPS --jobs 3 | grep -v ' / ' | tail -n 50
+          ls -la /tmp/stills | head -n 5
+          du -sh /tmp/stills
+          # Book 6's run 42308619390 lost its stills session to a missing font
+          # (stills.py died, the pipe above stayed green): no stills, no step.
+          test -s /tmp/stills/stills.json
+
+      - name: Run the app on a Google Play emulator
+        timeout-minutes: 80
+        uses: reactivecircus/android-emulator-runner@v2
+        env:
+          FEED_CONTROL: /tmp/feed.control
+          FEED_STATUS: /tmp/feed.status
+          FEED_LOG: /tmp/feed.log
+        with:
+          api-level: 35
+          target: google_apis_playstore
+          arch: x86_64
+          profile: pixel_6
+          # The runner has 4 CPUs (logged above); run 21 gave the emulator 2
+          # and ML Kit, DocAligner and the screen fought over them.
+          cores: 4
+          disable-animations: true
+          emulator-options: -no-window -gpu swiftshader_indirect -noaudio -no-boot-anim -camera-back webcam0 -camera-front emulated
+          script: BOOK_CLIPS="$PWD/$BOOK_CLIPS_REL" bash scripts/android/emulator-check.sh AstarScan-android.apk emulator-out
+
+      - name: Score the run (what the screen said per page, corner error, numbers)
+        if: always()
+        timeout-minutes: 10
+        run: |
+          [ -d emulator-out ] || exit 0
+          cp /tmp/camera-feed.log emulator-out/ 2>/dev/null || true
+          [ -s emulator-out/feed.log ] || cp "$FEED_LOG" emulator-out/feed.log 2>/dev/null || true
+          python3 -I scripts/android/book-measure.py emulator-out "$BOOK_CLIPS_REL" --size "$FEED_SIZE" | tee -a "$GITHUB_STEP_SUMMARY"
+
+      # The detector comparison behind the capture screen's choice, on the
+      # same clips as the camera sees them (corner-compare.py).
+      - name: Page-frame detectors on the book clips (OpenCV vs DocAligner)
+        if: always()
+        timeout-minutes: 15
+        run: |
+          set -uo pipefail
+          mkdir -p emulator-out
+          # Into the system site-packages: `python3 -I` (below) ignores the
+          # user site where a plain `pip install` puts it (run 19). A failed
+          # install stops the step here.
+          sudo -H python3 -m pip install --quiet --break-system-packages onnxruntime
+          python3 -I -c 'import onnxruntime, cv2, numpy; print("onnxruntime", onnxruntime.__version__, "cv2", cv2.__version__, "numpy", numpy.__version__)'
+          bash scripts/android/fetch-docaligner.sh /tmp/docaligner
+          {
+            echo
+            echo "### Page-frame detectors on the book clips (clip px; camera window as the phone sees it)"
+            echo
+            python3 -I scripts/eval/book-clips/corner-compare.py "$BOOK_CLIPS_REL" \
+              --size "$FEED_SIZE" --docaligner /tmp/docaligner/docaligner-lcnet100.onnx --json emulator-out/corner-compare.json
+          } | tee emulator-out/corner-compare.md | tee -a "$GITHUB_STEP_SUMMARY"
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: emulator-check
+          path: emulator-out
+
+      - name: Attach screenshots and the screen recording to the prerelease
+        if: always()
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ needs.android.outputs.tag }}
+        run: |
+          set -euo pipefail
+          [ -d emulator-out ] || exit 0
+          if [ -f emulator-out/book-eval-recording.mp4 ]; then
+            gh release upload "$TAG" emulator-out/book-eval-recording.mp4 --clobber
+          fi
+          # zip exits 18 when a file vanished while zipping (a cancelled run
+          # leaves half-written tmp files); the rest is still worth having.
+          rm -f emulator-out/tmp.png emulator-out/ui.xml
+          (cd emulator-out && zip -q -r ../emulator-check.zip . -x book-eval-recording.mp4) || [ $? -eq 18 ]
+          gh release upload "$TAG" emulator-check.zip --clobber

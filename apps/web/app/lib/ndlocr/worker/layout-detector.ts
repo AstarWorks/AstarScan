@@ -17,7 +17,15 @@ import { ort, createSession } from './onnx-config'
 import type { TextRegion, PageBlock, LayoutDetectionResult } from '../types/ocr'
 
 // ndl.yaml の line クラスID (0-indexed, class_index = label - 1)
-const LINE_CLASS_IDS = new Set([1, 2, 3, 4, 5, 16]) // line_main, line_caption, line_ad, line_note, line_note_tochu, line_title
+// AstarScan: + block_pillar (8, running head) and block_folio (9, the
+// printed page number). Upstream reads only line_*, so a page number the
+// model labels as folio never reached recognition and the page list said
+// 番号を読めず although the number was plainly printed (Android run 4).
+const LINE_CLASS_IDS = new Set([1, 2, 3, 4, 5, 8, 9, 16]) // line_main, line_caption, line_ad, line_note, line_note_tochu, block_pillar, block_folio, line_title
+const FOLIO_CLASS_ID = 9
+/** Minimum box side; a page number ("5") can be a few pixels wide. */
+const MIN_LINE_SIDE = 10
+const MIN_FOLIO_SIDE = 4
 const BLOCK_CLASS_ID = 0 // text_block (段・カラム境界)
 
 interface PreprocessResult {
@@ -240,6 +248,12 @@ export class LayoutDetector {
           // ライン: バウンディングボックスを上下2%拡張
           const boxHeight = y2 - y1
           const deltaH = boxHeight * 0.02
+          // Run 6 widened short page-number boxes to 6× their height; the
+          // offline measurement (scripts/android/page-number-ocr.py
+          // --no-widen) showed the widened crop pulls in the page edge or
+          // the thumb and is read as an extra "1" (emulator size: 4 → 9
+          // right, 9 → 4 wrong of 41 pages without it), so boxes stay as
+          // detected.
           const finalX1 = Math.max(0, Math.round(x1))
           const finalY1 = Math.max(0, Math.round(y1 - deltaH))
           const finalX2 = Math.min(metadata.originalWidth, Math.round(x2))
@@ -249,7 +263,9 @@ export class LayoutDetector {
           )
           const width = finalX2 - finalX1
           const height = finalY2 - finalY1
-          if (width >= 10 && height >= 10) {
+          const minSide =
+            classId === FOLIO_CLASS_ID ? MIN_FOLIO_SIDE : MIN_LINE_SIDE
+          if (width >= minSide && height >= minSide) {
             const charCountCategory = charCountsData ? charCountsData[i] : 100
             lineDetections.push({
               x: finalX1,

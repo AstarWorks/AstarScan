@@ -26,6 +26,10 @@
       "types": "./dist/index.d.ts",
       "import": "./dist/index.js"
     },
+    "./pipeline": {
+      "types": "./dist/pipeline/index.d.ts",
+      "import": "./dist/pipeline/index.js"
+    },
     "./package.json": "./package.json"
   },
   "files": [
@@ -37,7 +41,7 @@
     "build": "vite build",
     "build:watch": "vite build --watch",
     "typecheck": "tsc --noEmit",
-    "test": "echo 'TODO: vitest' && exit 0",
+    "test": "vitest run",
     "lint": "echo 'TODO: eslint' && exit 0",
     "clean": "rm -rf dist"
   },

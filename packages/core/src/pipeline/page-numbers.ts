@@ -1,0 +1,389 @@
+/**
+ * Printed page numbers ("ノンブル") — read them from OCR lines in the top /
+ * bottom margins, then check a captured sequence for missing and
+ * duplicated pages.
+ *
+ * Pure logic: the caller runs OCR (NDLOCR in the web app) and passes the
+ * recognised lines with their centres normalised to the page.
+ */
+
+export interface PageNumberLine {
+  readonly text: string
+  /** Line centre, 0..1 from the page's left edge. */
+  readonly cx: number
+  /** Line centre, 0..1 from the page's top edge. */
+  readonly cy: number
+}
+
+export interface PageNumberToken {
+  readonly value: number
+  /** `arabic` / `kanji`: the whole line is the number (with decorations).
+   *  `edge`: a number at the start or end of a running head. */
+  readonly kind: 'arabic' | 'kanji' | 'edge'
+}
+
+const MAX_PAGE_NUMBER = 3000
+
+/** Decorations commonly printed around a page number: "- 12 -", "(12)", "〈12〉". */
+const DECORATION =
+  /^[\s\-–—―‐ー~〜・.,:()（）[\]［］<>〈〉《》「」|｜*]+|[\s\-–—―‐ー~〜・.,:()（）[\]［］<>〈〉《》「」|｜*]+$/g
+
+const KANJI_DIGIT: Record<string, number> = {
+  〇: 0,
+  零: 0,
+  一: 1,
+  二: 2,
+  三: 3,
+  四: 4,
+  五: 5,
+  六: 6,
+  七: 7,
+  八: 8,
+  九: 9,
+}
+const KANJI_UNIT: Record<string, number> = { 十: 10, 百: 100, 千: 1000 }
+
+/** "一二三" → 123, "百二十三" → 123, "十" → 10. null when not a kanji numeral. */
+export function kanjiToNumber(s: string): number | null {
+  if (s.length === 0) return null
+  const chars = [...s]
+  if (!chars.every((c) => c in KANJI_DIGIT || c in KANJI_UNIT)) return null
+  if (!chars.some((c) => c in KANJI_UNIT)) {
+    // Positional: 一二三 = 123.
+    return chars.reduce((n, c) => n * 10 + KANJI_DIGIT[c]!, 0)
+  }
+  let total = 0
+  let digit: number | null = null
+  for (const c of chars) {
+    const unit = KANJI_UNIT[c]
+    if (unit !== undefined) {
+      total += (digit ?? 1) * unit
+      digit = null
+    } else {
+      if (digit !== null) return null // "二三十" is not a numeral
+      digit = KANJI_DIGIT[c]!
+    }
+  }
+  return total + (digit ?? 0)
+}
+
+function valid(n: number): boolean {
+  return Number.isInteger(n) && n >= 1 && n <= MAX_PAGE_NUMBER
+}
+
+/** Read one OCR line as a page number, or null when it is not one. */
+export function parsePageNumberToken(text: string): PageNumberToken | null {
+  const raw = text.normalize('NFKC').trim()
+  if (raw.length === 0) return null
+  let core = raw.replace(DECORATION, '').replace(/\s+/g, '')
+  // The dashes of "— 33 —" are often recognised as the kanji 一 (Android
+  // run 5: every such page read as "1"). Next to Arabic digits it is a
+  // decoration, and a lone 一 is far more likely a dash than page 1.
+  if (/\d/.test(core)) {
+    core = core.replace(/^一+|一+$/g, '').replace(DECORATION, '')
+  } else if (/^一+$/.test(core)) {
+    return null
+  }
+
+  // A label word before the digits: "p. 5", "P58", "Page 58" and, as the
+  // reader gives it as often as not, "Page58" (book 4, Inter: 9–10 px
+  // "Page 61" / "Page 66" / "Page 67" came back joined, at 0.97–0.99, and
+  // none was taken as a number), "pg. 12", "S. 12" (Seite). The word
+  // alone, or an unknown one ("ge69", "Fig3"), is not a page number.
+  let m = /^(?:p|pp|pg|page|seite|fol|folio)?\.?(\d{1,4})$/i.exec(core)
+  if (!m) m = /^s\.(\d{1,4})$/i.exec(core)
+  // The page word after the digits: "124頁", "第7頁", "12ページ" — and as
+  // the Chinese PP-OCR model writes it: "124页" (simplified), or a
+  // look-alike of 頁 (book 4's Japanese book: every page came back as 页,
+  // one as "125真", at 0.9+ confidence, and no page got its number).
+  if (!m)
+    m = /^第?(\d{1,4})(?:頁|页|真|貢|頂|ページ|[ぺペ][ー一-]ジ)$/.exec(core)
+  if (m) {
+    const v = Number(m[1])
+    return valid(v) ? { value: v, kind: 'arabic' } : null
+  }
+
+  // Kanji numerals: "一二三" (positional), "百二十三", "第十頁". With 第 and
+  // no page word it is an article or chapter number cut short (book 4:
+  // 「第十七条」 at the top of the body read as "第十", taken as page 10).
+  const kanji =
+    /^(第?)([〇零一二三四五六七八九十百千]{1,6})(頁|页|ページ)?$/.exec(core)
+  if (kanji) {
+    if (kanji[1] && !kanji[3]) return null
+    const v = kanjiToNumber(kanji[2]!)
+    return v !== null && valid(v) ? { value: v, kind: 'kanji' } : null
+  }
+
+  // Running head with the number at one end: "12 契約の成立" / "契約の成立 12".
+  // The reader drops the space as often as not (book 6, "202  LOG OF THE
+  // HARBOUR SURVEY" came back as "202LOGOFTHE HARBOUR SURVEY" and
+  // "LOGOFTHE HARBOUR SURVEY205", at 0.92–0.97, and no spread got its
+  // number): digits joined to a run of four or more letters at the line's
+  // start or end are the same reading. Shorter runs are left alone — "3rd",
+  // "10th", "12pt", "100ml" are words of the body, not a head's number.
+  const edge =
+    /^(\d{1,4})\s+\S/.exec(raw) ??
+    /\S\s+(\d{1,4})$/.exec(raw) ??
+    /^(\d{1,4})\p{L}{4,}/u.exec(raw) ??
+    /\p{L}{4,}(\d{1,4})$/u.exec(raw)
+  if (edge) {
+    const v = Number(edge[1])
+    return valid(v) ? { value: v, kind: 'edge' } : null
+  }
+  return null
+}
+
+const KIND_SCORE = { arabic: 3, kanji: 2, edge: 1 } as const
+
+interface Candidate {
+  value: number
+  score: number
+  cx: number
+  top: boolean
+}
+
+/**
+ * Pick the printed page number(s) of one captured image. Only lines whose
+ * centre lies in the top or bottom `marginFrac` of the page are considered.
+ * Returns one number, two numbers for a two-page spread (one number in each
+ * half, differing by one), or none.
+ */
+export function pickPageNumbers(
+  lines: readonly PageNumberLine[],
+  marginFrac = 0.15,
+): number[] {
+  const cands: Candidate[] = []
+  for (const l of lines) {
+    const top = l.cy <= marginFrac
+    const bottom = l.cy >= 1 - marginFrac
+    if (!top && !bottom) continue
+    const tok = parsePageNumberToken(l.text)
+    if (!tok) continue
+    // Nearer the page edge wins ties (body text near the margin loses).
+    const edgeDist = top ? l.cy : 1 - l.cy
+    cands.push({
+      value: tok.value,
+      score: KIND_SCORE[tok.kind] + (marginFrac - edgeDist) / marginFrac,
+      cx: l.cx,
+      top,
+    })
+  }
+  if (cands.length === 0) return []
+  cands.sort((a, b) => b.score - a.score)
+  const best = cands[0]!
+
+  // Spread: a number on the other half, same band, ±1 apart. A strong
+  // number (arabic / kanji) pairs with any such number; two running-head
+  // numbers pair with each other only when both are heads (a book whose
+  // folio sits on the head's line, book 6: "202  TITLE" / "TITLE  203" —
+  // two heads ±1 apart on facing pages are its page numbers, since the
+  // heads themselves read the same on both pages), never a head with a
+  // body-text line (those are not candidates: the band keeps them out).
+  const strong = best.score >= KIND_SCORE.kanji
+  const other = cands.find(
+    (c) =>
+      (strong ? c.score >= KIND_SCORE.kanji : true) &&
+      c.top === best.top &&
+      c.cx < 0.5 !== best.cx < 0.5 &&
+      Math.abs(c.value - best.value) === 1,
+  )
+  if (other) {
+    return [
+      Math.min(best.value, other.value),
+      Math.max(best.value, other.value),
+    ]
+  }
+  return [best.value]
+}
+
+/**
+ * The number of a spread's unread half, when one of its lines reads as
+ * exactly the facing page's number ± 1 (left = right − 1). The caller
+ * passes the lines it would otherwise not trust (read with less confidence
+ * than it asks of a number on its own): a read that happens to be the one
+ * number the facing page predicts is not a chance misread — book 2's 52
+ * was read at 0.68 beside a sure 53 and dropped, leaving the spread unsure
+ * and 50・51's red unsaid. Undefined when no line reads so.
+ */
+export function facingHalfNumber(
+  lines: readonly { readonly text: string }[],
+  facing: number,
+  side: 'L' | 'R',
+): number | undefined {
+  const want = side === 'L' ? facing - 1 : facing + 1
+  if (!valid(want)) return undefined
+  return lines.some((l) => parsePageNumberToken(l.text)?.value === want)
+    ? want
+    : undefined
+}
+
+export type PageNumberState = 'ok' | 'duplicate' | 'unread' | 'outOfOrder'
+
+export interface PageNumberCheck {
+  readonly state: PageNumberState
+  /** Index of the earlier capture carrying the same number (`duplicate`). */
+  readonly duplicateOf: number | null
+}
+
+export interface MissingPageRange {
+  readonly from: number
+  readonly to: number
+  /** The gap sits just before the capture at this index. */
+  readonly beforeIndex: number
+  /** The gap is wider than `maxGap` — more likely a misread than a miss. */
+  readonly suspect: boolean
+  /**
+   * Captures between the two read numbers whose number could not be read.
+   * When > 0 some of the range may be those pages, so the range is a
+   * "missing or unread" warning rather than a sure miss.
+   */
+  readonly unreadBetween: number
+  /**
+   * 2 when the book is taken one side only (single pages, every other
+   * number): the range holds only `from`, `from + 2`, …, `to`.
+   */
+  readonly step?: 2
+}
+
+export interface PageSequenceCheck {
+  readonly pages: readonly PageNumberCheck[]
+  readonly missing: readonly MissingPageRange[]
+}
+
+export interface PageSequenceOptions {
+  /**
+   * Numbers between two single pages that follow each other: 1 (every
+   * page is taken) or 2 (one side only — e.g. every right page, as the
+   * Android capture screen learns it: 31, 33, 35 is not a gap).
+   */
+  readonly singleStep?: 1 | 2 | 'auto'
+}
+
+/**
+ * Check the printed numbers of captures in capture order. `[]` means the
+ * number could not be read. Numbers are expected to increase; a number
+ * seen before is a duplicate, a lower number than the last one is out of
+ * order, and a jump leaves a missing range.
+ */
+export function checkPageSequence(
+  pages: readonly (readonly number[])[],
+  maxGap = 20,
+  opts: PageSequenceOptions = {},
+): PageSequenceCheck {
+  // 'auto': learnt from the first two numbered single pages in a row (+1 or
+  // +2), as the Android capture screen does; until then an even jump
+  // between single pages counts as one side only.
+  let singleStep: 1 | 2 | null =
+    opts.singleStep === 'auto' ? null : (opts.singleStep ?? 1)
+  const seen = new Map<number, number>()
+  const out: PageNumberCheck[] = []
+  const missing: MissingPageRange[] = []
+  let last: number | null = null
+  let unread = 0
+  let prevSingle: number | null = null
+
+  pages.forEach((nums, i) => {
+    if (nums.length === 0) {
+      out.push({ state: 'unread', duplicateOf: null })
+      unread++
+      prevSingle = null
+      return
+    }
+    const sorted = [...nums].sort((a, b) => a - b)
+    const lo = sorted[0]!
+    const hi = sorted[sorted.length - 1]!
+    const dup = sorted.find((n) => seen.has(n))
+    if (dup !== undefined) {
+      out.push({ state: 'duplicate', duplicateOf: seen.get(dup)! })
+      return
+    }
+    for (const n of sorted) seen.set(n, i)
+    if (last !== null && lo < last) {
+      out.push({ state: 'outOfOrder', duplicateOf: null })
+      return
+    }
+    const single = sorted.length === 1
+    if (
+      single &&
+      singleStep === null &&
+      prevSingle !== null &&
+      prevSingle === last
+    ) {
+      if (lo === prevSingle + 1) singleStep = 1
+      else if (lo === prevSingle + 2) singleStep = 2
+    }
+    prevSingle = single ? lo : null
+    const oneSide =
+      singleStep === 2 ||
+      (singleStep === null && last !== null && (lo - last) % 2 === 0)
+    const step = oneSide && single ? 2 : 1
+    // With a step given (the Android capture list), a gap no wider than the
+    // captures without a number between is most likely those pages (the
+    // capture screen says the same; run 24 listed 7 as missing for 5, ?, ?, 11).
+    const count = last === null ? 0 : Math.floor((lo - 1 - last) / step)
+    const covered = opts.singleStep !== undefined && count <= unread
+    if (last !== null && lo > last + step && !covered) {
+      missing.push({
+        from: last + step,
+        to: lo - step,
+        beforeIndex: i,
+        suspect: lo - 1 - last > maxGap,
+        unreadBetween: unread,
+        ...(step === 2 ? { step: 2 as const } : {}),
+      })
+    }
+    last = hi
+    unread = 0
+    out.push({ state: 'ok', duplicateOf: null })
+  })
+
+  return { pages: out, missing }
+}
+
+/**
+ * Where a page number sits on its page: top / bottom band, and outer /
+ * centre / inner third (outer = away from the gutter: left on a left page,
+ * right on a right or single page). A book prints every number in the same
+ * place, so once a few numbers agree, lines elsewhere (running heads, body
+ * text near the margin) can be left out — the capture screen learns it.
+ */
+export type FolioZone = `${'t' | 'b'}${'o' | 'c' | 'i'}`
+
+export function folioZone(
+  cx: number,
+  cy: number,
+  side: 'L' | 'R' | 'S',
+): FolioZone {
+  const v = cy < 0.5 ? 't' : 'b'
+  const outerLeft = side === 'L'
+  const h =
+    cx < 0.35
+      ? outerLeft
+        ? 'o'
+        : 'i'
+      : cx > 0.65
+        ? outerLeft
+          ? 'i'
+          : 'o'
+        : 'c'
+  return `${v}${h}` as FolioZone
+}
+
+/** Learned folio place: the zone of ≥ `min` agreeing reads making ≥ `share` of them. */
+export function learnedFolioZone(
+  counts: ReadonlyMap<FolioZone, number>,
+  min = 2,
+  share = 0.8,
+): FolioZone | null {
+  let total = 0
+  let best: FolioZone | null = null
+  let bestN = 0
+  for (const [z, n] of counts) {
+    total += n
+    if (n > bestN) {
+      best = z
+      bestN = n
+    }
+  }
+  return best && bestN >= min && bestN >= share * total ? best : null
+}
