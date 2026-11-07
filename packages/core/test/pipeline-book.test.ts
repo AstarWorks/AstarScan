@@ -895,3 +895,34 @@ describe('detectViews / onCutEdge / ViewSearch (where the model looks)', () => {
     expect(names()).toEqual(['full', 'left', 'centre'])
   })
 })
+
+describe('settleBookNumbers: room for the captures between (book 4 at 720×960)', () => {
+  const t = (n: number): BookPageRead => ({ state: 'read', number: n, px: 10 })
+  it('a spread one page above the last numbered one with an unread capture between is unsure', () => {
+    // 58・59, 60・61 unread, 64・65, then 66・67 read as "60・61" and 68・69
+    // as "66・67": neither leaves room for the capture between.
+    const s = [
+      sheet(t(58), t(59)),
+      sheet(none, none),
+      sheet(t(64), t(65)),
+      sheet(t(60), t(61)),
+      sheet(t(66), t(67)),
+    ]
+    const v = s.map((x) => settleBookNumbers(s).get(x.id))
+    expect(v).toEqual(['ok', 'ok', 'ok', 'unsure', 'unsure'])
+  })
+  it('going back to fill a gap, and the next spread after an unread one, keep their room', () => {
+    const back = [
+      sheet(t(58), t(59)),
+      sheet(none, none),
+      sheet(t(64), t(65)),
+      sheet(t(62), t(63)),
+    ]
+    expect(settleBookNumbers(back).get(back[3]!.id)).toBe('ok')
+    const on = [sheet(t(64), t(65)), sheet(none, none), sheet(t(68), t(69))]
+    expect(settleBookNumbers(on).get(on[2]!.id)).toBe('ok')
+    // Single pages taken one side only: 31, unread, 33 is two pages up, enough.
+    const single = [sheet(t(31)), sheet(none), sheet(t(33))]
+    expect(settleBookNumbers(single).get(single[2]!.id)).toBe('ok')
+  })
+})

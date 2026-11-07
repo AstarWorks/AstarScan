@@ -578,6 +578,41 @@ export function settleBookNumbers(
       out.set(s.id, 'unsure')
   }
 
+  // Room for the captures between: every capture is a page of its own
+  // (the hold's picture test keeps a page taken again from being taken),
+  // so a capture's numbers lie at least one page above the nearest earlier
+  // capture numbered below it for every capture taken between them whose
+  // number is not known. Book 4 at 720×960 (run18): 58・59, 60・61 (unread),
+  // 64・65, then 66・67 read as "60・61" — one page above 59 with a capture
+  // between — and 68・69 as "66・67", one page above 65 with that capture
+  // between; each was confirmed by its neighbour and shown. Going back to
+  // fill a gap keeps its room: 62・63 taken after 64・65 is three above 59
+  // with 60・61 (unread) between.
+  for (const s of bySeq) {
+    if (out.get(s.id) !== 'ok') continue
+    const own = countedNumbers(s)
+    if (own.length === 0) continue
+    const lo = Math.min(...own)
+    const prev = bySeq
+      .filter(
+        (x) =>
+          x.seq < s.seq &&
+          out.get(x.id) === 'ok' &&
+          countedNumbers(x).length > 0 &&
+          Math.max(...countedNumbers(x)) < lo,
+      )
+      .pop()
+    if (!prev) continue
+    const between = bySeq.filter(
+      (x) =>
+        x.seq > prev.seq &&
+        x.seq < s.seq &&
+        !(out.get(x.id) === 'ok' && countedNumbers(x).length > 0),
+    ).length
+    if (lo - Math.max(...countedNumbers(prev)) < 1 + between)
+      out.set(s.id, 'unsure')
+  }
+
   // Two captures holding the same page (a retake the picture test let
   // through, or one of them misread onto the other's number): at most one
   // counts — the one in sequence with the captures just before and after
