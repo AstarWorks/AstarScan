@@ -323,6 +323,16 @@ describe('bookCoverage (the mock ideal-capture.html flow)', () => {
     expect(vt.get(withTall[1]!.id)).toBe('ok')
     const three = [...two, sheet(small(100), inferred(101))]
     expect(settleBookNumbers(three).get(three[1]!.id)).toBe('ok')
+    // Two captures holding the same pages are one piece of evidence (book
+    // 2 720×960, run20: 48・49 and 54・55 both read as "4・5" at 7 px, then
+    // 56・57 read as "6・7" — shown as ✓ 6・7).
+    const sameTwice = [
+      sheet(small(4), inferred(5)),
+      sheet(none, none),
+      sheet(small(4), small(5)),
+      sheet(small(6), inferred(7)),
+    ]
+    expect(settleBookNumbers(sameTwice).get(sameTwice[3]!.id)).toBe('unsure')
     // The same number taken twice does not confirm itself.
     const twice = [
       sheet(small(328), inferred(329)),

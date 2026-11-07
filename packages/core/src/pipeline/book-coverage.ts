@@ -510,10 +510,15 @@ export function settleBookNumbers(
   // A read under surePx is wrong as often as right; one such read agreeing
   // with another is weak evidence (book 2 720×960: 94・95 read as 98・99
   // at 6 px beside a right 96・97 at 6 px, both shown, 94・95 red). It
-  // counts when a tall read touches it, or two captures do.
+  // counts when a tall read touches it, or two captures holding different
+  // pages do. Two captures holding the same pages (a retake, or one
+  // misread onto the other's number) are one piece of evidence: book 2
+  // 720×960 (run20), 48・49 and 54・55 both read as "4・5" at 7 px made
+  // 56・57 read as "6・7" sure, and "✓ 6・7" was shown.
   const confirmed = (s: BookSheet) => {
     const ps = partners(s)
-    return ps.length >= 2 || ps.some(tallRead)
+    const held = new Set(ps.map((x) => countedNumbers(x).join(',')))
+    return held.size >= 2 || ps.some(tallRead)
   }
   const spreads = work.filter(
     (s) => s.pages.length === 2 && directNumbers([s]).length > 0,
