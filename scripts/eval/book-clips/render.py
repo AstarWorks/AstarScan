@@ -132,6 +132,17 @@ FONTS_EXTRA = {
              '/usr/share/fonts/truetype/lato/Lato-Bold.ttf',
              '/usr/share/fonts/truetype/lato/Lato-Italic.ttf'),
 }
+# book 8 (book8.py): fonts fetched by fetch-book8-fonts.sh into BOOK_FONTS_DIR
+# (default .cache/book8-fonts at the repo root): Gentium Plus, IBM Plex Mono,
+# Sawarabi Mincho — none of them a Debian package.
+BOOK_FONTS_DIR = os.environ.get(
+    'BOOK_FONTS_DIR', os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', '..', '..', '.cache', 'book8-fonts'))
+FONTS_EXTRA.update({
+    'gentium': tuple(os.path.join(BOOK_FONTS_DIR, f) for f in
+                     ('GentiumPlus-Regular.ttf', 'GentiumPlus-Bold.ttf', 'GentiumPlus-Italic.ttf')),
+    'plex-mono': tuple(os.path.join(BOOK_FONTS_DIR, f) for f in
+                       ('IBMPlexMono-Regular.ttf', 'IBMPlexMono-Bold.ttf', 'IBMPlexMono-Italic.ttf')),
+})
 # Japanese body fonts other than IPAGothic (book 4: fonts-wqy-zenhei).
 FONTS_JA_EXTRA = {
     'wqy-zenhei': '/usr/share/fonts/truetype/wqy/wqy-zenhei.ttc',
@@ -141,6 +152,8 @@ FONTS_JA_EXTRA = {
     'ipa-mincho': '/usr/share/fonts/opentype/ipafont-mincho/ipam.ttf',
     # book 7: Noto Serif CJK JP (fonts-noto-cjk; face 0 of the collection is JP)
     'noto-serif-cjk': '/usr/share/fonts/opentype/noto/NotoSerifCJK-Regular.ttc',
+    # book 8: Sawarabi Mincho (BOOK_FONTS_DIR, fetch-book8-fonts.sh)
+    'sawarabi-mincho': os.path.join(BOOK_FONTS_DIR, 'SawarabiMincho-Regular.ttf'),
 }
 
 KANJI_DIGITS = '〇一二三四五六七八九'
@@ -502,6 +515,24 @@ def desk_texture(kind, r, mm=1400, ppm=2.0):
         for thr, col in ((2.1, (70, 80, 120)), (-2.1, (120, 90, 60)), (1.6, (60, 60, 60))):
             m = chips > thr if thr > 0 else chips < thr
             img[m] = np.array(col, np.float32) + r.normal(0, 4.0, (int(m.sum()), 1)).astype(np.float32)
+    elif kind == 'birch':  # book 8: pale birch wood, little contrast with the paper
+        warp = low(8, 12.0) + low(27, 2.0)
+        t = (yy / ppm) * 1.1 + warp
+        rings = np.sin(t * 0.45) * 0.5 + 0.5
+        base = np.array([196, 214, 226], np.float32)  # BGR pale birch
+        img = base[None, None, :] * (0.9 + 0.1 * rings[..., None]) + low(13, 4)[..., None] \
+            + r.normal(0, 2.0, (n, n, 1)).astype(np.float32)
+    elif kind == 'burgundy':  # book 8: dark red felt desk pad with a soft nap
+        base = np.array([40, 30, 110], np.float32)  # BGR
+        fuzz = cv2.GaussianBlur(r.normal(0, 1, (n, n)).astype(np.float32), (0, 0), 1.0) * 7
+        img = base[None, None, :] + fuzz[..., None] + low(9, 6)[..., None]
+    elif kind == 'tile':  # book 8: grey ceramic floor tiles (300 mm) with pale grout lines
+        base = np.array([150, 146, 140], np.float32)
+        img = base[None, None, :] + low(6, 6)[..., None] + r.normal(0, 2.5, (n, n, 1)).astype(np.float32)
+        mottle = cv2.GaussianBlur(r.normal(0, 1, (n, n)).astype(np.float32), (0, 0), 6.0) * 9
+        img += mottle[..., None]
+        grout = (((xx / ppm) % 300.0) < 4.0) | (((yy / ppm) % 300.0) < 4.0)
+        img[grout] = np.array([205, 203, 198], np.float32) + r.normal(0, 3.0, (int(grout.sum()), 1)).astype(np.float32)
     elif kind == 'rust':  # book 4: rust-red felt desk pad
         base = np.array([45, 70, 150], np.float32)  # BGR
         fuzz = cv2.GaussianBlur(r.normal(0, 1, (n, n)).astype(np.float32), (0, 0), 0.8) * 9

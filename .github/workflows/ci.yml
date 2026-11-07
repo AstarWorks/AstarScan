@@ -72,6 +72,8 @@ jobs:
     if: github.event_name == 'push' && github.ref != 'refs/heads/main'
     runs-on: ubuntu-latest
     timeout-minutes: 15
+    outputs:
+      alias_url: ${{ steps.summary.outputs.alias_url }}
 
     steps:
       - uses: actions/checkout@v4
@@ -190,6 +192,83 @@ jobs:
             echo "::error::Production serves this preview build — production was changed"
             exit 1
           fi
+
+  preview-book:
+    name: Preview check (a book clip on the deployed preview, Chromium + WebKit)
+    needs: preview
+    # The deployed preview is opened in Playwright's Chromium with the fake
+    # camera playing one book clip (book-e2e.mjs: the frame, ✓, the red
+    # gap, the spread split, the list, the PDF) — the production build on
+    # the production host, not a local server. Then the same page in
+    # WebKit (iOS Safari's engine on a desktop): does it open, is it
+    # cross-origin isolated, do the models load, what does the camera say.
+    if: github.event_name == 'push' && github.ref != 'refs/heads/main' && needs.preview.outputs.alias_url != ''
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    env:
+      ALIAS_URL: ${{ needs.preview.outputs.alias_url }}
+      # The clip: book 8's upright spread at 720x960, 136・137 skipped.
+      CLIPS_DIR: scripts/eval/book-clips/book8-framed
+      CLIP: book8-spread-gentium
+      CLIP_ARGS: --skip-hold 3 --save pdf
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      - name: Playwright (Chromium + WebKit) and ffmpeg
+        run: |
+          set -euo pipefail
+          mkdir -p /tmp/pw && cd /tmp/pw && npm init -y > /dev/null && npm install --no-audit --no-fund playwright@1.56.1 | tail -n 2
+          npx playwright install --with-deps chromium webkit | tail -n 3
+          ffmpeg -version | head -n 1
+
+      - name: Play the clip on the preview (Chromium, fake camera)
+        env:
+          NODE_PATH: /tmp/pw/node_modules
+        run: |
+          set -euo pipefail
+          # shellcheck disable=SC2086
+          node scripts/eval/book-clips/book-e2e.mjs "$ALIAS_URL" "$CLIP" preview-book --clips "$CLIPS_DIR" $CLIP_ARGS | tee preview-book/summary.json
+          {
+            echo "## Preview check ($ALIAS_URL, $CLIP)"
+            echo ""
+            echo '```json'
+            cat preview-book/summary.json
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+          node -e '
+            const s = JSON.parse(require("fs").readFileSync("preview-book/summary.json", "utf8"))
+            const fail = []
+            if (s.check < 1) fail.push("no page got a ✓")
+            if (s.falseRed > 0) fail.push("a false red")
+            if (s.numbersWrong > 0) fail.push("a number read wrong")
+            if (s.logs.some((l) => /pageerror/.test(l))) fail.push("page error: " + s.logs.join(" | "))
+            if (fail.length) { console.error("preview check failed: " + fail.join("; ")); process.exit(1) }
+            console.log(`preview check: ✓ ${s.check} red ${s.red} silent ${s.silent} numbers ${s.numbersRight}/${s.numbersWrong}/${s.numbersUnread} fps ${s.fps.toFixed(1)} backend ${s.backend}/${s.threads}`)
+          '
+          test -s preview-book/saved.pdf
+
+      - name: Open the preview in WebKit
+        env:
+          NODE_PATH: /tmp/pw/node_modules
+        run: |
+          set -euo pipefail
+          node scripts/eval/book-clips/webkit-smoke.mjs "$ALIAS_URL" preview-book/webkit.json | tee -a "$GITHUB_STEP_SUMMARY"
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: preview-book
+          path: |
+            preview-book/*.png
+            preview-book/*.json
+            preview-book/saved.pdf
+            preview-book/pages
+          if-no-files-found: ignore
 
   android:
     name: Build Android APK
@@ -461,6 +540,9 @@ jobs:
             fonts-freefont-ttf fonts-inter xfonts-scalable fonts-wqy-zenhei fonts-jetbrains-mono fonts-ipafont-mincho \
             fonts-tlwg-loma-otf fonts-ebgaramond fonts-lato fonts-noto-cjk \
             python3-pil | tail -n 5
+          # Book 8's fonts are not Debian packages (fetch-book8-fonts.sh, SHA-256 pinned).
+          bash scripts/eval/book-clips/fetch-book8-fonts.sh /tmp/book8-fonts
+          export BOOK_FONTS_DIR=/tmp/book8-fonts
           # shellcheck disable=SC2086
           python3 -I scripts/eval/book-clips/stills.py /tmp/stills $STILLS_CLIPS --jobs 3 | grep -v ' / ' | tail -n 50
           ls -la /tmp/stills | head -n 5

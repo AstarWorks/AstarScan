@@ -16,14 +16,19 @@
  * padded one 0 / 10 on book 1).
  *
  * So the detector looks at a few views of the picture — the whole picture
- * first, then the padded one and the windows over the right, the left and
- * the middle of the picture — and takes the first that shows the paper.
- * Once a view shows it, that view is tried first on the next frame (one
- * model call a frame while the page is found; up to five while nothing is).
- * A corner a window puts on one of its cut edges is the window's edge, not
- * the paper's (a spread cut by the window): such a detection is not taken
- * (`onCutEdge`). Pure logic; the detector draws the view and maps the
- * corners back (`toFrame`).
+ * first, then the padded one and windows 60 % wide over the right, the
+ * left and the middle of it — and takes the first that shows the paper
+ * with every corner inside the picture (the padded view shows the model
+ * the whole open book, whose outer corners lie outside: not a find). The
+ * view that showed the paper is tried first on the next frame, and while
+ * none does, the whole picture and two of the other views are tried each
+ * frame, in turn (one model call a frame while the page is found, four
+ * while nothing is; offline on the two clips, 95 / 114 and 111 / 116 hold
+ * frames found, 1.9 and 1.4 calls a frame; every view every frame found
+ * 100 / 114 and 114 / 116 at 3.5 and 2.4). A corner a window puts on one
+ * of its cut edges is the window's edge, not the paper's (a spread cut by
+ * the window): such a detection is not taken (`onCutEdge`). Pure logic;
+ * the detector draws the view and maps the corners back (`toFrame`).
  */
 import type { Point } from '../types.js'
 
@@ -42,13 +47,16 @@ export const VIEW_SEARCH_DEFAULTS = {
   /** The padded view's margin (CaptureDetector.CONTEXT_PAD). */
   pad: 0.15,
   /** Width of the windows over one half of the picture (share of the width). */
-  windowWidth: 0.55,
+  windowWidth: 0.6,
   /**
    * Centres of those windows (share of the width): a page held one-sided
    * sits a little off the middle, away from the facing page, its gutter
-   * near the middle of the picture.
+   * near the middle of the picture (book 1's page spans 45–84 % of the
+   * width; a window to 85 % put its fore-edge on the cut edge).
    */
-  windowCentres: [0.575, 0.425, 0.5],
+  windowCentres: [0.6, 0.4, 0.5],
+  /** Views tried a frame besides the whole picture while nothing shows the paper. */
+  perFrame: 2,
   /** A corner nearer a cut edge than this (share of the window's diagonal) is the edge. */
   cutMargin: 0.02,
 }
@@ -109,23 +117,51 @@ export function toFrame<P extends Point>(
 }
 
 /**
- * The order to try the views in: the one that showed the paper last, then
- * the whole picture, then the rest as listed.
+ * The order to try the views in: the two views that showed the paper most
+ * recently (a page found by the padded picture on one frame and by the
+ * middle window on the next flips between them; trying only the last
+ * cost a whole search on every flip), then the whole picture, then
+ * `perFrame` of the other views, taken in turn from one frame to the
+ * next. Once the whole picture finds the paper it is the first view again.
  */
 export class ViewSearch {
-  #last: string | null = null
+  /** Views that found the paper, the most recent first. */
+  #recent: string[] = []
+  #turn = 0
+  #perFrame: number
+
+  constructor(perFrame = VIEW_SEARCH_DEFAULTS.perFrame) {
+    this.#perFrame = perFrame
+  }
 
   order(views: readonly DetectView[]): DetectView[] {
-    const last = views.find((v) => v.name === this.#last)
-    return last ? [last, ...views.filter((v) => v !== last)] : [...views]
+    const full = views[0]
+    if (!full) return []
+    const recent = this.#recent
+      .map((name) => views.find((v) => v.name === name))
+      .filter((v): v is DetectView => v !== undefined)
+    const out: DetectView[] = [...recent]
+    if (!out.includes(full)) out.push(full)
+    const rest = views.filter((v) => !out.includes(v))
+    const n = Math.min(this.#perFrame, rest.length)
+    for (let k = 0; k < n; k++) out.push(rest[(this.#turn + k) % rest.length]!)
+    this.#turn += n
+    return out
   }
 
   /** The view that showed the paper on this frame, or null when none did. */
   found(view: DetectView | null): void {
-    this.#last = view?.name ?? null
+    if (!view) return
+    this.#recent =
+      view.name === 'full'
+        ? ['full']
+        : [view.name, ...this.#recent.filter((n) => n !== view.name)].slice(
+            0,
+            2,
+          )
   }
 
   get last(): string | null {
-    return this.#last
+    return this.#recent[0] ?? null
   }
 }

@@ -500,14 +500,7 @@ export class BookCapture {
     this.#view = view
 
     const q = det.quad
-    const margin = 0.004 * Math.max(vw, vh)
-    const inside = [q.tl, q.tr, q.br, q.bl].every(
-      (p) =>
-        p.x >= -margin &&
-        p.y >= -margin &&
-        p.x <= vw + margin &&
-        p.y <= vh + margin,
-    )
+    const inside = this.#inside(q, vw, vh)
     const found = this.#found(det, vw, vh)
     probe({
       type: 'frame',
@@ -694,13 +687,32 @@ export class BookCapture {
     this.#onChange()
   }
 
-  /** The paper is found: every corner sure, big enough, a convex frame, none on a cut edge of the view. */
+  /** Every corner within the picture (a hair outside allowed). */
+  #inside(q: Quad, vw: number, vh: number): boolean {
+    const margin = 0.004 * Math.max(vw, vh)
+    return [q.tl, q.tr, q.br, q.bl].every(
+      (p) =>
+        p.x >= -margin &&
+        p.y >= -margin &&
+        p.x <= vw + margin &&
+        p.y <= vh + margin,
+    )
+  }
+
+  /**
+   * The paper is found: every corner sure and within the picture, big
+   * enough, a convex frame, no corner on a cut edge of the view. (The
+   * padded view shows the model the whole open book of a single page taken
+   * in a landscape picture: its outer corners lie outside — the windows
+   * over the page are the views that find it.)
+   */
   #found(det: PageDetection, vw: number, vh: number): boolean {
     return (
       det.minPeak >= MIN_PEAK &&
       quadArea(det.quad) / (vw * vh) >= MIN_AREA &&
       convex(det.quad) &&
-      !det.cut
+      !det.cut &&
+      this.#inside(det.quad, vw, vh)
     )
   }
 

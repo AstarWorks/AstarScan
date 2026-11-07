@@ -27,6 +27,12 @@ import {
   toFrame,
   ViewSearch,
 } from '../src/pipeline/view-search.js'
+import {
+  detectViews,
+  onCutEdge,
+  toFrame,
+  ViewSearch,
+} from '../src/pipeline/view-search.js'
 
 const read = (n: number): BookPageRead => ({ state: 'read', number: n })
 const none: BookPageRead = { state: 'none' }
@@ -838,9 +844,9 @@ describe('detectViews / onCutEdge / ViewSearch (where the model looks)', () => {
     expect(v[0]).toMatchObject({ x: 0, y: 0, w: 1920, h: 1080, pad: 0 })
     expect(v[1]!.pad).toBeCloseTo(0.15)
     const right = v[2]!
-    expect(right.w).toBe(Math.round(1920 * 0.55))
-    expect(right.x + right.w / 2).toBeCloseTo(1920 * 0.575, 0)
-    expect(v[3]!.x + v[3]!.w / 2).toBeCloseTo(1920 * 0.425, 0)
+    expect(right.w).toBe(Math.round(1920 * 0.6))
+    expect(right.x + right.w / 2).toBeCloseTo(1920 * 0.6, 0)
+    expect(v[3]!.x + v[3]!.w / 2).toBeCloseTo(1920 * 0.4, 0)
     expect(v[4]!.x + v[4]!.w / 2).toBeCloseTo(1920 * 0.5, 0)
   })
   it('a corner on a cut edge of a window is the window, not the paper', () => {
@@ -873,25 +879,19 @@ describe('detectViews / onCutEdge / ViewSearch (where the model looks)', () => {
     const v = detectViews(1920, 1080)[2]!
     expect(toFrame([{ x: 10, y: 20 }], v)).toEqual([{ x: 10 + v.x, y: 20 }])
   })
-  it('tries the view that found the paper last first, then the whole picture', () => {
+  it('tries the views that found the paper most recently, the whole picture, then two others in turn', () => {
     const views = detectViews(1920, 1080)
     const s = new ViewSearch()
-    expect(s.order(views).map((x) => x.name)).toEqual([
-      'full',
-      'pad',
-      'right',
-      'left',
-      'centre',
-    ])
-    s.found(views[2]!)
-    expect(s.order(views).map((x) => x.name)).toEqual([
-      'right',
-      'full',
-      'pad',
-      'left',
-      'centre',
-    ])
-    s.found(null)
-    expect(s.order(views)[0]!.name).toBe('full')
+    const names = () => s.order(views).map((x) => x.name)
+    expect(names()).toEqual(['full', 'pad', 'right'])
+    expect(names()).toEqual(['full', 'left', 'centre'])
+    s.found(views[2]!) // right (the turn goes on through the other views)
+    expect(names()).toEqual(['right', 'full', 'left', 'centre'])
+    s.found(views[4]!) // centre: the two recent ones first, the page flips between them
+    expect(names()).toEqual(['centre', 'right', 'full', 'pad', 'left'])
+    s.found(null) // nothing found: the recent views stay first
+    expect(names()).toEqual(['centre', 'right', 'full', 'pad', 'left'])
+    s.found(views[0]!) // the whole picture again: it alone comes first
+    expect(names()).toEqual(['full', 'left', 'centre'])
   })
 })

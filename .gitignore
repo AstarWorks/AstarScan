@@ -123,3 +123,7 @@ scripts/dataset/scene-reps.json
 scripts/dataset/external/
 apps/web/public/ort/
 __pycache__/
+!scripts/eval/book-clips/book8/*.mp4
+!scripts/eval/book-clips/book8-framed/*.mp4
+# fonts of book 8 (scripts/eval/book-clips/fetch-book8-fonts.sh)
+.cache/book8-fonts/

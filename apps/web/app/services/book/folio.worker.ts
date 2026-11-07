@@ -264,13 +264,14 @@ function lineBox(chars: readonly Char[]): Line {
  * apart, the order rule did not catch them). A bar stands out from the
  * digits beside it: taller than every other character of the line by a
  * fifth or more (it runs from the ascender to the descender), thin (its
- * width a fifth of its height or less), and a space away. A digit 1 is as
- * tall as the other digits; a bracket is a third as wide as it is tall.
+ * width a third of its height or less — a 2 px stroke blurs to 8 px at the
+ * 1000 px read width, 28 tall), and a space away. A digit 1 is as tall as
+ * the other digits, and twice as wide as the bar.
  * The line is cut back to the other characters, and the crop's padding on
  * that side stops short of the bar.
  */
 function withoutBars(l: Line): Line {
-  const chars = l.chars
+  const chars = [...l.chars].sort((a, b) => a.x0 - b.x0)
   if (chars.length < 2) return l
   const ends = [chars[0]!, chars[chars.length - 1]!]
   const drop = new Set<Char>()
@@ -282,7 +283,7 @@ function withoutBars(l: Line): Line {
     const nearest = Math.min(
       ...others.map((o) => Math.max(o.x0 - c.x1, c.x0 - o.x1)),
     )
-    if (ch >= 1.2 * oh && cw <= 0.2 * ch && nearest >= 0.3 * ch) drop.add(c)
+    if (ch >= 1.2 * oh && cw <= 0.35 * ch && nearest >= 0.3 * ch) drop.add(c)
   }
   if (drop.size === 0 || drop.size === chars.length) return l
   const kept = chars.filter((c) => !drop.has(c))
