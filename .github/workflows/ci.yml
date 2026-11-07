@@ -226,6 +226,12 @@ jobs:
           set -euo pipefail
           mkdir -p /tmp/pw && cd /tmp/pw && npm init -y > /dev/null && npm install --no-audit --no-fund playwright@1.56.1 | tail -n 2
           npx playwright install --with-deps chromium webkit | tail -n 3
+          # ubuntu-24.04 has no ffmpeg (ubuntu-latest had one); book-e2e.mjs
+          # converts the clip to MJPEG with it.
+          command -v ffmpeg > /dev/null || {
+            sudo timeout 600 apt-get -o DPkg::Lock::Timeout=120 -o Acquire::Retries=3 update -q
+            sudo timeout 600 apt-get -o DPkg::Lock::Timeout=120 -o Acquire::Retries=3 install -y -q --no-install-recommends ffmpeg | tail -n 2
+          }
           ffmpeg -version | head -n 1
 
       - name: Play the clip on the preview (Chromium, fake camera)
