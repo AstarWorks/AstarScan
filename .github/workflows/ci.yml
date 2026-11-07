@@ -418,13 +418,17 @@ jobs:
       # BOOK_STILLS_SEQ "book4-spread-inner 0 1 3 4 5" (62・63 skipped),
       # STILLS_BOOK book4, FEED_FIRST book4-single-dash, STILLS_CLIPS the
       # three clip names); emulator-check.sh and stills.py read them.
-      BOOK_CLIPS_REL: scripts/eval/book-clips/framed
+      # Branch book8-android-eval: the eighth book (untuned; made after the
+      # last code change cdbd416; book8.py, framed into book8-framed/). One
+      # clip: the upright spread, 136・137 (hold 3) skipped live and in the
+      # stills session, as in the browser run.
+      BOOK_CLIPS_REL: scripts/eval/book-clips/book8-framed
       BOOK_PLAN: ''
-      BOOK_LAST: ''
-      BOOK_STILLS_SEQ: ''
-      STILLS_BOOK: ''
-      STILLS_CLIPS: ''
-      FEED_FIRST: spread-land-wood
+      BOOK_LAST: book8-spread-gentium 0 1 2 4 5 6
+      BOOK_STILLS_SEQ: book8-spread-gentium 0 1 2 4 5 6
+      STILLS_BOOK: book8
+      STILLS_CLIPS: book8-spread-gentium
+      FEED_FIRST: book8-spread-gentium
 
     steps:
       - uses: actions/checkout@v4
