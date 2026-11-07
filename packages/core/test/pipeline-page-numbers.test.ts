@@ -117,6 +117,26 @@ describe('parsePageNumberToken', () => {
     expect(parsePageNumberToken('100ml')).toBeNull()
   })
 
+  it('a kanji numeral with a dash on one side only is short by a 一 (book 5)', () => {
+    // 一一九 read as "-一九" and "-九", 一二八 as "-八": the leading 一 came
+    // back as a stroke. Not taken; dashes on both sides are decoration.
+    expect(parsePageNumberToken('-一九')).toBeNull()
+    expect(parsePageNumberToken('-九')).toBeNull()
+    expect(parsePageNumberToken('一九-')).toBeNull()
+    expect(parsePageNumberToken('— 一九 —')).toEqual({
+      value: 19,
+      kind: 'kanji',
+    })
+    expect(parsePageNumberToken('一一九')).toEqual({
+      value: 119,
+      kind: 'kanji',
+    })
+    expect(parsePageNumberToken('一二四')).toEqual({
+      value: 124,
+      kind: 'kanji',
+    })
+  })
+
   it('rejects body text, chapter numbers and zero', () => {
     expect(parsePageNumberToken('第3章 契約')).toBeNull()
     expect(parsePageNumberToken('証拠書類は提出の順に')).toBeNull()

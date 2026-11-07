@@ -17,7 +17,12 @@
  */
 
 import type { Point, Quad } from '@astarworks/scan-core'
-import { completeHiddenCorner } from '@astarworks/scan-core/pipeline'
+import {
+  completeHiddenCorner,
+  onCutEdge,
+  toFrame,
+  type DetectView,
+} from '@astarworks/scan-core/pipeline'
 
 import {
   loadFastOrtSession,
@@ -48,6 +53,13 @@ export interface PageDetection {
   hidden: number | null
   /** Model time of this call (ms). */
   inferMs: number
+  /** The view of the picture the model saw (scan-core detectViews). */
+  view: string
+  /**
+   * A corner lies on a cut edge of the view: the view's edge, not the
+   * paper's (a spread cut by a window; scan-core onCutEdge). Not a find.
+   */
+  cut: boolean
 }
 
 type Source = HTMLVideoElement | HTMLCanvasElement | ImageBitmap
@@ -109,12 +121,26 @@ export class PageDetector {
     this.#s = await loadFastOrtSession(DOCALIGNER_URL, prefer)
   }
 
-  /** Corners of the paper in `src`, or null when the model is busy / not loaded. */
-  async detect(src: Source, pad = 0): Promise<PageDetection | null> {
+  /**
+   * Corners of the paper in `src` (picture px), or null when the model is
+   * busy / not loaded. `view`: the window of the picture the model looks
+   * at (default the whole picture, no margin); the corners come back in
+   * the picture's pixels.
+   */
+  async detect(src: Source, view?: DetectView): Promise<PageDetection | null> {
     const s = this.#s
     if (!s || this.#busy) return null
-    const { w, h } = sourceSize(src)
-    if (w === 0 || h === 0) return null
+    const { w: fw, h: fh } = sourceSize(src)
+    if (fw === 0 || fh === 0) return null
+    const v: DetectView = view ?? {
+      name: 'full',
+      x: 0,
+      y: 0,
+      w: fw,
+      h: fh,
+      pad: 0,
+    }
+    const { x: vx, y: vy, w, h, pad } = v
     this.#busy = true
     try {
       const pw = w * pad
@@ -132,7 +158,7 @@ export class PageDetector {
       const y0 = oy * scale
       const dw = w * scale
       const dh = h * scale
-      ctx.drawImage(src, 0, 0, w, h, x0, y0, dw, dh)
+      ctx.drawImage(src, vx, vy, w, h, x0, y0, dw, dh)
       if (pad > 0) {
         // Edge rows / columns stretched over the margins (BORDER_REPLICATE).
         const l = (ox - pw) * scale
@@ -148,7 +174,18 @@ export class PageDetector {
           dy0: number,
           dx1: number,
           dy1: number,
-        ) => ctx.drawImage(src, sx, sy, sw, sh, dx0, dy0, dx1 - dx0, dy1 - dy0)
+        ) =>
+          ctx.drawImage(
+            src,
+            vx + sx,
+            vy + sy,
+            sw,
+            sh,
+            dx0,
+            dy0,
+            dx1 - dx0,
+            dy1 - dy0,
+          )
         put(0, 0, 1, h, l, y0, x0, y0 + dh)
         put(w - 1, 0, 1, h, x0 + dw, y0, r, y0 + dh)
         put(0, 0, w, 1, x0, t, x0 + dw, y0)
@@ -220,7 +257,7 @@ export class PageDetector {
         Point,
       ]
       const done = completeHiddenCorner(raw, p, { minPeak: MIN_PEAK })
-      const pts = done?.points ?? raw
+      const pts = toFrame(done?.points ?? raw, v)
       const hidden = done?.hidden ?? null
       const seen = hidden === null ? p : p.filter((_, i) => i !== hidden)
       return {
@@ -232,6 +269,8 @@ export class PageDetector {
         minPeak: Math.min(...seen),
         hidden,
         inferMs,
+        view: v.name,
+        cut: onCutEdge(pts, v, fw, fh),
       }
     } finally {
       this.#busy = false

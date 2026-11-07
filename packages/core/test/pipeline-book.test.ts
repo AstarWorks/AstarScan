@@ -21,6 +21,12 @@ import {
 import { paperViewChange, paperViewMask } from '../src/pipeline/turn-watch.js'
 import { shotFrameQuad } from '../src/pipeline/shot-frame.js'
 import { completeHiddenCorner } from '../src/pipeline/hidden-corner.js'
+import {
+  detectViews,
+  onCutEdge,
+  toFrame,
+  ViewSearch,
+} from '../src/pipeline/view-search.js'
 
 const read = (n: number): BookPageRead => ({ state: 'read', number: n })
 const none: BookPageRead = { state: 'none' }
@@ -780,5 +786,112 @@ describe('completeHiddenCorner (a corner under a thumb)', () => {
     // A turn / no paper: three corners seen but not plainly (0.3–0.6).
     expect(completeHiddenCorner(pts, [0.9, 0.55, 0.9, 0.04])).toBeNull()
     expect(completeHiddenCorner(pts, [0.9, 0.6, 0.9, 0.04])).not.toBeNull()
+  })
+})
+
+describe('settleBookNumbers: a single page whose number jumps (book "17 |")', () => {
+  const t = (n: number): BookPageRead => ({ state: 'read', number: n, px: 14 })
+  it('holds every page of a run 20 apart that nothing confirms', () => {
+    // "17 |" read as 171, "19 |" as 191, … : 20 apart, the order kept.
+    const s = [sheet(t(171)), sheet(t(191)), sheet(t(211)), sheet(t(231))]
+    const v = s.map((x) => settleBookNumbers(s).get(x.id))
+    expect(v).toEqual(['unsure', 'unsure', 'unsure', 'unsure'])
+    // Alone, the first page's number is shown (nothing speaks against it).
+    expect(settleBookNumbers([s[0]!]).get(s[0]!.id)).toBe('ok')
+  })
+  it('shows every right page taken in turn, and a page after an unread one', () => {
+    const s = [sheet(t(31)), sheet(t(33)), sheet(none), sheet(t(37))]
+    const v = s.map((x) => settleBookNumbers(s).get(x.id))
+    expect(v).toEqual(['ok', 'ok', 'ok', 'ok'])
+    // 37 → ?, ? → 45: 8 over three captures (6 allowed) is a jump, unless
+    // 47 then follows it.
+    const far = [sheet(t(37)), sheet(none), sheet(none), sheet(t(45))]
+    expect(settleBookNumbers(far).get(far[3]!.id)).toBe('unsure')
+    const back = [...far, sheet(t(47))]
+    expect(settleBookNumbers(back).get(back[3]!.id)).toBe('ok')
+  })
+  it('a page taken after a skipped leaf waits for the next page to confirm it', () => {
+    const s = [sheet(t(31)), sheet(t(33)), sheet(t(35)), sheet(t(39))]
+    expect(settleBookNumbers(s).get(s[3]!.id)).toBe('unsure')
+    const more = [...s, sheet(t(41))]
+    expect(settleBookNumbers(more).get(more[3]!.id)).toBe('ok')
+    // And with 41 the skipped 37 is red.
+    expect(bookCoverage(more).gaps).toEqual([{ from: 37, to: 37, step: 2 }])
+  })
+  it('a spread beside singles is not held by the rule', () => {
+    const s = [sheet(t(41)), sheet(t(42), t(43)), sheet(t(45))]
+    const v = s.map((x) => settleBookNumbers(s).get(x.id))
+    expect(v).toEqual(['ok', 'ok', 'ok'])
+  })
+})
+
+describe('detectViews / onCutEdge / ViewSearch (where the model looks)', () => {
+  it('lists the whole picture first, then the padded one and the windows', () => {
+    const v = detectViews(1920, 1080)
+    expect(v.map((x) => x.name)).toEqual([
+      'full',
+      'pad',
+      'right',
+      'left',
+      'centre',
+    ])
+    expect(v[0]).toMatchObject({ x: 0, y: 0, w: 1920, h: 1080, pad: 0 })
+    expect(v[1]!.pad).toBeCloseTo(0.15)
+    const right = v[2]!
+    expect(right.w).toBe(Math.round(1920 * 0.55))
+    expect(right.x + right.w / 2).toBeCloseTo(1920 * 0.575, 0)
+    expect(v[3]!.x + v[3]!.w / 2).toBeCloseTo(1920 * 0.425, 0)
+    expect(v[4]!.x + v[4]!.w / 2).toBeCloseTo(1920 * 0.5, 0)
+  })
+  it('a corner on a cut edge of a window is the window, not the paper', () => {
+    const v = detectViews(1920, 1080)
+    const right = v[2]!
+    const inside = [
+      { x: right.x + 200, y: 100 },
+      { x: right.x + right.w - 200, y: 100 },
+      { x: right.x + right.w - 200, y: 1000 },
+      { x: right.x + 200, y: 1000 },
+    ]
+    expect(onCutEdge(inside, right, 1920, 1080)).toBe(false)
+    const cut = [...inside]
+    cut[0] = { x: right.x + 5, y: 100 }
+    expect(onCutEdge(cut, right, 1920, 1080)).toBe(true)
+    // The picture's own edges are not cut edges.
+    expect(
+      onCutEdge([{ x: 3, y: 100 }, ...inside.slice(1)], v[0]!, 1920, 1080),
+    ).toBe(false)
+    expect(
+      onCutEdge(
+        [{ x: right.x + 200, y: 2 }, ...inside.slice(1)],
+        right,
+        1920,
+        1080,
+      ),
+    ).toBe(false)
+  })
+  it('maps a window detection back to the picture', () => {
+    const v = detectViews(1920, 1080)[2]!
+    expect(toFrame([{ x: 10, y: 20 }], v)).toEqual([{ x: 10 + v.x, y: 20 }])
+  })
+  it('tries the view that found the paper last first, then the whole picture', () => {
+    const views = detectViews(1920, 1080)
+    const s = new ViewSearch()
+    expect(s.order(views).map((x) => x.name)).toEqual([
+      'full',
+      'pad',
+      'right',
+      'left',
+      'centre',
+    ])
+    s.found(views[2]!)
+    expect(s.order(views).map((x) => x.name)).toEqual([
+      'right',
+      'full',
+      'pad',
+      'left',
+      'centre',
+    ])
+    s.found(null)
+    expect(s.order(views)[0]!.name).toBe('full')
   })
 })

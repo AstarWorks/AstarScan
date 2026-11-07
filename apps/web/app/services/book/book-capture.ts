@@ -58,6 +58,9 @@ import {
   type CanvasLike,
   type GutterLine,
   type OrbResult,
+  detectViews,
+  ViewSearch,
+  type DetectView,
 } from '@astarworks/scan-core/pipeline'
 import type { Point, Quad } from '@astarworks/scan-core'
 
@@ -65,7 +68,7 @@ import { beepCaptured, vibrateCaptured } from '../capture-feedback'
 import { loadOpenCV } from '../opencv-loader'
 import { getPipelineOps } from '../pipeline-ops'
 import type { OrtBackend } from '../ort-model-loader'
-import { MIN_PEAK, PageDetector } from './page-detector'
+import { MIN_PEAK, PageDetector, type PageDetection } from './page-detector'
 import type { FolioIn, FolioLine, FolioOut } from './folio.worker'
 
 // --- timing (docs/ux/ideal-capture.html: "撮れた" within 1 s of stillness) ---
@@ -261,6 +264,14 @@ export class BookCapture {
   readonly sheets: Sheet[] = []
 
   #detector = new PageDetector()
+  /**
+   * Which view of the picture to show the corner model (scan-core
+   * view-search): the whole picture, or — when that shows it no paper, as
+   * a single page taken in a landscape picture with the facing page in
+   * view does — the padded picture or a window over one half of it.
+   */
+  #views: DetectView[] = []
+  #viewSearch = new ViewSearch()
   #video: HTMLVideoElement | null = null
   #running = false
   #onChange: () => void
@@ -467,7 +478,7 @@ export class BookCapture {
     const now = performance.now()
     const vw = video.videoWidth
     const vh = video.videoHeight
-    const det = await this.#detector.detect(video)
+    const det = await this.#detect(video, vw, vh)
     if (!det) return
     this.#frameTimes.push(now)
     while (this.#frameTimes.length > 0 && now - this.#frameTimes[0]! > 2000)
@@ -489,7 +500,6 @@ export class BookCapture {
     this.#view = view
 
     const q = det.quad
-    const area = quadArea(q) / (vw * vh)
     const margin = 0.004 * Math.max(vw, vh)
     const inside = [q.tl, q.tr, q.br, q.bl].every(
       (p) =>
@@ -498,7 +508,7 @@ export class BookCapture {
         p.x <= vw + margin &&
         p.y <= vh + margin,
     )
-    const found = det.minPeak >= MIN_PEAK && area >= MIN_AREA && convex(q)
+    const found = this.#found(det, vw, vh)
     probe({
       type: 'frame',
       t: now,
@@ -507,6 +517,8 @@ export class BookCapture {
       minPeak: det.minPeak,
       peaks: det.peaks.map((p) => Math.round(p * 100) / 100),
       hidden: det.hidden,
+      view: det.view,
+      cut: det.cut,
       ms: Math.round(det.inferMs),
       vw,
       vh,
@@ -680,6 +692,50 @@ export class BookCapture {
       this.state.sweep = 0
     }
     this.#onChange()
+  }
+
+  /** The paper is found: every corner sure, big enough, a convex frame, none on a cut edge of the view. */
+  #found(det: PageDetection, vw: number, vh: number): boolean {
+    return (
+      det.minPeak >= MIN_PEAK &&
+      quadArea(det.quad) / (vw * vh) >= MIN_AREA &&
+      convex(det.quad) &&
+      !det.cut
+    )
+  }
+
+  /**
+   * The corner model over the views of the picture (scan-core
+   * detectViews): the view that showed the paper last first, then the
+   * whole picture, then the others; the first that finds the paper wins.
+   * When none does, the whole picture's detection is returned (its weak
+   * corners draw the searching frame). The model time is the sum.
+   */
+  async #detect(
+    video: HTMLVideoElement,
+    vw: number,
+    vh: number,
+  ): Promise<PageDetection | null> {
+    if (
+      this.#views.length === 0 ||
+      this.#views[0]!.w !== vw ||
+      this.#views[0]!.h !== vh
+    )
+      this.#views = detectViews(vw, vh)
+    let full: PageDetection | null = null
+    let ms = 0
+    for (const v of this.#viewSearch.order(this.#views)) {
+      const det = await this.#detector.detect(video, v)
+      if (!det) return null
+      ms += det.inferMs
+      if (v.name === 'full') full = det
+      if (this.#found(det, vw, vh)) {
+        this.#viewSearch.found(v)
+        return { ...det, inferMs: ms }
+      }
+    }
+    this.#viewSearch.found(null)
+    return full ? { ...full, inferMs: ms } : null
   }
 
   /** The view and the paper of the page taken (or recognised as taken). */

@@ -460,9 +460,18 @@ export const BOOK_NUMBER_DEFAULTS = {
  *    "✓ 1・2 撮れた" and listed under those numbers;
  *  - `ok`: shown and counted.
  *
- * Single pages keep the order rule only (their numbers are read at twice a
- * spread's size). A capture held back as `unsure` comes back as `ok` once
- * a later capture confirms it.
+ * Single pages are read at twice a spread's size and keep the order rule,
+ * and one more: a single page's number that nothing confirms is `unsure`
+ * when it jumps further from the numbered capture before or after it (in
+ * capture order) than those captures could turn — more than 2 pages a
+ * capture (a leaf), counting the captures between whose number was not
+ * read. A folio "17 |" read as 171, 191, 211 … (a bar read as a 1, 20
+ * apart, the order kept) showed "✓ 171 撮れた" on every page: each jumps
+ * 20 from its neighbours and nothing confirms any. A page 39 taken after
+ * 35 (37 skipped) jumps 4 and waits for 41 to confirm it; 41 after 37, ?
+ * (unread), 45 jumps 4 over two captures and counts.
+ * A capture held back as `unsure` comes back as `ok` once a later capture
+ * confirms it.
  */
 export function settleBookNumbers(
   sheets: readonly BookSheet[],
@@ -545,6 +554,30 @@ export function settleBookNumbers(
     out.set(s.id, parityOk && (confirmed(s) || pair) ? 'ok' : 'unsure')
   }
 
+  // Single pages: a number that jumps further than the captures between
+  // could turn, and that nothing confirms (see above).
+  const bySeq = [...work].sort((a, b) => a.seq - b.seq)
+  const numbered = bySeq.filter(
+    (s) => out.get(s.id) === 'ok' && directNumbers([s]).length > 0,
+  )
+  const jumps = (a: BookSheet, b: BookSheet): boolean => {
+    const between = bySeq.filter((x) => x.seq > a.seq && x.seq < b.seq).length
+    const na = countedNumbers(a)
+    const nb = countedNumbers(b)
+    const gap = Math.max(
+      Math.min(...nb) - Math.max(...na),
+      Math.min(...na) - Math.max(...nb),
+    )
+    return gap > 2 * (between + 1)
+  }
+  for (const [i, s] of numbered.entries()) {
+    if (s.pages.length !== 1 || partners(s).length > 0) continue
+    const prev = numbered[i - 1]
+    const next = numbered[i + 1]
+    if ((prev && jumps(prev, s)) || (next && jumps(s, next)))
+      out.set(s.id, 'unsure')
+  }
+
   // Two captures holding the same page (a retake the picture test let
   // through, or one of them misread onto the other's number): at most one
   // counts — the one in sequence with the captures just before and after
@@ -553,7 +586,6 @@ export function settleBookNumbers(
   const shown = work.filter(
     (s) => out.get(s.id) === 'ok' && countedNumbers(s).length > 0,
   )
-  const bySeq = [...work].sort((a, b) => a.seq - b.seq)
   const inSequence = (s: BookSheet) => {
     const i = bySeq.findIndex((x) => x.id === s.id)
     let n = 0

@@ -41,6 +41,14 @@ const PAGE_W = 1000
  * stay within 5 %.
  */
 const INK_DARKER = 0.15
+/**
+ * A stroke this much darker than the paper is not ink on its own, but joins
+ * a line of ink beside it. A thin stroke blurs to a light grey: the kanji
+ * 一 of a positional folio 「一二四」 (book 5, IPA P Gothic, 11 px) was
+ * lighter than INK_DARKER, the line began at 二, and every page read 100
+ * low ("二四" at 0.83). With the 一 in the crop the reader gives 一二四.
+ */
+const INK_FAINT = 0.07
 const INK_CELL = 0.05
 /**
  * A cell darker than this share of the band's level is not paper (a thumb,
@@ -133,7 +141,22 @@ interface Box {
   y0: number
   x1: number
   y1: number
+  /** Padding round the crop on the left / right (share of the line's height; default PAD). */
+  padL?: number
+  padR?: number
 }
+
+/** A character of a line: its box, pixels, and whether it is ink on its own (not faint). */
+interface Char extends Box {
+  n: number
+  strong: boolean
+}
+
+interface Line extends Box {
+  chars: Char[]
+}
+
+const PAD = 0.35
 
 /** Grey level under which 70 % of `n` counted pixels lie. */
 function percentile70(hist: Uint32Array, n: number): number {
@@ -146,8 +169,9 @@ function percentile70(hist: Uint32Array, n: number): number {
 }
 
 /**
- * Ink mask of rows [y0, y1) of the page: pixels INK_DARKER darker than the
- * paper's level round them (per cell, interpolated; see INK_DARKER).
+ * Ink mask of rows [y0, y1) of the page: 2 where a pixel is INK_DARKER
+ * darker than the paper's level round it (per cell, interpolated; see
+ * INK_DARKER), 1 where it is INK_FAINT darker (a faint stroke), 0 paper.
  */
 function inkMask(
   g: Uint8ClampedArray,
@@ -194,18 +218,93 @@ function inkMask(
         (level[r0 * cols + c0]! * (1 - tx) + level[r0 * cols + c1]! * tx) *
           (1 - ty) +
         (level[r1 * cols + c0]! * (1 - tx) + level[r1 * cols + c1]! * tx) * ty
-      if (g[(y + y0) * w + x]! < paper * (1 - INK_DARKER)) ink[y * w + x] = 1
+      const v = g[(y + y0) * w + x]!
+      if (v < paper * (1 - INK_DARKER)) ink[y * w + x] = 2
+      else if (v < paper * (1 - INK_FAINT)) ink[y * w + x] = 1
     }
   }
   return ink
 }
 
+/** Whether `c` sits beside line `l` (rows overlapping, a small gap). */
+function beside(l: Box, c: Box): boolean {
+  const ov = Math.min(l.y1, c.y1) - Math.max(l.y0, c.y0)
+  const hh = Math.max(l.y1 - l.y0, c.y1 - c.y0) + 1
+  return (
+    ov >= 0.4 * Math.min(l.y1 - l.y0 + 1, c.y1 - c.y0 + 1) &&
+    c.x0 - l.x1 <= 0.9 * hh &&
+    l.x0 - c.x1 <= 0.9 * hh
+  )
+}
+
+function grow(l: Line, c: Char): void {
+  l.x0 = Math.min(l.x0, c.x0)
+  l.y0 = Math.min(l.y0, c.y0)
+  l.x1 = Math.max(l.x1, c.x1)
+  l.y1 = Math.max(l.y1, c.y1)
+  l.chars.push(c)
+}
+
+function lineBox(chars: readonly Char[]): Line {
+  const l: Line = {
+    x0: Infinity,
+    y0: Infinity,
+    x1: -Infinity,
+    y1: -Infinity,
+    chars: [],
+  }
+  for (const c of chars) grow(l, c)
+  return l
+}
+
+/**
+ * A rule at one end of a line — "17 |", a vertical bar after the number —
+ * is not part of the number: the reader reads it as a 1 ("171", "191",
+ * "211" … at 0.8–0.97 on every page of a book whose folio was "17 |"; 20
+ * apart, the order rule did not catch them). A bar stands out from the
+ * digits beside it: taller than every other character of the line by a
+ * fifth or more (it runs from the ascender to the descender), thin (its
+ * width a fifth of its height or less), and a space away. A digit 1 is as
+ * tall as the other digits; a bracket is a third as wide as it is tall.
+ * The line is cut back to the other characters, and the crop's padding on
+ * that side stops short of the bar.
+ */
+function withoutBars(l: Line): Line {
+  const chars = l.chars
+  if (chars.length < 2) return l
+  const ends = [chars[0]!, chars[chars.length - 1]!]
+  const drop = new Set<Char>()
+  for (const c of ends) {
+    const others = chars.filter((o) => o !== c)
+    const oh = Math.max(...others.map((o) => o.y1 - o.y0 + 1))
+    const ch = c.y1 - c.y0 + 1
+    const cw = c.x1 - c.x0 + 1
+    const nearest = Math.min(
+      ...others.map((o) => Math.max(o.x0 - c.x1, c.x0 - o.x1)),
+    )
+    if (ch >= 1.2 * oh && cw <= 0.2 * ch && nearest >= 0.3 * ch) drop.add(c)
+  }
+  if (drop.size === 0 || drop.size === chars.length) return l
+  const kept = chars.filter((c) => !drop.has(c))
+  const out = lineBox(kept)
+  const bh = out.y1 - out.y0 + 1
+  for (const c of drop) {
+    const gap = c.x0 > out.x1 ? c.x0 - out.x1 : out.x0 - c.x1
+    const padEnd = Math.min(PAD, Math.max(0, gap / 2) / bh)
+    if (c.x0 > out.x1) out.padR = padEnd
+    else out.padL = padEnd
+  }
+  return out
+}
+
 /**
  * Lines of isolated print in rows [y0, y1) of the page. Ink: darker than
  * the paper round it (inkMask). Characters are the ink's connected
- * components (8-neighbour) of a plausible size and neutral colour;
- * characters side by side (overlapping rows, gap under ~0.9 × their
- * height) form a line.
+ * components (8-neighbour, faint pixels included) of a plausible size and
+ * neutral colour; characters side by side (overlapping rows, gap under
+ * ~0.9 × their height) form a line. A faint character (few of its pixels
+ * ink on its own) does not start a line, but joins one beside it (the 一
+ * of 一二四; see INK_FAINT). A bar at one end is left out (withoutBars).
  */
 function lineBoxes(
   g: Uint8ClampedArray,
@@ -214,7 +313,7 @@ function lineBoxes(
   h: number,
   y0: number,
   y1: number,
-): Box[] {
+): Line[] {
   const bh = y1 - y0
   const ink = inkMask(g, w, h, y0, y1)
   // Colour of the paper (its pixels' median saturation): under warm or
@@ -240,7 +339,7 @@ function lineBoxes(
   const maxH = h * 0.035
   const label = new Int32Array(w * bh).fill(-1)
   const stack: number[] = []
-  const chars: (Box & { n: number })[] = []
+  const chars: Char[] = []
   for (let i = 0; i < w * bh; i++) {
     if (label[i]! >= 0 || !ink[i]) continue
     let x0 = w
@@ -248,6 +347,7 @@ function lineBoxes(
     let yy0 = bh
     let yy1 = 0
     let n = 0
+    let strongN = 0
     let satSum = 0
     label[i] = 1
     stack.push(i)
@@ -256,6 +356,7 @@ function lineBoxes(
       const x = j % w
       const y = (j - x) / w
       n++
+      if (ink[j] === 2) strongN++
       satSum += sat[j + y0 * w]!
       if (x < x0) x0 = x
       if (x > x1) x1 = x
@@ -279,27 +380,34 @@ function lineBoxes(
     if (ch < minH && cw < minH) continue
     if (x0 <= 0 || x1 >= w - 1) continue
     if (satSum / n > paperSat + 35) continue
-    chars.push({ x0, y0: yy0 + y0, x1, y1: yy1 + y0, n })
+    chars.push({
+      x0,
+      y0: yy0 + y0,
+      x1,
+      y1: yy1 + y0,
+      n,
+      strong: strongN >= Math.max(3, 0.25 * n),
+    })
   }
   chars.sort((a, b) => a.x0 - b.x0)
-  const lines: Box[] = []
+  const lines: Line[] = []
   for (const c of chars) {
-    const line = lines.find((l) => {
-      const ov = Math.min(l.y1, c.y1) - Math.max(l.y0, c.y0)
-      const hh = Math.max(l.y1 - l.y0, c.y1 - c.y0) + 1
-      return (
-        ov >= 0.4 * Math.min(l.y1 - l.y0 + 1, c.y1 - c.y0 + 1) &&
-        c.x0 - l.x1 <= 0.9 * hh
-      )
-    })
-    if (line) {
-      line.x0 = Math.min(line.x0, c.x0)
-      line.y0 = Math.min(line.y0, c.y0)
-      line.x1 = Math.max(line.x1, c.x1)
-      line.y1 = Math.max(line.y1, c.y1)
-    } else lines.push({ x0: c.x0, y0: c.y0, x1: c.x1, y1: c.y1 })
+    if (!c.strong) continue
+    const line = lines.find((l) => beside(l, c))
+    if (line) grow(line, c)
+    else lines.push(lineBox([c]))
   }
-  return lines
+  // Faint characters join a line beside them (either side), never start one.
+  const faint = chars.filter((c) => !c.strong)
+  for (const c of faint) {
+    const line = lines.find((l) => beside(l, c))
+    if (line) grow(line, c)
+  }
+  for (const c of [...faint].reverse()) {
+    const line = lines.find((l) => !l.chars.includes(c) && beside(l, c))
+    if (line) grow(line, c)
+  }
+  return lines.map(withoutBars)
 }
 
 /** Candidate number lines: short lines nearest the page's top / bottom edge. */
@@ -350,10 +458,12 @@ function toTensor(
   void rgba
   void h
   const bh = b.y1 - b.y0 + 1
-  const pad = Math.round(bh * 0.35)
-  const sx = Math.max(0, b.x0 - pad)
+  const pad = Math.round(bh * PAD)
+  const padL = Math.round(bh * (b.padL ?? PAD))
+  const padR = Math.round(bh * (b.padR ?? PAD))
+  const sx = Math.max(0, b.x0 - padL)
   const sy = Math.max(0, b.y0 - pad)
-  const sw = Math.min(w - sx, b.x1 - b.x0 + 1 + 2 * pad)
+  const sw = Math.min(w - sx, b.x1 - b.x0 + 1 + padL + padR)
   const sh = Math.min(src.height - sy, bh + 2 * pad)
   const tw = Math.max(16, Math.min(MAX_W, Math.round((sw * IN_H) / sh)))
   work.width = tw

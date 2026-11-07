@@ -106,10 +106,16 @@ export function parsePageNumberToken(text: string): PageNumberToken | null {
   // Kanji numerals: "一二三" (positional), "百二十三", "第十頁". With 第 and
   // no page word it is an article or chapter number cut short (book 4:
   // 「第十七条」 at the top of the body read as "第十", taken as page 10).
+  // A dash on one side only is not a decoration but a 一 the reader saw as
+  // a stroke (book 5: 一一九 came back as "-一九" and "-九", and 一二八 as
+  // "-八"): the number is short by that 一, so it is not taken. Dashes on
+  // both sides ("— 一九 —") are the book's decoration, as with digits.
   const kanji =
     /^(第?)([〇零一二三四五六七八九十百千]{1,6})(頁|页|ページ)?$/.exec(core)
   if (kanji) {
     if (kanji[1] && !kanji[3]) return null
+    const dash = /^[\s\-–—―‐ー~〜]+/.test(raw) !== /[\s\-–—―‐ー~〜]+$/.test(raw)
+    if (dash) return null
     const v = kanjiToNumber(kanji[2]!)
     return v !== null && valid(v) ? { value: v, kind: 'kanji' } : null
   }
