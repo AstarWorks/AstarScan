@@ -29,7 +29,8 @@ looking at it. Unlike books 1–7:
   edge's middle; both thumbs on the fore-edges at mid-height;
 - frames: 1680x1260 landscape (4:3) SINGLE page — the facing page in view
   on the left, the grip books 1 and 6 lost every hold of (0 / 10, 0 / 11),
-  1125x1500 upright (3:4) spread, 2304x1728 landscape (4:3) spread — none
+  1128x1504 upright (3:4) spread (even sides: x264 takes no odd width),
+  2304x1728 landscape (4:3) spread — none
   of the sizes of books 1–7;
 - one spread is skipped on purpose (book8-spread-gentium hold 3, 136・137).
 """
@@ -49,7 +50,7 @@ BOOK8 = {
         paper=(228, 232, 238), tint=(1.08, 1.0, 0.88),
         thumb_R=(0.95, 0.0), thumb_out=(0.7, 1.0, 0.8)),
     'book8-spread-gentium': dict(
-        W=1125, H=1500, mode='spread', desk='burgundy', text='carroll-alice.txt', lang='en',
+        W=1128, H=1504, mode='spread', desk='burgundy', text='carroll-alice.txt', lang='en',
         title='MINUTES OF THE ORCHARD COMMITTEE', spreads=7, first_page=130, offset=47,
         glare=0.2, shadow=0.85, shake=1.5, thick=(20.0, 5.0), left_thumb=True,
         cover=(60, 90, 40), seed=521, font='gentium', folio='center', folio_fmt='{}',
