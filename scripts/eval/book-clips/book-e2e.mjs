@@ -184,22 +184,22 @@ const SH = 24
 const raw = rescore
   ? Buffer.alloc(0)
   : execFileSync(
-  'ffmpeg',
-  [
-    '-loglevel',
-    'error',
-    '-f',
-    'mjpeg',
-    '-i',
-    mjpeg,
-    '-vf',
-    `scale=${SW}:${SH}:flags=area,format=gray`,
-    '-f',
-    'rawvideo',
-    '-',
-  ],
-  { maxBuffer: 1 << 28 },
-)
+      'ffmpeg',
+      [
+        '-loglevel',
+        'error',
+        '-f',
+        'mjpeg',
+        '-i',
+        mjpeg,
+        '-vf',
+        `scale=${SW}:${SH}:flags=area,format=gray`,
+        '-f',
+        'rawvideo',
+        '-',
+      ],
+      { maxBuffer: 1 << 28 },
+    )
 const clipSig = []
 for (let i = 0; i < N; i += 1)
   clipSig.push(raw.subarray(i * SW * SH, (i + 1) * SW * SH))
@@ -215,11 +215,16 @@ let wStream
 /** --rescore: each capture's clip frame / timings from the earlier scoring. */
 const earlier = new Map()
 if (rescore) {
-  const prev = JSON.parse(fs.readFileSync(path.join(outDir, 'result.json'), 'utf8'))
+  const prev = JSON.parse(
+    fs.readFileSync(path.join(outDir, 'result.json'), 'utf8'),
+  )
   probe = JSON.parse(fs.readFileSync(path.join(outDir, 'probe.json'), 'utf8'))
   for (const r of prev.capRows) earlier.set(r.sheetId, r)
   const pageIds = fs.existsSync(path.join(outDir, 'pages'))
-    ? fs.readdirSync(path.join(outDir, 'pages')).filter((f) => f.endsWith('.jpg')).map((f) => f.replace(/\.jpg$/, ''))
+    ? fs
+        .readdirSync(path.join(outDir, 'pages'))
+        .filter((f) => f.endsWith('.jpg'))
+        .map((f) => f.replace(/\.jpg$/, ''))
     : []
   kept = pageIds.map((id) => ({ id, sheetId: id.replace(/[LRS]$/, '') }))
   pre = { backend: prev.summary.backend, threads: prev.summary.threads }
@@ -228,144 +233,144 @@ if (rescore) {
   videoPath = prev.summary.video ?? null
   wStream = prev.summary.wStream ?? 0
 } else {
-const browser = await chromium.launch({
-  args: [
-    '--use-fake-ui-for-media-stream',
-    '--use-fake-device-for-media-stream',
-    `--use-file-for-fake-video-capture=${mjpeg}`,
-    '--autoplay-policy=no-user-gesture-required',
-  ],
-})
-const context = await browser.newContext({
-  viewport: { width: vw, height: vh },
-  ...(record
-    ? {
-        recordVideo: {
-          dir: path.join(outDir, 'video'),
-          size: { width: vw, height: vh },
-        },
+  const browser = await chromium.launch({
+    args: [
+      '--use-fake-ui-for-media-stream',
+      '--use-fake-device-for-media-stream',
+      `--use-file-for-fake-video-capture=${mjpeg}`,
+      '--autoplay-policy=no-user-gesture-required',
+    ],
+  })
+  const context = await browser.newContext({
+    viewport: { width: vw, height: vh },
+    ...(record
+      ? {
+          recordVideo: {
+            dir: path.join(outDir, 'video'),
+            size: { width: vw, height: vh },
+          },
+        }
+      : {}),
+  })
+  const page = await context.newPage()
+  logs = []
+  page.on('pageerror', (e) => logs.push(`pageerror: ${e.message}`))
+  page.on('console', (m) => {
+    if (m.type() === 'warning' || m.type() === 'error')
+      logs.push(`${m.type()}: ${m.text()}`)
+  })
+  // Portrait clips: a phone held upright returns 1080×1920 for the app's
+  // 1920×1080 ideal; Chromium's fake camera would centre-crop to a square.
+  if (gt.H > gt.W)
+    await page.addInitScript(() => {
+      const md = navigator.mediaDevices
+      const orig = md.getUserMedia.bind(md)
+      md.getUserMedia = (c) => {
+        const v = c?.video
+        if (v && typeof v === 'object' && v.width && v.height)
+          c = { ...c, video: { ...v, width: v.height, height: v.width } }
+        return orig(c)
       }
-    : {}),
-})
-const page = await context.newPage()
-logs = []
-page.on('pageerror', (e) => logs.push(`pageerror: ${e.message}`))
-page.on('console', (m) => {
-  if (m.type() === 'warning' || m.type() === 'error')
-    logs.push(`${m.type()}: ${m.text()}`)
-})
-// Portrait clips: a phone held upright returns 1080×1920 for the app's
-// 1920×1080 ideal; Chromium's fake camera would centre-crop to a square.
-if (gt.H > gt.W)
+    })
   await page.addInitScript(() => {
-    const md = navigator.mediaDevices
-    const orig = md.getUserMedia.bind(md)
-    md.getUserMedia = (c) => {
-      const v = c?.video
-      if (v && typeof v === 'object' && v.width && v.height)
-        c = { ...c, video: { ...v, width: v.height, height: v.width } }
-      return orig(c)
-    }
+    window.__probe = []
+    window.__astarProbe = (e) =>
+      window.__probe.push({ ...e, wall: performance.now() })
   })
-await page.addInitScript(() => {
-  window.__probe = []
-  window.__astarProbe = (e) =>
-    window.__probe.push({ ...e, wall: performance.now() })
-})
-await page.goto(`${url.replace(/\/$/, '')}/book${query ? `?${query}` : ''}`)
-await page.waitForLoadState('networkidle').catch(() => {})
-pre = await page.evaluate(() => window.__astarBook.preload())
-await page.getByRole('button', { name: '撮影を始める' }).click()
-await page.waitForFunction(
-  () => (document.querySelector('video')?.readyState ?? 0) >= 2,
-  null,
-  { timeout: 30000 },
-)
-wStream = await page.evaluate(() => performance.now())
-
-// Screenshots of the moments the PR shows: ✓ with a number, red, 撮影済み.
-shots = []
-const shotKinds = new Set()
-const endMs = clipS * 1000 + 1500
-let seen = 0
-for (;;) {
-  const now = (await page.evaluate(() => performance.now())) - wStream
-  if (now >= endMs) break
-  const evs = await page.evaluate(
-    (from) => window.__probe.slice(from).filter((e) => e.type !== 'frame'),
-    seen,
+  await page.goto(`${url.replace(/\/$/, '')}/book${query ? `?${query}` : ''}`)
+  await page.waitForLoadState('networkidle').catch(() => {})
+  pre = await page.evaluate(() => window.__astarBook.preload())
+  await page.getByRole('button', { name: '撮影を始める' }).click()
+  await page.waitForFunction(
+    () => (document.querySelector('video')?.readyState ?? 0) >= 2,
+    null,
+    { timeout: 30000 },
   )
-  seen = await page.evaluate(() => window.__probe.length)
-  for (const e of evs) {
-    let kind = null
-    if (e.type === 'alert') kind = 'red'
-    else if (e.type === 'number' && e.numbers.length) kind = 'number'
-    else if (e.type === 'hold' && e.verdict === 'dup') kind = 'dup'
-    else if (e.type === 'sweep') kind = 'sweep'
-    // A read dropped for not fitting the page order (scan-core
-    // numbersFitOrder): the screen a moment later, with its banner.
-    else if (e.type === 'numberOutOfOrder') kind = 'outoforder'
-    // A spread's read held back as unsure (scan-core settleBookNumbers).
-    else if (e.type === 'numberUnsure') kind = 'unsure'
-    if (kind && shots.filter((s) => s.kind === kind).length < 3) {
-      if (kind === 'outoforder' || kind === 'unsure')
-        await page.waitForTimeout(250)
-      const p = path.join(
-        outDir,
-        `shot-${String(shots.length).padStart(2, '0')}-${kind}.png`,
-      )
-      await page.screenshot({ path: p })
-      shots.push({ kind, path: p, t: now })
-      shotKinds.add(kind)
-    }
-  }
-  await page.waitForTimeout(40)
-}
-await page.evaluate(() => window.__astarBook.finish())
-// Let the last pages finish their numbers and flattening.
-await page.waitForTimeout(2500)
-await page.screenshot({ path: path.join(outDir, 'list.png'), fullPage: true })
-// --save pdf,md: press the list's save buttons and keep what they download
-// (saved.pdf / saved.md), as a person would. The Markdown save reads every
-// page with NDLOCR (scripts/download-ocr-models.sh must have fetched the
-// models into apps/web/public/models/ocr): minutes, not seconds.
-const saveKinds = (opt('--save', '') || '').split(',').filter(Boolean)
-for (const kind of saveKinds) {
-  const label = kind === 'pdf' ? /PDF 保存/ : /Markdown 保存/
-  const t0 = Date.now()
-  const [dl] = await Promise.all([
-    page.waitForEvent('download', { timeout: 15 * 60 * 1000 }),
-    page.getByRole('button', { name: label }).click(),
-  ])
-  await dl.saveAs(path.join(outDir, `saved.${kind}`))
-  console.error(`saved.${kind} in ${((Date.now() - t0) / 1000).toFixed(0)} s`)
-  await page.screenshot({
-    path: path.join(outDir, `list-after-${kind}.png`),
-    fullPage: true,
-  })
-}
-const firstRow = page.locator('.list__row').first()
-if (await firstRow.count()) {
-  await firstRow.click()
-  await page.waitForTimeout(400)
-  await page.screenshot({
-    path: path.join(outDir, 'list-preview.png'),
-    fullPage: true,
-  })
-}
-probe = await page.evaluate(() => window.__probe)
-kept = await page.evaluate(() => window.__astarBook.pages())
-for (const p of kept) {
-  const data = await page.evaluate((id) => window.__astarBook.image(id), p.id)
-  if (data)
-    fs.writeFileSync(
-      path.join(outDir, 'pages', `${p.id}.jpg`),
-      Buffer.from(data.split(',')[1], 'base64'),
+  wStream = await page.evaluate(() => performance.now())
+
+  // Screenshots of the moments the PR shows: ✓ with a number, red, 撮影済み.
+  shots = []
+  const shotKinds = new Set()
+  const endMs = clipS * 1000 + 1500
+  let seen = 0
+  for (;;) {
+    const now = (await page.evaluate(() => performance.now())) - wStream
+    if (now >= endMs) break
+    const evs = await page.evaluate(
+      (from) => window.__probe.slice(from).filter((e) => e.type !== 'frame'),
+      seen,
     )
-}
-videoPath = record ? await page.video()?.path() : null
-await context.close()
-await browser.close()
+    seen = await page.evaluate(() => window.__probe.length)
+    for (const e of evs) {
+      let kind = null
+      if (e.type === 'alert') kind = 'red'
+      else if (e.type === 'number' && e.numbers.length) kind = 'number'
+      else if (e.type === 'hold' && e.verdict === 'dup') kind = 'dup'
+      else if (e.type === 'sweep') kind = 'sweep'
+      // A read dropped for not fitting the page order (scan-core
+      // numbersFitOrder): the screen a moment later, with its banner.
+      else if (e.type === 'numberOutOfOrder') kind = 'outoforder'
+      // A spread's read held back as unsure (scan-core settleBookNumbers).
+      else if (e.type === 'numberUnsure') kind = 'unsure'
+      if (kind && shots.filter((s) => s.kind === kind).length < 3) {
+        if (kind === 'outoforder' || kind === 'unsure')
+          await page.waitForTimeout(250)
+        const p = path.join(
+          outDir,
+          `shot-${String(shots.length).padStart(2, '0')}-${kind}.png`,
+        )
+        await page.screenshot({ path: p })
+        shots.push({ kind, path: p, t: now })
+        shotKinds.add(kind)
+      }
+    }
+    await page.waitForTimeout(40)
+  }
+  await page.evaluate(() => window.__astarBook.finish())
+  // Let the last pages finish their numbers and flattening.
+  await page.waitForTimeout(2500)
+  await page.screenshot({ path: path.join(outDir, 'list.png'), fullPage: true })
+  // --save pdf,md: press the list's save buttons and keep what they download
+  // (saved.pdf / saved.md), as a person would. The Markdown save reads every
+  // page with NDLOCR (scripts/download-ocr-models.sh must have fetched the
+  // models into apps/web/public/models/ocr): minutes, not seconds.
+  const saveKinds = (opt('--save', '') || '').split(',').filter(Boolean)
+  for (const kind of saveKinds) {
+    const label = kind === 'pdf' ? /PDF 保存/ : /Markdown 保存/
+    const t0 = Date.now()
+    const [dl] = await Promise.all([
+      page.waitForEvent('download', { timeout: 15 * 60 * 1000 }),
+      page.getByRole('button', { name: label }).click(),
+    ])
+    await dl.saveAs(path.join(outDir, `saved.${kind}`))
+    console.error(`saved.${kind} in ${((Date.now() - t0) / 1000).toFixed(0)} s`)
+    await page.screenshot({
+      path: path.join(outDir, `list-after-${kind}.png`),
+      fullPage: true,
+    })
+  }
+  const firstRow = page.locator('.list__row').first()
+  if (await firstRow.count()) {
+    await firstRow.click()
+    await page.waitForTimeout(400)
+    await page.screenshot({
+      path: path.join(outDir, 'list-preview.png'),
+      fullPage: true,
+    })
+  }
+  probe = await page.evaluate(() => window.__probe)
+  kept = await page.evaluate(() => window.__astarBook.pages())
+  for (const p of kept) {
+    const data = await page.evaluate((id) => window.__astarBook.image(id), p.id)
+    if (data)
+      fs.writeFileSync(
+        path.join(outDir, 'pages', `${p.id}.jpg`),
+        Buffer.from(data.split(',')[1], 'base64'),
+      )
+  }
+  videoPath = record ? await page.video()?.path() : null
+  await context.close()
+  await browser.close()
 }
 
 // --- which clip frame was each processed frame ----------------------------
@@ -404,7 +409,9 @@ const wallAt = (pos) => wStream + ((pos - offset) / fps) * 1000
 /** Clip frame shown by the processed frame nearest before `wall`. */
 const posOfWall = (wall) => {
   if (rescore) {
-    const near = frames.filter((f) => f.wall <= wall + 1).sort((a, b) => b.wall - a.wall)[0]
+    const near = frames
+      .filter((f) => f.wall <= wall + 1)
+      .sort((a, b) => b.wall - a.wall)[0]
     return near ? near.pos : 0
   }
   let best = null
@@ -604,11 +611,7 @@ for (const c of captures) {
     }
     if (!best) continue
     row.pages.push({ id: p.id, side: p.side, ...best })
-    if (
-      best.cover >= COVER_PAGE &&
-      best.asHold &&
-      !checkAt.has(best.page)
-    )
+    if (best.cover >= COVER_PAGE && best.asHold && !checkAt.has(best.page))
       checkAt.set(best.page, c.t)
   }
   if (c.spread && fr.pages.length >= 2) {
