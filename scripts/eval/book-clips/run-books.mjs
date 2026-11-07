@@ -183,8 +183,9 @@ const RUNS = {
     ['b7-o-single-lato', 'book7', 'book7-single-lato', '--own-size'],
     ['b7-o-ja-noto', 'book7', 'book7-spread-ja-noto', '--own-size'],
   ],
+  // Book 8: only the upright spread was rendered and committed (book8.py
+  // also describes a single page and a Japanese spread, not made).
   8: [
-    ['b8-f-single-plexbar', 'book8-framed', 'book8-single-plexbar'],
     [
       'b8-f-gentium-skip',
       'book8-framed',
@@ -192,8 +193,6 @@ const RUNS = {
       '--skip-hold',
       '3',
     ],
-    ['b8-f-ja-sawarabi', 'book8-framed', 'book8-spread-ja-sawarabi'],
-    ['b8-o-single-plexbar', 'book8', 'book8-single-plexbar', '--own-size'],
     [
       'b8-o-gentium-skip',
       'book8',
@@ -202,7 +201,6 @@ const RUNS = {
       '3',
       '--own-size',
     ],
-    ['b8-o-ja-sawarabi', 'book8', 'book8-spread-ja-sawarabi', '--own-size'],
   ],
 }
 
