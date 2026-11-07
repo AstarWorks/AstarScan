@@ -621,18 +621,34 @@ export function settleBookNumbers(
   // Two captures holding the same page (a retake the picture test let
   // through, or one of them misread onto the other's number): at most one
   // counts — the one in sequence with the captures just before and after
-  // it (pages are turned forward: 96・97 then 98・99 then 100・101), the
-  // earlier one on a tie. The other is held.
+  // it (pages are turned forward: the capture before holds lower numbers,
+  // the one after higher — 96・97 then 98・99 then 100・101), the earlier
+  // one on a tie. The other is held. The direction counts: book 2 at
+  // 720×960 (run22), 94・95 read as "98・99" at 7.7 px, then 96・97 at
+  // 8.2 px (which made it sure), then the real 98・99 as the last capture
+  // — each had one neighbour following it, and the earlier (the misread)
+  // was kept; its neighbour follows it backwards.
   const shown = work.filter(
     (s) => out.get(s.id) === 'ok' && countedNumbers(s).length > 0,
   )
   const inSequence = (s: BookSheet) => {
     const i = bySeq.findIndex((x) => x.id === s.id)
+    const own = countedNumbers(s)
     let n = 0
-    for (const j of [i - 1, i + 1]) {
-      const x = bySeq[j]
-      if (x && follows(s, x)) n++
-    }
+    const prev = bySeq[i - 1]
+    if (
+      prev &&
+      follows(s, prev) &&
+      Math.max(...countedNumbers(prev)) < Math.min(...own)
+    )
+      n++
+    const next = bySeq[i + 1]
+    if (
+      next &&
+      follows(s, next) &&
+      Math.min(...countedNumbers(next)) > Math.max(...own)
+    )
+      n++
     return n
   }
   for (let i = 0; i < shown.length; i++)

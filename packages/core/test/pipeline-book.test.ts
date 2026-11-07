@@ -440,6 +440,25 @@ describe('bookCoverage (the mock ideal-capture.html flow)', () => {
     ]
     const v = s.map((x) => settleBookNumbers(s).get(x.id))
     expect(v).toEqual(['ok', 'unsure', 'ok', 'ok', 'ok'])
+    // The same with the real 98・99 the last capture (book 2 720×960,
+    // run22: 94・95 read as "98・99" at 7.7 px, 96・97 at 8.2 px made it
+    // sure, then the real 98・99 and nothing after). Each has one
+    // neighbour that follows it; the misread's follows it backwards
+    // (96・97 after "98・99"), so the real one counts. 96・97 itself stays
+    // unsure (its two partners hold the same pages, 96 is small).
+    const small = (n: number): BookPageRead => ({
+      state: 'read',
+      number: n,
+      px: 7.7,
+    })
+    const last = [
+      sheet(none, none),
+      sheet(small(98), small(99)),
+      sheet(small(96), t(97)),
+      sheet(small(98), small(99)),
+    ]
+    const w = last.map((x) => settleBookNumbers(last).get(x.id))
+    expect(w).toEqual(['ok', 'unsure', 'unsure', 'ok'])
   })
 
   it('a spread whose left page has the wrong parity for the book is unsure', () => {
